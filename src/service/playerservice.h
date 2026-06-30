@@ -74,11 +74,11 @@ private:
     void onSdkStateChanged(SmartPlayerState state);
     void onSdkPositionChanged(int64_t posMs);
     void onSdkDurationChanged(int64_t durationMs);
-    void onSdkOpenResult(bool success, const std::string& err);
+    void onSdkOpenResult(bool success, const char* err);
     void onSdkMediaInfoReady(const SmartMediaInfo& info);
     void onSdkPlayFinished();
-    void onSdkError(const std::string& msg);
-    void onSdkScreenshot(const std::string& path, bool success);
+    void onSdkError(const char* msg);
+    void onSdkScreenshot(const char* path, bool success);
     void onSdkVideoFrame(const uint8_t* data, int width, int height,
                          SmartPixelFormat format);
 

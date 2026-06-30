@@ -15,7 +15,7 @@ public:
     SmartPlayer(const SmartPlayer&) = delete;
     SmartPlayer& operator=(const SmartPlayer&) = delete;
 
-    void open(const std::string& url);
+    void open(const char* url);
     void play();
     void pause();
     void stop();
@@ -25,8 +25,8 @@ public:
     void setVolume(int volume);
     void setMute(bool mute);
     void setHardwareDecode(bool enable);
-    void setDecoderType(const std::string& decoder);
-    void takeScreenshot(const std::string& savePath);
+    void setDecoderType(const char* decoder);
+    void takeScreenshot(const char* savePath);
 
     SmartPlayerState state() const;
     int64_t duration() const;       // ms

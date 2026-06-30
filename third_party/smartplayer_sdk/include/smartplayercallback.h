@@ -23,7 +23,7 @@ public:
     virtual void onDurationChanged(int64_t /*durationMs*/) {}
 
     /// open 结果
-    virtual void onOpenResult(bool /*success*/, const std::string& /*errMsg*/) {}
+    virtual void onOpenResult(bool /*success*/, const char* /*errMsg*/) {}
 
     /// 媒体信息就绪
     virtual void onMediaInfoReady(const SmartMediaInfo& /*info*/) {}
@@ -32,10 +32,10 @@ public:
     virtual void onPlayFinished() {}
 
     /// 错误
-    virtual void onError(const std::string& /*msg*/) {}
+    virtual void onError(const char* /*msg*/) {}
 
     /// 截图完成
-    virtual void onScreenshot(const std::string& /*path*/, bool /*success*/) {}
+    virtual void onScreenshot(const char* /*path*/, bool /*success*/) {}
 
     /**
      * 视频帧回调 —— 上层自行渲染。

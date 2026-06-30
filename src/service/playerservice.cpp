@@ -23,7 +23,7 @@ public:
     void onDurationChanged(int64_t durationMs) override {
         if (m_owner) m_owner->onSdkDurationChanged(durationMs);
     }
-    void onOpenResult(bool success, const std::string& errMsg) override {
+    void onOpenResult(bool success, const char* errMsg) override {
         if (m_owner) m_owner->onSdkOpenResult(success, errMsg);
     }
     void onMediaInfoReady(const SmartMediaInfo& info) override {
@@ -32,10 +32,10 @@ public:
     void onPlayFinished() override {
         if (m_owner) m_owner->onSdkPlayFinished();
     }
-    void onError(const std::string& msg) override {
+    void onError(const char* msg) override {
         if (m_owner) m_owner->onSdkError(msg);
     }
-    void onScreenshot(const std::string& path, bool success) override {
+    void onScreenshot(const char* path, bool success) override {
         if (m_owner) m_owner->onSdkScreenshot(path, success);
     }
     void onVideoFrame(const uint8_t* data, int width, int height,
@@ -91,7 +91,11 @@ void PlayerService::open(const QString& filePath)
         std::lock_guard<std::mutex> lk(m_frameMutex);
         m_lastFrame = QImage();
     }
-    m_player->open(filePath.toStdString());
+
+    std::string url = filePath.toUtf8().constData();
+    qDebug() << "Opening URL (UTF-8):" << QString::fromUtf8(url.c_str());
+
+    m_player->open(url.c_str());
 }
 
 void PlayerService::play()                       { if (m_player) m_player->play(); }
@@ -105,7 +109,7 @@ void PlayerService::setHardwareDecode(bool en)   { if (m_player) m_player->setHa
 
 void PlayerService::takeScreenshot(const QString& savePath)
 {
-    if (m_player) m_player->takeScreenshot(savePath.toStdString());
+    if (m_player) m_player->takeScreenshot(savePath.toUtf8().constData());
 }
 
 QFuture<QImage> PlayerService::captureFrameAt(int64_t /*posMs*/, int /*timeoutMs*/)
@@ -160,9 +164,9 @@ void PlayerService::onSdkDurationChanged(int64_t durationMs)
     emit durationChanged(durationMs);
 }
 
-void PlayerService::onSdkOpenResult(bool success, const std::string& err)
+void PlayerService::onSdkOpenResult(bool success, const char* err)
 {
-    emit openResult(success, QString::fromStdString(err));
+    emit openResult(success, QString::fromUtf8(err));
 }
 
 void PlayerService::onSdkMediaInfoReady(const SmartMediaInfo& info)
@@ -171,13 +175,13 @@ void PlayerService::onSdkMediaInfoReady(const SmartMediaInfo& info)
     {
         std::lock_guard<std::mutex> lk(m_infoMutex);
         // filePath/fileName 已在 open() 时填好，这里补充其余字段
-        m_videoInfo.format     = QString::fromStdString(info.formatName);
+        m_videoInfo.format     = QString::fromUtf8(info.formatName);
         m_videoInfo.durationMs = info.durationMs;
         m_videoInfo.bitRate    = info.bitRate;
         m_videoInfo.frameRate  = info.videoFrameRate;
         m_videoInfo.hasAudio   = info.hasAudio;
         if (m_videoInfo.fileName.isEmpty())
-            m_videoInfo.fileName = QString::fromStdString(info.fileName);
+            m_videoInfo.fileName = QString::fromUtf8(info.fileName);
         vi = m_videoInfo;
     }
     emit mediaInfoReady(vi);
@@ -188,14 +192,14 @@ void PlayerService::onSdkPlayFinished()
     emit playFinished();
 }
 
-void PlayerService::onSdkError(const std::string& msg)
+void PlayerService::onSdkError(const char* msg)
 {
-    emit errorOccurred(QString::fromStdString(msg));
+    emit errorOccurred(QString::fromUtf8(msg));
 }
 
-void PlayerService::onSdkScreenshot(const std::string& path, bool success)
+void PlayerService::onSdkScreenshot(const char* path, bool success)
 {
-    emit screenshotReady(QString::fromStdString(path), success);
+    emit screenshotReady(QString::fromUtf8(path), success);
 }
 
 void PlayerService::onSdkVideoFrame(const uint8_t* data, int width, int height,
