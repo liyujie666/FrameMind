@@ -26,6 +26,7 @@ protected:
 
 private:
     QToolButton* makeIconButton(const QString& iconPath, const QString& tip);
+    void updatePalette();
 
     QButtonGroup*        m_group = nullptr;
     QList<QToolButton*>  m_navButtons;

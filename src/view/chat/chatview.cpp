@@ -11,6 +11,7 @@
 #include <QLabel>
 #include <QMenu>
 #include <QRegularExpression>
+#include <QScrollBar>
 
 ChatView::ChatView(QWidget* parent)
     : QWidget(parent)
@@ -22,22 +23,32 @@ ChatView::ChatView(QWidget* parent)
     // 顶部 header
     auto* header = new QWidget(this);
     header->setFixedHeight(44);
+    header->setAutoFillBackground(true);
+    header->setStyleSheet(QStringLiteral(
+        "background:#1E1E2E; border-bottom:1px solid #2D2D3D;"));
     auto* hl = new QHBoxLayout(header);
-    hl->setContentsMargins(10, 4, 10, 4);
+    hl->setContentsMargins(12, 4, 12, 4);
 
     m_convButton = new QToolButton(header);
     m_convButton->setText(tr("会话"));
     m_convButton->setPopupMode(QToolButton::InstantPopup);
     m_convButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    m_convButton->setStyleSheet(QStringLiteral(
+        "QToolButton { border:none; color:#8B8B8B; padding:4px 8px; border-radius:4px; }"
+        "QToolButton:hover { color:#E0E0E0; background:#252538; }"));
     connect(m_convButton, &QToolButton::clicked,
             this, &ChatView::showConversationMenu);
 
     m_titleLabel = new QLabel(tr("AI 助手"), header);
-    m_titleLabel->setStyleSheet(QStringLiteral("font-weight:600;"));
+    m_titleLabel->setStyleSheet(QStringLiteral(
+        "font-weight:600; color:#E0E0E0;"));
 
     m_newButton = new QToolButton(header);
-    m_newButton->setText(QStringLiteral("＋"));
+    m_newButton->setText(QStringLiteral("+"));
     m_newButton->setToolTip(tr("新建对话"));
+    m_newButton->setStyleSheet(QStringLiteral(
+        "QToolButton { border:none; color:#E0E0E0; padding:4px 8px; border-radius:4px; font-size:18px; }"
+        "QToolButton:hover { background:#2979FF; }"));
 
     hl->addWidget(m_convButton);
     hl->addWidget(m_titleLabel, 1);
@@ -46,6 +57,10 @@ ChatView::ChatView(QWidget* parent)
 
     // 消息列表
     m_messageList = new ChatMessageList(this);
+    m_messageList->setStyleSheet(QStringLiteral(
+        "QScrollBar:vertical { background:transparent; width:8px; margin:0; }"
+        "QScrollBar::handle:vertical { background:#3A3A4A; border-radius:4px; }"
+        "QScrollBar::handle:vertical:hover { background:#4A4A5A; }"));
     layout->addWidget(m_messageList, 1);
     connect(m_messageList, &ChatMessageList::linkActivated,
             this, &ChatView::onLinkActivated);

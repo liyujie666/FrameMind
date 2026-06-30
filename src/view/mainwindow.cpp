@@ -65,6 +65,7 @@ MainWindow::MainWindow(PlayerViewModel* playerVM,
 QWidget* MainWindow::buildChatPage()
 {
     auto* page = new QWidget(this);
+    page->setStyleSheet(QStringLiteral("background:#0D1117;"));  // Dark.Background
     auto* pageLayout = new QHBoxLayout(page);
     pageLayout->setContentsMargins(0, 0, 0, 0);
     pageLayout->setSpacing(0);
@@ -73,13 +74,19 @@ QWidget* MainWindow::buildChatPage()
 
     // ---- 左侧：播放器 + 下方面板占位 ----
     auto* left = new QWidget(splitter);
+    left->setStyleSheet(QStringLiteral("background:#0D1117;"));
     auto* leftLayout = new QVBoxLayout(left);
     leftLayout->setContentsMargins(0, 0, 0, 0);
     leftLayout->setSpacing(0);
 
     m_playerView = new PlayerView(left);
+    m_playerView->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
     auto* analysisTabs = new QTabWidget(left);
+    analysisTabs->setStyleSheet(QStringLiteral(
+        "QTabWidget { background:#1E1E2E; border-top:1px solid #2D2D3D; }"
+        "QTabBar::tab { background:#1E1E2E; color:#8B8B8B; padding:8px 16px; }"
+        "QTabBar::tab:selected { color:#2979FF; border-bottom:2px solid #2979FF; }"));
     analysisTabs->addTab(new QWidget(analysisTabs), tr("时间线"));
     analysisTabs->addTab(new QWidget(analysisTabs), tr("检测"));
     analysisTabs->addTab(new QWidget(analysisTabs), tr("字幕"));
@@ -91,12 +98,14 @@ QWidget* MainWindow::buildChatPage()
     // ---- 右侧：ChatView ----
     m_chatView = new ChatView(splitter);
     m_chatView->setMinimumWidth(320);
+    m_chatView->setMaximumWidth(500);  // 限制最大宽度
+    m_chatView->setStyleSheet(QStringLiteral("background:#0D1117;"));
 
     splitter->addWidget(left);
     splitter->addWidget(m_chatView);
-    splitter->setStretchFactor(0, 1);
-    splitter->setStretchFactor(1, 0);
-    splitter->setSizes({ 900, 380 });
+    splitter->setStretchFactor(0, 3);  // 左侧占 3 份
+    splitter->setStretchFactor(1, 2);  // 右侧占 2 份
+    splitter->setSizes({ 750, 500 });
     splitter->setChildrenCollapsible(false);
 
     pageLayout->addWidget(splitter);

@@ -6,15 +6,14 @@
 #include <QLabel>
 #include <QPainter>
 #include <QIcon>
+#include <QApplication>
 
 SidebarView::SidebarView(QWidget* parent)
     : QWidget(parent)
 {
     setFixedWidth(64);
     setAutoFillBackground(true);
-    QPalette pal = palette();
-    pal.setColor(QPalette::Window, QColor("#F0F1F3"));  // Light.Sidebar
-    setPalette(pal);
+    updatePalette();
 
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 12, 0, 12);
@@ -25,10 +24,9 @@ SidebarView::SidebarView(QWidget* parent)
     auto* avatar = new QLabel(this);
     avatar->setFixedSize(40, 40);
     avatar->setPixmap(QIcon(QStringLiteral(":/icons/avatar.svg")).pixmap(40, 40));
-    avatar->setStyleSheet(QStringLiteral(
-        "border-radius:20px; background:#D0D4DA;"));
     avatar->setScaledContents(true);
     avatar->setToolTip(tr("用户"));
+    avatar->setCursor(Qt::PointingHandCursor);
     layout->addWidget(avatar, 0, Qt::AlignHCenter);
 
     layout->addSpacing(8);
@@ -70,6 +68,13 @@ SidebarView::SidebarView(QWidget* parent)
     }
 }
 
+void SidebarView::updatePalette()
+{
+    QPalette pal = palette();
+    pal.setColor(QPalette::Window, QColor("#161622"));  // Dark.Sidebar
+    setPalette(pal);
+}
+
 QToolButton* SidebarView::makeIconButton(const QString& iconPath, const QString& tip)
 {
     auto* btn = new QToolButton(this);
@@ -81,9 +86,9 @@ QToolButton* SidebarView::makeIconButton(const QString& iconPath, const QString&
     btn->setToolTip(tip);
     btn->setCursor(Qt::PointingHandCursor);
     btn->setStyleSheet(QStringLiteral(
-        "QToolButton { border:none; border-radius:8px; }"
-        "QToolButton:hover { background:#E2E5EA; }"
-        "QToolButton:checked { background:#DCE6F7; }"));
+        "QToolButton { border:none; border-radius:8px; background:transparent; }"
+        "QToolButton:hover { background:#252538; }"
+        "QToolButton:checked { background:#252538; }"));
     return btn;
 }
 
@@ -103,6 +108,6 @@ void SidebarView::paintEvent(QPaintEvent* event)
     const int barH = 24;
     const int y = checked->y() + (checked->height() - barH) / 2;
     painter.setPen(Qt::NoPen);
-    painter.setBrush(QColor("#1565C0"));  // Light.Primary
+    painter.setBrush(QColor("#2979FF"));  // Dark.Primary
     painter.drawRoundedRect(QRectF(0, y, 3, barH), 1.5, 1.5);
 }

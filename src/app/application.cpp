@@ -1,6 +1,7 @@
 #include "app/application.h"
 
 #include "app/dicontainer.h"
+#include "service/themeservice.h"
 #include "view/mainwindow.h"
 
 Application::Application() = default;
@@ -16,4 +17,7 @@ void Application::start()
                                                 m_container->settingsService(),
                                                 m_container->agentService());
     m_mainWindow->show();
+
+    // Apply initial theme
+    m_container->themeService()->applyTheme();
 }

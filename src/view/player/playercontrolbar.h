@@ -10,6 +10,7 @@ class QSlider;
 class QToolButton;
 class QLabel;
 class QComboBox;
+class QPaintEvent;
 
 /**
  * 播放控制栏：进度条 + 播放/暂停 + 时长 + 音量 + 倍速 + 全屏占位。

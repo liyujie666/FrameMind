@@ -4,6 +4,7 @@
 #include "infrastructure/databasemanager.h"
 #include "infrastructure/networkclient.h"
 #include "service/settingsservice.h"
+#include "service/themeservice.h"
 #include "service/playerservice.h"
 #include "service/agentservice.h"
 #include "service/conversationservice.h"
@@ -31,6 +32,7 @@ void DIContainer::initialize()
 
     // Services
     m_settingsService = std::make_unique<SettingsService>(m_db);
+    m_themeService    = std::make_unique<ThemeService>(m_settingsService.get());
     m_playerService   = std::make_unique<PlayerService>();
     m_agentService    = std::make_unique<AgentService>(m_network.get(),
                                                        m_settingsService.get());

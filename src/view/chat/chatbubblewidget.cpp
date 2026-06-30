@@ -39,12 +39,12 @@ void ChatBubbleWidget::applyStyle()
 {
     if (m_role == ChatMessage::User) {
         setStyleSheet(QStringLiteral(
-            "QFrame { background:#1565C0; border-radius:10px; }"
-            "QLabel { color:#FFFFFF; }"));
+            "QFrame { background:#2979FF; border-radius:12px; }"
+            "QLabel { color:#FFFFFF; background:transparent; }"));
     } else {
         setStyleSheet(QStringLiteral(
-            "QFrame { background:#F0F2F5; border-radius:10px; }"
-            "QLabel { color:#1A1A1A; }"));
+            "QFrame { background:#252536; border-radius:12px; }"
+            "QLabel { color:#E0E0E0; background:transparent; }"));
     }
 }
 

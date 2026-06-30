@@ -5,5 +5,7 @@
         <file>icons/files.svg</file>
         <file>icons/knowledge.svg</file>
         <file>icons/settings.svg</file>
+        <file>styles/dark.qss</file>
+        <file>styles/light.qss</file>
     </qresource>
 </RCC>

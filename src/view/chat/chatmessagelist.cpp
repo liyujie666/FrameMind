@@ -15,11 +15,17 @@ ChatMessageList::ChatMessageList(QWidget* parent)
     setWidgetResizable(true);
     setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     setFrameShape(QFrame::NoFrame);
+    setBackgroundRole(QPalette::NoRole);
+    setStyleSheet(QStringLiteral(
+        "QScrollArea { background:#0D1117; border:none; }"
+        "QWidget#container { background:#0D1117; }"));
 
     m_container = new QWidget(this);
+    m_container->setObjectName(QStringLiteral("container"));
+    m_container->setAutoFillBackground(true);
     m_layout = new QVBoxLayout(m_container);
-    m_layout->setContentsMargins(12, 12, 12, 12);
-    m_layout->setSpacing(10);
+    m_layout->setContentsMargins(16, 16, 16, 16);
+    m_layout->setSpacing(12);
     m_layout->addStretch(1);   // 末尾弹簧，气泡插入其前
     setWidget(m_container);
 }

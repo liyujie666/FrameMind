@@ -8,21 +8,37 @@
 
 PlayerControlBar::PlayerControlBar(QWidget* parent)
     : QWidget(parent)
+    , m_position(0)
+    , m_duration(0)
+    , m_dragging(false)
 {
+    setFixedHeight(40);
+    setAutoFillBackground(true);
+    setBackgroundRole(QPalette::Window);
+    setStyleSheet("background-color: rgba(20, 20, 20, 180);");
+
     auto* layout = new QHBoxLayout(this);
-    layout->setContentsMargins(8, 4, 8, 4);
-    layout->setSpacing(8);
+    layout->setContentsMargins(12, 0, 12, 0);
+    layout->setSpacing(12);
 
     // 播放 / 暂停
     m_playButton = new QToolButton(this);
-    m_playButton->setText(QStringLiteral("▶"));
+    m_playButton->setText(QStringLiteral("\u25B6"));
     m_playButton->setToolTip(tr("播放/暂停"));
     m_playButton->setAutoRaise(true);
+    m_playButton->setStyleSheet(QStringLiteral(
+        "QToolButton { border:none; padding:4px; border-radius:4px; color:#CCCCCC; background:transparent; }"
+        "QToolButton:hover { background:rgba(255,255,255,20); }"));
     connect(m_playButton, &QToolButton::clicked, this, &PlayerControlBar::playClicked);
 
     // 进度条
     m_positionSlider = new QSlider(Qt::Horizontal, this);
     m_positionSlider->setRange(0, 0);
+    m_positionSlider->setStyleSheet(QStringLiteral(
+        "QSlider { background:transparent; }"
+        "QSlider::groove:horizontal { background:rgba(255,255,255,30); height:4px; border-radius:2px; }"
+        "QSlider::handle:horizontal { background:#2979FF; width:12px; height:12px; margin:-4px 0; border-radius:6px; }"
+        "QSlider::sub-page:horizontal { background:#2979FF; border-radius:2px; }"));
     connect(m_positionSlider, &QSlider::sliderPressed, this,
             [this]() { m_dragging = true; });
     connect(m_positionSlider, &QSlider::sliderMoved, this,
@@ -38,23 +54,33 @@ PlayerControlBar::PlayerControlBar(QWidget* parent)
 
     // 时间显示
     m_timeLabel = new QLabel(QStringLiteral("00:00 / 00:00"), this);
-    m_timeLabel->setMinimumWidth(110);
+    m_timeLabel->setMinimumWidth(100);
     m_timeLabel->setAlignment(Qt::AlignCenter);
-
-    // 静音
-    m_muteButton = new QToolButton(this);
-    m_muteButton->setText(QStringLiteral("🔊"));
-    m_muteButton->setToolTip(tr("静音"));
-    m_muteButton->setAutoRaise(true);
-    connect(m_muteButton, &QToolButton::clicked, this, &PlayerControlBar::muteClicked);
+    m_timeLabel->setStyleSheet(QStringLiteral(
+        "QLabel { color:#CCCCCC; font-size:12px; background:transparent; }"));
 
     // 音量
     m_volumeSlider = new QSlider(Qt::Horizontal, this);
     m_volumeSlider->setRange(0, 100);
     m_volumeSlider->setValue(50);
-    m_volumeSlider->setFixedWidth(90);
+    m_volumeSlider->setFixedWidth(80);
+    m_volumeSlider->setStyleSheet(QStringLiteral(
+        "QSlider { background:transparent; }"
+        "QSlider::groove:horizontal { background:rgba(255,255,255,30); height:4px; border-radius:2px; }"
+        "QSlider::handle:horizontal { background:#CCCCCC; width:10px; height:10px; margin:-3px 0; border-radius:5px; }"
+        "QSlider::sub-page:horizontal { background:#CCCCCC; border-radius:2px; }"));
     connect(m_volumeSlider, &QSlider::valueChanged, this,
             &PlayerControlBar::volumeChanged);
+
+    // 静音
+    m_muteButton = new QToolButton(this);
+    m_muteButton->setText(QStringLiteral("Vol"));
+    m_muteButton->setToolTip(tr("静音"));
+    m_muteButton->setAutoRaise(true);
+    m_muteButton->setStyleSheet(QStringLiteral(
+        "QToolButton { border:none; padding:4px; border-radius:4px; color:#CCCCCC; background:transparent; font-size:11px; }"
+        "QToolButton:hover { background:rgba(255,255,255,20); }"));
+    connect(m_muteButton, &QToolButton::clicked, this, &PlayerControlBar::muteClicked);
 
     // 倍速
     m_speedCombo = new QComboBox(this);
@@ -63,18 +89,26 @@ PlayerControlBar::PlayerControlBar(QWidget* parent)
     m_speedCombo->addItem(QStringLiteral("1.25x"), 1.25f);
     m_speedCombo->addItem(QStringLiteral("1.5x"), 1.5f);
     m_speedCombo->addItem(QStringLiteral("2.0x"), 2.0f);
-    m_speedCombo->setCurrentIndex(1);  // 1.0x
+    m_speedCombo->setCurrentIndex(1);
+    m_speedCombo->setStyleSheet(QStringLiteral(
+        "QComboBox { background:rgba(255,255,255,20); color:#CCCCCC; border:1px solid rgba(255,255,255,30); "
+        "border-radius:4px; padding:4px 8px; }"
+        "QComboBox:hover { border-color:#2979FF; }"
+        "QComboBox::drop-down { border:none; }"
+        "QComboBox QAbstractItemView { color:#FFFFFF; background:#141414; border-radius:4px; selection-background-color:#2979FF; }"));
     connect(m_speedCombo, &QComboBox::currentIndexChanged, this,
             [this](int) {
                 emit speedChanged(m_speedCombo->currentData().toFloat());
             });
 
-    // 全屏占位（M1 暂不实现功能）
+    // 全屏
     m_fullscreenButton = new QToolButton(this);
-    m_fullscreenButton->setText(QStringLiteral("⛶"));
-    m_fullscreenButton->setToolTip(tr("全屏（待实现）"));
+    m_fullscreenButton->setText(QStringLiteral("[]"));
+    m_fullscreenButton->setToolTip(tr("全屏"));
     m_fullscreenButton->setAutoRaise(true);
-    m_fullscreenButton->setEnabled(false);
+    m_fullscreenButton->setStyleSheet(QStringLiteral(
+        "QToolButton { border:none; padding:4px; border-radius:4px; color:#CCCCCC; background:transparent; font-size:11px; }"
+        "QToolButton:hover { background:rgba(255,255,255,20); }"));
 
     layout->addWidget(m_playButton);
     layout->addWidget(m_positionSlider, 1);
@@ -125,9 +159,9 @@ void PlayerControlBar::setDuration(int64_t durationMs)
 void PlayerControlBar::setPlayState(PlayerState state)
 {
     if (state == PlayerState::Playing) {
-        m_playButton->setText(QStringLiteral("⏸"));
+        m_playButton->setText(QStringLiteral("\u23F8"));  // ⏸
     } else {
-        m_playButton->setText(QStringLiteral("▶"));
+        m_playButton->setText(QStringLiteral("\u25B6"));  // ▶
     }
 }
 

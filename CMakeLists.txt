@@ -19,9 +19,23 @@ endif()
 
 # ---------------------------------------------------------------------------
 # Qt6
-#   若 CMake 找不到 Qt，请在配置时传入：
-#   -DCMAKE_PREFIX_PATH="C:/Qt/6.9.0/msvc2019_64"
+#   CMake 自动查找系统中的 Qt，或通过 -DCMAKE_PREFIX_PATH 指定
 # ---------------------------------------------------------------------------
+# 尝试从常见位置查找 Qt
+set(QT_PATHS
+    "D:/Qt/6.9.1/msvc2022_64"
+    "D:/Qt/6.9.0/msvc2022_64"
+    "C:/Qt/6.9.1/msvc2022_64"
+    "C:/Qt/6.9.0/msvc2022_64"
+)
+
+foreach(path IN LISTS QT_PATHS)
+    if(EXISTS "${path}/lib/cmake/Qt6")
+        list(APPEND CMAKE_PREFIX_PATH "${path}")
+        break()
+    endif()
+endforeach()
+
 find_package(Qt6 6.9 REQUIRED COMPONENTS
     Core
     Gui

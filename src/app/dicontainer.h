@@ -7,6 +7,7 @@ class EventBus;
 class DatabaseManager;
 class NetworkClient;
 class SettingsService;
+class ThemeService;
 class PlayerService;
 class AgentService;
 class ConversationService;
@@ -29,6 +30,7 @@ public:
     PlayerService*    playerService() const { return m_playerService.get(); }
     AgentService*     agentService() const { return m_agentService.get(); }
     SettingsService*  settingsService() const { return m_settingsService.get(); }
+    ThemeService*     themeService() const { return m_themeService.get(); }
 
 private:
     EventBus*        m_eventBus = nullptr;        // 不持有所有权
@@ -36,6 +38,7 @@ private:
 
     std::unique_ptr<NetworkClient>       m_network;
     std::unique_ptr<SettingsService>     m_settingsService;
+    std::unique_ptr<ThemeService>         m_themeService;
     std::unique_ptr<PlayerService>       m_playerService;
     std::unique_ptr<AgentService>        m_agentService;
     std::unique_ptr<ConversationService> m_convService;
