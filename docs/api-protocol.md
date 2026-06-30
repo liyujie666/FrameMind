@@ -728,7 +728,7 @@ image.max_per_request        | 10                               | 单次请求�
 - 完整记录每次 LLM 请求与响应
 - **必须**对 `Authorization` header、payload 中任何包含 `api_key` / `token` 的字段做脱敏（替换为 `***`）
 - 图片 base64 仅记录前 64 字符 + 总长度，避免日志文件爆炸
-- 保存到 `%APPDATA%/VideoAIAgent/logs/llm-trace-{date}.jsonl`
+- 保存到 `%APPDATA%/FrameMind/logs/llm-trace-{date}.jsonl`
 - 单行 JSON 格式，便于事后分析
 
 ---

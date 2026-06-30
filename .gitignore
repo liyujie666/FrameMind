@@ -1,0 +1,26 @@
+# 构建产物
+/build/
+/out/
+/dist/
+*.user
+
+# IDE
+.vs/
+.vscode/
+.idea/
+CMakeSettings.json
+CMakeUserPresets.json
+
+# 第三方运行时二进制（不入主分支，按团队规范走 LFS 或本地放置）
+# third_party/smartplayer_sdk/lib/
+# third_party/smartplayer_sdk/bin/
+
+# AI 模型文件（体积大，单独获取）
+/models/
+
+# 临时日志
+/tmp_dtmf_log/
+
+# 系统文件
+Thumbs.db
+.DS_Store

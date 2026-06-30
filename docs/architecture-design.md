@@ -831,7 +831,7 @@ ThemeService::setThemeMode(Dark)
 ## 五、项目目录结构
 
 ```
-video_ai_agent/
+FrameMind/                            # 客户端项目（仓库根目录 Frame_Mind/）
 ├── CMakeLists.txt
 ├── README.md
 ├── resources/

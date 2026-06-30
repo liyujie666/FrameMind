@@ -7,14 +7,14 @@
 
 ## 〇、项目关系说明
 
-本项目涉及两个独立仓库：
+本项目即 **`FrameMind`**——基于 `player_sdk`（已有的 FFmpeg + SDL2 视频播放 SDK）构建的上层 Qt 客户端应用。当前仓库根目录为 `Frame_Mind/`，应用代号统一使用 **`FrameMind`**。
 
-| 仓库 | 角色 | 状态 |
+| 组成 | 角色 | 状态 |
 |------|------|------|
-| `player_sdk`（当前仓库） | 底层视频播放 SDK（FFmpeg + SDL2 封装） | 已有 |
-| `video_ai_agent`（新建仓库） | 上层 Qt 客户端应用，依赖 `player_sdk` 产物 | 待开发 |
+| `FrameMind`（当前仓库） | 上层 Qt 客户端应用 + 文档 + 资源 | 待开发 |
+| `player_sdk`（外部依赖） | 底层视频播放 SDK，作为预编译产物（include + lib + dll）引入 `third_party/smartplayer_sdk/` | 已有 |
 
-本开发计划描述的所有里程碑、目录结构、模块均属于 **`video_ai_agent`** 客户端项目。`player_sdk` 作为预编译产物（include 头文件 + lib + dll）被引入客户端的 `third_party/smartplayer_sdk/` 目录。
+本开发计划描述的所有里程碑、目录结构、模块均属于 **`FrameMind`** 客户端项目。
 
 ---
 
@@ -293,7 +293,7 @@ find_package(Qt6 6.9 REQUIRED COMPONENTS
 ## 五、目录结构
 
 ```
-video_ai_agent/                  # 客户端项目
+FrameMind/                       # 客户端项目（当前仓库根目录 Frame_Mind/）
 ├── CMakeLists.txt
 ├── README.md
 ├── docs/                        # 项目文档
@@ -389,7 +389,7 @@ v1.0.0      MVP 发布
 预计耗时: 半天
 
 步骤:
-1. 创建 video_ai_agent 项目目录
+1. 在当前 Frame_Mind 仓库下初始化 FrameMind 工程目录结构（src/ resources/ third_party/ 等）
 2. 写最简单的 CMakeLists.txt，能编出空 MainWindow
 3. 把 SmartPlayer SDK 拷过来，CMake 链接通过
 4. MainWindow 里加一个按钮，点击调用 SmartPlayer 打开测试视频
