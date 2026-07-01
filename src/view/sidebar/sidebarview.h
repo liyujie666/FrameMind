@@ -31,11 +31,14 @@ protected:
 private:
     QToolButton* makeIconButton(const QString& iconPath, const QString& tip);
     void applyThemeColors();
+    void updateIcons();
 
     ThemeService*        m_theme = nullptr;
     QButtonGroup*        m_group = nullptr;
     QList<QToolButton*>  m_navButtons;
     QToolButton*         m_settingsButton = nullptr;
+
+    QStringList           m_navIconPaths;  // 存储导航按钮图标路径
 
     QColor m_bgColor;
     QColor m_hoverBg;

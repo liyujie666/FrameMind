@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="400" height="120" viewBox="0 0 400 120" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="textGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#6366f1"/>
+      <stop offset="50%" stop-color="#8b5cf6"/>
+      <stop offset="100%" stop-color="#22d3ee"/>
+    </linearGradient>
+  </defs>
+  <rect width="400" height="120" fill="#ffffff" rx="12.0"/>
+  <rect x="26.303999999999995" y="16.800000000000004" 
+            width="86.39999999999999" height="86.39999999999999"
+            stroke="#6366f1" stroke-width="2" fill="none" rx="12.959999999999999"/>
+  <polygon points="59.135999999999996,42.72 59.135999999999996,77.28 79.87199999999999,60.0" fill="#6366f1"/>
+  <circle cx="39.263999999999996" cy="29.76" r="8.639999999999999" fill="#f472b6"/>
+  <circle cx="99.74399999999999" cy="29.76" r="8.639999999999999" fill="#22d3ee"/>
+  <circle cx="99.74399999999999" cy="90.24" r="8.639999999999999" fill="#a78bfa"/>
+  <circle cx="69.50399999999999" cy="120.47999999999999" r="6.047999999999999" fill="#22d3ee"/>
+  <text x="122.704" y="78.0" font-family="Arial, sans-serif" font-size="50.4" font-weight="bold">
+    <tspan fill="#0a0a0f">Frame</tspan><tspan fill="url(#textGrad)">Mind</tspan>
+  </text>
+</svg>

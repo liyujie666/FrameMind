@@ -81,6 +81,17 @@ qt_add_executable(FrameMind WIN32
     ${FRAMEMIND_RESOURCES}
 )
 
+# 设置 Windows 任务栏图标
+if(WIN32)
+    set(APP_ICON "${CMAKE_CURRENT_SOURCE_DIR}/resources/icons/app.ico")
+    if(EXISTS "${APP_ICON}")
+        set_target_properties(FrameMind PROPERTIES
+            WIN32_EXECUTABLE TRUE
+            ICON "${APP_ICON}"
+        )
+    endif()
+endif()
+
 target_include_directories(FrameMind PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
 )

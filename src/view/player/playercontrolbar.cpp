@@ -5,12 +5,19 @@
 #include <QToolButton>
 #include <QLabel>
 #include <QComboBox>
+#include <QIcon>
+#include <QSizePolicy>
+
+#include "service/themeservice.h"
 
 PlayerControlBar::PlayerControlBar(QWidget* parent)
     : QWidget(parent)
     , m_position(0)
     , m_duration(0)
     , m_dragging(false)
+    , m_themeService(nullptr)
+    , m_isMuted(false)
+    , m_currentVolume(50)
 {
     setFixedHeight(40);
     setAutoFillBackground(true);
@@ -23,11 +30,11 @@ PlayerControlBar::PlayerControlBar(QWidget* parent)
 
     // 播放 / 暂停
     m_playButton = new QToolButton(this);
-    m_playButton->setText(QStringLiteral("\u25B6"));
     m_playButton->setToolTip(tr("播放/暂停"));
     m_playButton->setAutoRaise(true);
+    m_playButton->setIconSize(QSize(24, 24));
     m_playButton->setStyleSheet(QStringLiteral(
-        "QToolButton { border:none; padding:4px; border-radius:4px; color:#CCCCCC; background:transparent; }"
+        "QToolButton { border:none; padding:4px; border-radius:4px; background:transparent; }"
         "QToolButton:hover { background:rgba(255,255,255,20); }"));
     connect(m_playButton, &QToolButton::clicked, this, &PlayerControlBar::playClicked);
 
@@ -70,15 +77,19 @@ PlayerControlBar::PlayerControlBar(QWidget* parent)
         "QSlider::handle:horizontal { background:#CCCCCC; width:10px; height:10px; margin:-3px 0; border-radius:5px; }"
         "QSlider::sub-page:horizontal { background:#CCCCCC; border-radius:2px; }"));
     connect(m_volumeSlider, &QSlider::valueChanged, this,
-            &PlayerControlBar::volumeChanged);
+            [this](int value) {
+                m_currentVolume = value;
+                m_volumeSlider->setValue(value);
+                updateVolumeIcon(m_isMuted, value);
+            });
 
     // 静音
     m_muteButton = new QToolButton(this);
-    m_muteButton->setText(QStringLiteral("Vol"));
     m_muteButton->setToolTip(tr("静音"));
     m_muteButton->setAutoRaise(true);
+    m_muteButton->setIconSize(QSize(24, 24));
     m_muteButton->setStyleSheet(QStringLiteral(
-        "QToolButton { border:none; padding:4px; border-radius:4px; color:#CCCCCC; background:transparent; font-size:11px; }"
+        "QToolButton { border:none; padding:4px; border-radius:4px; background:transparent; }"
         "QToolButton:hover { background:rgba(255,255,255,20); }"));
     connect(m_muteButton, &QToolButton::clicked, this, &PlayerControlBar::muteClicked);
 
@@ -103,11 +114,11 @@ PlayerControlBar::PlayerControlBar(QWidget* parent)
 
     // 全屏
     m_fullscreenButton = new QToolButton(this);
-    m_fullscreenButton->setText(QStringLiteral("[]"));
     m_fullscreenButton->setToolTip(tr("全屏"));
     m_fullscreenButton->setAutoRaise(true);
+    m_fullscreenButton->setIconSize(QSize(24, 24));
     m_fullscreenButton->setStyleSheet(QStringLiteral(
-        "QToolButton { border:none; padding:4px; border-radius:4px; color:#CCCCCC; background:transparent; font-size:11px; }"
+        "QToolButton { border:none; padding:4px; border-radius:4px; background:transparent; }"
         "QToolButton:hover { background:rgba(255,255,255,20); }"));
 
     layout->addWidget(m_playButton);
@@ -117,6 +128,59 @@ PlayerControlBar::PlayerControlBar(QWidget* parent)
     layout->addWidget(m_volumeSlider);
     layout->addWidget(m_speedCombo);
     layout->addWidget(m_fullscreenButton);
+
+    updateIcons();
+}
+
+void PlayerControlBar::setThemeService(ThemeService* theme)
+{
+    m_themeService = theme;
+    updateIcons();
+}
+
+void PlayerControlBar::updateIcons()
+{
+    // 播放器始终使用亮色图标（在视频播放控件上）
+    // 图标文件使用 play_light.png, pause_light.png, volume_light.png, mute_light.png, fullscreen_light.png
+
+    // 播放/暂停图标
+    updatePlayPauseIcon(m_lastPlayState);
+
+    // 音量图标
+    updateVolumeIcon(m_isMuted, m_currentVolume);
+
+    // 全屏图标
+    QIcon fullscreenIcon(":/icons/fullscreen_light.png");
+    m_fullscreenButton->setIcon(fullscreenIcon);
+}
+
+void PlayerControlBar::updatePlayPauseIcon(PlayerState state)
+{
+    m_lastPlayState = state;
+    if (state == PlayerState::Playing) {
+        QIcon pauseIcon(":/icons/pause_light.png");
+        m_playButton->setIcon(pauseIcon);
+    } else {
+        QIcon playIcon(":/icons/play_light.png");
+        m_playButton->setIcon(playIcon);
+    }
+}
+
+void PlayerControlBar::updateVolumeIcon(bool muted, int volume)
+{
+    if (muted || volume == 0) {
+        QIcon muteIcon(":/icons/mute_light.png");
+        m_muteButton->setIcon(muteIcon);
+    } else {
+        QIcon volumeIcon(":/icons/volume_light.png");
+        m_muteButton->setIcon(volumeIcon);
+    }
+}
+
+void PlayerControlBar::setMuted(bool muted)
+{
+    m_isMuted = muted;
+    updateVolumeIcon(muted, m_currentVolume);
 }
 
 QString PlayerControlBar::formatTime(int64_t ms)
@@ -158,11 +222,7 @@ void PlayerControlBar::setDuration(int64_t durationMs)
 
 void PlayerControlBar::setPlayState(PlayerState state)
 {
-    if (state == PlayerState::Playing) {
-        m_playButton->setText(QStringLiteral("\u23F8"));  // ⏸
-    } else {
-        m_playButton->setText(QStringLiteral("\u25B6"));  // ▶
-    }
+    updatePlayPauseIcon(state);
 }
 
 void PlayerControlBar::setVolumeDisplay(int vol)

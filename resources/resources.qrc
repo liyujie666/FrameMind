@@ -1,5 +1,6 @@
 <RCC>
     <qresource prefix="/">
+        <file>icons/app.ico</file>
         <file>icons/avatar.svg</file>
         <file>icons/chat.svg</file>
         <file>icons/files.svg</file>
@@ -7,5 +8,47 @@
         <file>icons/settings.svg</file>
         <file>styles/dark.qss</file>
         <file>styles/light.qss</file>
+        <file>icons/close_dark.png</file>
+        <file>icons/close_light.png</file>
+        <file>icons/dialog_dark.png</file>
+        <file>icons/dialog_light.png</file>
+        <file>icons/down_dark.png</file>
+        <file>icons/down_light.png</file>
+        <file>icons/emptyscreen_dark.png</file>
+        <file>icons/emptyscreen_light.png</file>
+        <file>icons/file_dark.png</file>
+        <file>icons/file_light.png</file>
+        <file>icons/fullscreen_dark.png</file>
+        <file>icons/fullscreen_light.png</file>
+        <file>icons/knowledge_dark.png</file>
+        <file>icons/knowledge_light.png</file>
+        <file>icons/left_dark.png</file>
+        <file>icons/left_light.png</file>
+        <file>icons/lgo_dark.svg</file>
+        <file>icons/logo_dark_64.svg</file>
+        <file>icons/logo_light.svg</file>
+        <file>icons/logo_light_64.svg</file>
+        <file>icons/logo_word_dark.svg</file>
+        <file>icons/logo_word_light.svg</file>
+        <file>icons/maxsize_dark.png</file>
+        <file>icons/maxsize_light.png</file>
+        <file>icons/minimize_dark.png</file>
+        <file>icons/minimize_light.png</file>
+        <file>icons/moon.png</file>
+        <file>icons/mute_dark.png</file>
+        <file>icons/mute_light.png</file>
+        <file>icons/pause_dark.png</file>
+        <file>icons/pause_light.png</file>
+        <file>icons/play_dark.png</file>
+        <file>icons/play_light.png</file>
+        <file>icons/right_dark.png</file>
+        <file>icons/right_light.png</file>
+        <file>icons/setting_dark.png</file>
+        <file>icons/setting_light.png</file>
+        <file>icons/sun.png</file>
+        <file>icons/up_dark.png</file>
+        <file>icons/up_light.png</file>
+        <file>icons/volume_dark.png</file>
+        <file>icons/volume_light.png</file>
     </qresource>
 </RCC>

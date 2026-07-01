@@ -41,14 +41,21 @@ SidebarView::SidebarView(QWidget* parent)
     m_group = new QButtonGroup(this);
     m_group->setExclusive(true);
 
+    // 存储图标路径（默认亮色主题，图标为深色）
+    m_navIconPaths = {
+        ":/icons/dialog_light.png",
+        ":/icons/file_light.png",
+        ":/icons/knowledge_light.png",
+    };
+
     struct NavDef { const char* icon; const char* tip; };
     const NavDef navs[] = {
-        { ":/icons/chat.svg",      "对话" },
-        { ":/icons/files.svg",     "文件" },
-        { ":/icons/knowledge.svg", "知识库" },
+        { ":/icons/dialog_light.png",      "对话" },
+        { ":/icons/file_light.png",     "文件" },
+        { ":/icons/knowledge_light.png", "知识库" },
     };
-    for (const auto& def : navs) {
-        auto* btn = makeIconButton(QString::fromUtf8(def.icon), tr(def.tip));
+    for (int i = 0; i < sizeof(navs)/sizeof(navs[0]); ++i) {
+        auto* btn = makeIconButton(QString::fromUtf8(navs[i].icon), tr(navs[i].tip));
         m_group->addButton(btn);
         m_navButtons.append(btn);
         layout->addWidget(btn, 0, Qt::AlignHCenter);
@@ -56,12 +63,14 @@ SidebarView::SidebarView(QWidget* parent)
     }
     if (!m_navButtons.isEmpty()) {
         m_navButtons.first()->setChecked(true);
+        // 对话图标稍大
+        m_navButtons.first()->setIconSize(QSize(28, 28));
     }
 
     layout->addStretch(1);
 
     // 底部设置按钮
-    m_settingsButton = makeIconButton(QStringLiteral(":/icons/settings.svg"),
+    m_settingsButton = makeIconButton(QStringLiteral(":/icons/setting_light.png"),
                                       tr("设置"));
     m_settingsButton->setCheckable(false);
     layout->addWidget(m_settingsButton, 0, Qt::AlignHCenter);
@@ -84,8 +93,9 @@ void SidebarView::setThemeService(ThemeService* theme)
     m_theme = theme;
     if (m_theme) {
         connect(m_theme, &ThemeService::themeChanged,
-                this, [this]() { applyThemeColors(); update(); });
+                this, [this]() { applyThemeColors(); updateIcons(); update(); });
         applyThemeColors();
+        updateIcons();
         update();
     }
 }
@@ -94,8 +104,11 @@ void SidebarView::applyThemeColors()
 {
     if (m_theme) {
         m_bgColor   = m_theme->color(QStringLiteral("sidebar"));
-        m_hoverBg   = m_theme->color(QStringLiteral("surfaceVariant"));
         m_indicator = m_theme->color(QStringLiteral("primary"));
+        // 亮色主题用浅灰色背景，暗色主题用 surfaceVariant
+        m_hoverBg = m_theme->isDark()
+                     ? m_theme->color(QStringLiteral("surfaceVariant"))
+                     : QColor("#E8E8E8");
     }
 
     QPalette pal = palette();
@@ -109,6 +122,37 @@ void SidebarView::applyThemeColors()
         .arg(m_hoverBg.name());
     for (auto* btn : m_navButtons) btn->setStyleSheet(qss);
     if (m_settingsButton) m_settingsButton->setStyleSheet(qss);
+}
+
+void SidebarView::updateIcons()
+{
+    if (!m_theme) return;
+
+    const bool isDark = m_theme->isDark();
+
+    // 亮色主题用深色图标（与背景对比），暗色主题用浅色图标
+    const QStringList lightBgIcons = {
+        ":/icons/dialog_dark.png",
+        ":/icons/file_dark.png",
+        ":/icons/knowledge_dark.png",
+    };
+    const QStringList darkBgIcons = {
+        ":/icons/dialog_light.png",
+        ":/icons/file_light.png",
+        ":/icons/knowledge_light.png",
+    };
+    const QStringList& icons = isDark ? darkBgIcons : lightBgIcons;
+
+    for (int i = 0; i < m_navButtons.size() && i < icons.size(); ++i) {
+        m_navButtons[i]->setIcon(QIcon(icons[i]));
+        m_navIconPaths[i] = icons[i];
+    }
+
+    // 设置按钮图标
+    const QString settingsIcon = isDark ? ":/icons/setting_light.png" : ":/icons/setting_dark.png";
+    if (m_settingsButton) {
+        m_settingsButton->setIcon(QIcon(settingsIcon));
+    }
 }
 
 QToolButton* SidebarView::makeIconButton(const QString& iconPath, const QString& tip)

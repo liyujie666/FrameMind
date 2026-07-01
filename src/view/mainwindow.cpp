@@ -1,5 +1,7 @@
 #include "view/mainwindow.h"
 
+#include "view/common/customtitlebar.h"
+#include "view/common/settingsdialog.h"
 #include "view/sidebar/sidebarview.h"
 #include "view/player/playerview.h"
 #include "view/chat/chatview.h"
@@ -34,6 +36,7 @@
 #include <QFileInfo>
 #include <QIcon>
 #include <QToolButton>
+#include <QResizeEvent>
 
 namespace {
 
@@ -160,27 +163,47 @@ MainWindow::MainWindow(PlayerViewModel* playerVM,
     , m_theme(theme)
 {
     setWindowTitle(QStringLiteral("Frame Mind"));
-    resize(1360, 820);
-    setMinimumSize(1100, 700);
+    resize(1400, 900);
+    // 只设最小尺寸
+    setMinimumSize(960, 600);
+
+    // 去掉原生窗口标题栏
+    setWindowFlags(windowFlags() | Qt::FramelessWindowHint);
 
     auto* central = new QWidget(this);
-    auto* rootLayout = new QHBoxLayout(central);
+    central->setAutoFillBackground(true);
+    auto* rootLayout = new QVBoxLayout(central);
     rootLayout->setContentsMargins(0, 0, 0, 0);
     rootLayout->setSpacing(0);
 
-    m_sidebar = new SidebarView(central);
+    // 顶部自定义标题栏
+    m_titleBar = new CustomTitleBar(m_theme, this);
+    rootLayout->addWidget(m_titleBar);
+
+    // 主内容区域（左侧导航 + 页面栈）
+    auto* contentWidget = new QWidget(central);
+    contentWidget->setAttribute(Qt::WA_StyledBackground, false);
+    auto* contentLayout = new QHBoxLayout(contentWidget);
+    contentLayout->setContentsMargins(0, 0, 0, 0);
+    contentLayout->setSpacing(0);
+
+    m_sidebar = new SidebarView(contentWidget);
     if (m_theme) m_sidebar->setThemeService(m_theme);
 
-    m_pageStack = new QStackedWidget(central);
+    m_pageStack = new QStackedWidget(contentWidget);
     m_pageStack->addWidget(buildChatPage());      // index 0：对话页
     m_pageStack->addWidget(buildFilePage());      // index 1：文件列表页
     m_pageStack->addWidget(buildKnowledgePage()); // index 2：知识库页（占位）
 
-    rootLayout->addWidget(m_sidebar);
-    rootLayout->addWidget(m_pageStack, 1);
+    contentLayout->addWidget(m_sidebar);
+    contentLayout->addWidget(m_pageStack, 1);
+
+    rootLayout->addWidget(contentWidget, 1);
     setCentralWidget(central);
 
-    buildMenu();
+    // 连接设置按钮信号
+    connect(m_sidebar, &SidebarView::settingsClicked,
+            this, &MainWindow::onOpenSettings);
 
     if (m_playerView && m_playerVM) {
         m_playerView->setViewModel(m_playerVM);
@@ -210,6 +233,7 @@ QWidget* MainWindow::buildChatPage()
 {
     m_chatPage = new QWidget(this);
     m_chatPage->setAttribute(Qt::WA_StyledBackground, true);
+    m_chatPage->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
     // 页面底色由 onThemeChanged 应用
 
     auto* pageLayout = new QHBoxLayout(m_chatPage);
@@ -217,48 +241,51 @@ QWidget* MainWindow::buildChatPage()
     pageLayout->setSpacing(12);
 
     // ---- 左侧列（播放器容器 + 分析容器）----
-    auto* left = new QWidget(m_chatPage);
-    left->setAttribute(Qt::WA_StyledBackground, false);
-    auto* leftLayout = new QVBoxLayout(left);
+    m_leftContainer = new QWidget(m_chatPage);
+    m_leftContainer->setAttribute(Qt::WA_StyledBackground, false);
+    m_leftContainer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    auto* leftLayout = new QVBoxLayout(m_leftContainer);
     leftLayout->setContentsMargins(0, 0, 0, 0);
-    leftLayout->setSpacing(12);
+    leftLayout->setSpacing(8);
 
     // 播放器容器（ThemedPanel 圆角卡片，内嵌 PlayerView）
-    m_playerPanel = new ThemedPanel(left);
+    m_playerPanel = new ThemedPanel(m_leftContainer);
     m_playerPanel->setRadius(16);
+    m_playerPanel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
     if (m_theme) m_playerPanel->setThemeService(m_theme);
 
     auto* playerPanelLayout = new QVBoxLayout(m_playerPanel);
     playerPanelLayout->setContentsMargins(16, 16, 16, 16);
-    playerPanelLayout->setAlignment(Qt::AlignCenter);
+    playerPanelLayout->setSpacing(0);
 
     m_playerView = new PlayerView(m_playerPanel);
     if (m_theme) m_playerView->setThemeService(m_theme);
-    playerPanelLayout->addWidget(m_playerView, 0, Qt::AlignHCenter | Qt::AlignTop);
+    playerPanelLayout->addWidget(m_playerView, 1); // stretch=1 填满剩余空间
 
     // 分析容器
-    m_analysisPanel = buildAnalysisPanel(left);
+    m_analysisPanel = buildAnalysisPanel(m_leftContainer);
 
-    leftLayout->addWidget(m_playerPanel, 1);
-    leftLayout->addWidget(m_analysisPanel, 0);
+    leftLayout->addWidget(m_playerPanel, 65);
+    leftLayout->addWidget(m_analysisPanel, 35);
 
     // ---- 右侧：ChatView 圆角卡片 ----
     m_chatView = new ChatView(m_chatPage);
+    m_chatView->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
     m_chatView->setMinimumWidth(340);
     m_chatView->setMaximumWidth(520);
 
-    pageLayout->addWidget(left, 3);
+    pageLayout->addWidget(m_leftContainer, 3);
     pageLayout->addWidget(m_chatView, 2);
 
     return m_chatPage;
 }
 
-QWidget* MainWindow::buildAnalysisPanel(QWidget* parent)
+ThemedPanel* MainWindow::buildAnalysisPanel(QWidget* parent)
 {
     auto* panel = new ThemedPanel(parent);
     panel->setRadius(16);
     panel->setMinimumHeight(200);
-    panel->setMaximumHeight(240);
+    panel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     if (m_theme) panel->setThemeService(m_theme);
 
     auto* v = new QVBoxLayout(panel);
@@ -341,67 +368,23 @@ QWidget* MainWindow::buildKnowledgePage()
     return page;
 }
 
-void MainWindow::buildMenu()
+void MainWindow::onOpenSettings()
 {
-    auto* fileMenu = menuBar()->addMenu(tr("文件"));
+    if (!m_settings) return;
 
-    auto* openAction = fileMenu->addAction(tr("打开视频..."));
-    openAction->setShortcut(QKeySequence::Open);
-    connect(openAction, &QAction::triggered, this, &MainWindow::onOpenVideo);
+    auto* dlg = new SettingsDialog(m_theme, m_settings, m_agent, this);
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
 
-    auto* aiAction = fileMenu->addAction(tr("AI 设置..."));
-    connect(aiAction, &QAction::triggered, this, &MainWindow::onAiSettings);
+    // 连接设置对话框的打开视频信号
+    connect(dlg, &SettingsDialog::openVideoRequested,
+            this, &MainWindow::onOpenVideoPath);
 
-    fileMenu->addSeparator();
-    auto* quitAction = fileMenu->addAction(tr("退出"));
-    quitAction->setShortcut(QKeySequence::Quit);
-    connect(quitAction, &QAction::triggered, this, &QWidget::close);
-
-    // 外观菜单：主题切换
-    auto* viewMenu = menuBar()->addMenu(tr("外观"));
-    m_themeGroup = new QActionGroup(this);
-    m_themeGroup->setExclusive(true);
-
-    struct Item { const char* text; int mode; };
-    const Item items[] = {
-        { QT_TR_NOOP("跟随系统"), 0 },
-        { QT_TR_NOOP("亮色"),      1 },
-        { QT_TR_NOOP("暗色"),      2 },
-    };
-    for (const auto& it : items) {
-        auto* act = viewMenu->addAction(tr(it.text));
-        act->setCheckable(true);
-        m_themeGroup->addAction(act);
-        const int mode = it.mode;
-        connect(act, &QAction::triggered, this,
-                [this, mode]() { onSelectThemeMode(mode); });
-        if (m_theme) {
-            const int cur = static_cast<int>(m_theme->themeMode());
-            if (cur == mode) act->setChecked(true);
-        } else if (mode == 2) {
-            act->setChecked(true);
-        }
-    }
-}
-
-void MainWindow::onSelectThemeMode(int mode)
-{
-    if (!m_theme) return;
-    m_theme->setThemeMode(static_cast<ThemeService::ThemeMode>(mode));
+    dlg->exec();
 }
 
 void MainWindow::onThemeChanged(bool /*isDark*/)
 {
     applyPageBackground();
-
-    // 同步 QActionGroup 勾选态（例如通过 API 切换主题时）
-    if (m_themeGroup && m_theme) {
-        const int cur = static_cast<int>(m_theme->themeMode());
-        const auto actions = m_themeGroup->actions();
-        for (int i = 0; i < actions.size(); ++i) {
-            actions[i]->setChecked(i == cur);
-        }
-    }
 
     // 重建 Analysis Tab 内容（简单粗暴刷新占位配色）
     if (m_analysisStack) {
@@ -461,47 +444,35 @@ void MainWindow::onOpenVideoPath(const QString& path)
     }
 }
 
-void MainWindow::onAiSettings()
+void MainWindow::resizeEvent(QResizeEvent* event)
 {
-    if (!m_settings) return;
+    QMainWindow::resizeEvent(event);
 
-    QDialog dlg(this);
-    dlg.setWindowTitle(tr("AI 设置"));
-    dlg.setMinimumWidth(440);
+    if (m_resizeGuard > 0) return;
+    ++m_resizeGuard;
 
-    auto* form = new QFormLayout(&dlg);
-    auto* endpointEdit = new QLineEdit(&dlg);
-    endpointEdit->setText(m_settings->get(QStringLiteral("llm.endpoint"),
-                                          QStringLiteral("https://api.openai.com/v1")));
-    auto* modelEdit = new QLineEdit(&dlg);
-    modelEdit->setText(m_settings->get(QStringLiteral("llm.model"),
-                                       QStringLiteral("gpt-4o")));
-    auto* keyEdit = new QLineEdit(&dlg);
-    keyEdit->setEchoMode(QLineEdit::Password);
-    keyEdit->setText(m_settings->secretGet(QStringLiteral("secret.llm.api_key")));
-    keyEdit->setPlaceholderText(tr("sk-...（仅存于系统密钥库，不入数据库）"));
-
-    form->addRow(tr("Endpoint"), endpointEdit);
-    form->addRow(tr("模型"), modelEdit);
-    form->addRow(tr("API Key"), keyEdit);
-
-    auto* buttons = new QDialogButtonBox(
-        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
-    form->addRow(buttons);
-    connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
-    connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
-
-    if (dlg.exec() != QDialog::Accepted) return;
-
-    const QString endpoint = endpointEdit->text().trimmed();
-    const QString model = modelEdit->text().trimmed();
-    m_settings->set(QStringLiteral("llm.endpoint"), endpoint);
-    m_settings->set(QStringLiteral("llm.model"), model);
-    m_settings->secretSet(QStringLiteral("secret.llm.api_key"),
-                          keyEdit->text().trimmed());
-
-    if (m_agent) {
-        m_agent->setEndpoint(endpoint);
-        m_agent->setModel(model);
+    // 比例分配：左侧播放器+分析占 60%，右侧聊天占 40%
+    if (!m_leftContainer || !m_chatView) {
+        --m_resizeGuard;
+        return;
     }
+
+    int w = event->size().width();
+    const int pad = 16;
+    const int gap = 12;
+    const int availW = w - 2 * pad - gap;
+    const int leftW = qRound(availW * 0.6);
+    const int chatW = availW - leftW;
+
+    const int chatMinW = 340;
+    const int leftMinW = 200;
+    if (leftW < leftMinW || chatW < chatMinW) {
+        --m_resizeGuard;
+        return;
+    }
+
+    // 只设置最小宽度，高度由布局自适应
+    m_analysisPanel->setMinimumWidth(leftW - 16); // 留出边距
+
+    --m_resizeGuard;
 }

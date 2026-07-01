@@ -11,23 +11,20 @@ class QToolButton;
 class QLabel;
 class QComboBox;
 class QPaintEvent;
+class ThemeService;
 
-/**
- * 播放控制栏：进度条 + 播放/暂停 + 时长 + 音量 + 倍速 + 全屏占位。
- *
- * 控制栏不直接调用 PlayerService，所有用户操作通过信号上抛给 ViewModel；
- * 位置/时长/状态由 ViewModel 推送（setPosition / setDuration / setPlayState）。
- */
 class PlayerControlBar : public QWidget {
     Q_OBJECT
 public:
     explicit PlayerControlBar(QWidget* parent = nullptr);
+    void setThemeService(ThemeService* theme);
 
 public slots:
     void setPosition(int64_t posMs);
     void setDuration(int64_t durationMs);
     void setPlayState(PlayerState state);
     void setVolumeDisplay(int vol);
+    void setMuted(bool muted);
 
 signals:
     void seekRequested(int64_t posMs);
@@ -39,6 +36,9 @@ signals:
 private:
     static QString formatTime(int64_t ms);
     void updateTimeLabel();
+    void updateIcons();
+    void updatePlayPauseIcon(PlayerState state);
+    void updateVolumeIcon(bool muted, int volume);
 
     QSlider*     m_positionSlider = nullptr;
     QToolButton* m_playButton = nullptr;
@@ -47,6 +47,10 @@ private:
     QLabel*      m_timeLabel = nullptr;
     QSlider*     m_volumeSlider = nullptr;
     QComboBox*   m_speedCombo = nullptr;
+    ThemeService* m_themeService = nullptr;
+    bool         m_isMuted = false;
+    int          m_currentVolume = 50;
+    PlayerState  m_lastPlayState = PlayerState::Stopped;
 
     int64_t m_position = 0;
     int64_t m_duration = 0;
