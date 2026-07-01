@@ -8,8 +8,10 @@
 #include "service/playerservice.h"
 #include "service/agentservice.h"
 #include "service/conversationservice.h"
+#include "service/filemanagerservice.h"
 #include "viewmodel/playerviewmodel.h"
 #include "viewmodel/chatviewmodel.h"
+#include "viewmodel/filelistviewmodel.h"
 
 #include <QStandardPaths>
 #include <QDir>
@@ -37,6 +39,7 @@ void DIContainer::initialize()
     m_agentService    = std::make_unique<AgentService>(m_network.get(),
                                                        m_settingsService.get());
     m_convService     = std::make_unique<ConversationService>(m_db);
+    m_fileService     = std::make_unique<FileManagerService>(m_db);
 
     // ViewModels
     m_playerVM = std::make_unique<PlayerViewModel>(m_playerService.get(),
@@ -44,4 +47,7 @@ void DIContainer::initialize()
     m_chatVM   = std::make_unique<ChatViewModel>(m_agentService.get(),
                                                  m_convService.get(),
                                                  m_eventBus);
+    m_fileListVM = std::make_unique<FileListViewModel>(m_fileService.get(),
+                                                       m_eventBus,
+                                                       m_playerService.get());
 }

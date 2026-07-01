@@ -1,11 +1,15 @@
 /* FrameMind Light Theme - based on client_ui_design.md color scheme */
 
-QMainWindow {
+/* 主窗口 + 页面容器统一背景；子 widget 背景由自身控制，避免覆盖 ThemedPanel 等自绘容器 */
+QMainWindow,
+QMainWindow > QWidget,
+QStackedWidget,
+QStackedWidget > QWidget {
     background-color: #F8F9FA;
+    color: #1A1A1A;
 }
 
 QWidget {
-    background-color: #F8F9FA;
     color: #1A1A1A;
 }
 

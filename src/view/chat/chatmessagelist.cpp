@@ -16,13 +16,15 @@ ChatMessageList::ChatMessageList(QWidget* parent)
     setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     setFrameShape(QFrame::NoFrame);
     setBackgroundRole(QPalette::NoRole);
+    // 背景透明：由外层 ChatView 圆角卡片提供底色
     setStyleSheet(QStringLiteral(
-        "QScrollArea { background:#0D1117; border:none; }"
-        "QWidget#container { background:#0D1117; }"));
+        "QScrollArea { background:transparent; border:none; }"
+        "QWidget#chatMessageContainer { background:transparent; }"));
 
     m_container = new QWidget(this);
-    m_container->setObjectName(QStringLiteral("container"));
-    m_container->setAutoFillBackground(true);
+    m_container->setObjectName(QStringLiteral("chatMessageContainer"));
+    m_container->setAutoFillBackground(false);
+    m_container->setAttribute(Qt::WA_StyledBackground, false);
     m_layout = new QVBoxLayout(m_container);
     m_layout->setContentsMargins(16, 16, 16, 16);
     m_layout->setSpacing(12);

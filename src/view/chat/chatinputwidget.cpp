@@ -11,9 +11,9 @@ ChatInputWidget::ChatInputWidget(QWidget* parent)
     : QWidget(parent)
     , m_streaming(false)
 {
-    setAutoFillBackground(true);
-    setStyleSheet(QStringLiteral(
-        "background:#1E1E2E;"));
+    // 背景透明，跟随外层 ChatView 圆角卡片底色
+    setAutoFillBackground(false);
+    setAttribute(Qt::WA_StyledBackground, false);
 
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(12, 10, 12, 10);
