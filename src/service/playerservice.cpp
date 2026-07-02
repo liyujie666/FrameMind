@@ -207,7 +207,10 @@ void PlayerService::onSdkVideoFrame(const uint8_t* data, int width, int height,
 {
     // 1. 转 QImage（独立数据）
     QImage img = ImageProcessor::fromVideoFrame(data, width, height, format);
-    if (img.isNull()) return;
+    if (img.isNull()) {
+        qWarning() << "[PlayerService] Frame conversion failed";
+        return;
+    }
 
     // 2. 缓存最近一帧
     {

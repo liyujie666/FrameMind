@@ -14,6 +14,7 @@
 
 class NetworkClient;
 class SettingsService;
+class LLMProviderService;
 
 /**
  * AI 智能体交互核心（M2：无 Tool 版本）。
@@ -31,6 +32,7 @@ class AgentService : public QObject {
 public:
     explicit AgentService(NetworkClient* network,
                           SettingsService* settings,
+                          LLMProviderService* providers,
                           QObject* parent = nullptr);
 
     void sendMessage(const QString& conversationId,
@@ -61,10 +63,14 @@ private:
     static QJsonObject makeUserMessage(const QString& text,
                                        const QList<QImage>& frames);
 
-    NetworkClient*   m_network = nullptr;
-    SettingsService* m_settings = nullptr;
-    QString          m_model;
-    QString          m_endpoint;
+    void applyActiveProvider();
+
+    NetworkClient*       m_network = nullptr;
+    SettingsService*     m_settings = nullptr;
+    LLMProviderService*  m_providers = nullptr;
+    QString              m_model;
+    QString              m_endpoint;
+    QString              m_apiKey;
 
     // 每会话历史（不含 system；元素为 OpenAI message 对象）
     QHash<QString, QJsonArray> m_histories;

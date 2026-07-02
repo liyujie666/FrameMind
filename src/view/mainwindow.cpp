@@ -152,6 +152,7 @@ MainWindow::MainWindow(PlayerViewModel* playerVM,
                        AgentService* agent,
                        FileManagerService* fileService,
                        ThemeService* theme,
+                       LLMProviderService* providers,
                        QWidget* parent)
     : QMainWindow(parent)
     , m_playerVM(playerVM)
@@ -161,6 +162,7 @@ MainWindow::MainWindow(PlayerViewModel* playerVM,
     , m_agent(agent)
     , m_fileService(fileService)
     , m_theme(theme)
+    , m_providers(providers)
 {
     setWindowTitle(QStringLiteral("Frame Mind"));
     resize(1400, 900);
@@ -372,7 +374,7 @@ void MainWindow::onOpenSettings()
 {
     if (!m_settings) return;
 
-    auto* dlg = new SettingsDialog(m_theme, m_settings, m_agent, this);
+    auto* dlg = new SettingsDialog(m_theme, m_settings, m_agent, m_providers, this);
     dlg->setAttribute(Qt::WA_DeleteOnClose);
 
     // 连接设置对话框的打开视频信号

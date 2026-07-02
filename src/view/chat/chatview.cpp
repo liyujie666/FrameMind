@@ -140,18 +140,33 @@ void ChatView::applyThemeColors()
         "QToolButton:hover { color:%2; background:%3; }")
         .arg(m_textSecondary.name(), m_textPrimary.name(), m_surfaceVariant.name()));
 
-    // 消息列表滚动条
+    // 消息列表滚动条 - 现代简约风格
     const QColor scrollThumb = m_theme
         ? m_theme->color(QStringLiteral("scrollThumb"))
         : QColor("#3A3A4A");
+    const QColor scrollTrack = m_surfaceVariant.lighter(105);
+    const QString thumbHover = scrollThumb.lighter(130).name();
+    const QString thumbPressed = scrollThumb.lighter(160).name();
     m_messageList->setStyleSheet(QString(
         "QScrollArea { background:transparent; border:none; }"
         "QScrollArea > QWidget > QWidget { background:transparent; }"
-        "QScrollBar:vertical { background:transparent; width:8px; margin:0; }"
-        "QScrollBar::handle:vertical { background:%1; border-radius:4px; }"
+        "QScrollBar:vertical {"
+        "    background:transparent;"
+        "    width:10px;"
+        "    margin:4px 2px 4px 2px;"
+        "    border:none;"
+        "}"
+        "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height:0; }"
+        "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background:transparent; }"
+        "QScrollBar::handle:vertical {"
+        "    background:%1;"
+        "    border-radius:5px;"
+        "    min-height:40px;"
+        "    margin:0 2px;"
+        "}"
         "QScrollBar::handle:vertical:hover { background:%2; }"
-        "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height:0; }")
-        .arg(scrollThumb.name(), scrollThumb.lighter(120).name()));
+        "QScrollBar::handle:vertical:pressed { background:%3; }")
+        .arg(scrollThumb.name(), thumbHover, thumbPressed));
 }
 
 void ChatView::paintEvent(QPaintEvent* /*event*/)

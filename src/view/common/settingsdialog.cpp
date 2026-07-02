@@ -2,6 +2,8 @@
 #include "service/themeservice.h"
 #include "service/settingsservice.h"
 #include "service/agentservice.h"
+#include "service/llmproviderservice.h"
+#include "model/llmprovider.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -20,15 +22,18 @@
 #include <QScrollArea>
 #include <QFileInfo>
 #include <QApplication>
+#include <QComboBox>
 
 SettingsDialog::SettingsDialog(ThemeService* theme,
                                SettingsService* settings,
                                AgentService* agent,
+                               LLMProviderService* providers,
                                QWidget* parent)
     : QDialog(parent)
     , m_theme(theme)
     , m_settings(settings)
     , m_agent(agent)
+    , m_providers(providers)
 {
     setWindowTitle(tr("设置"));
     setMinimumSize(700, 480);
@@ -138,6 +143,14 @@ SettingsDialog::SettingsDialog(ThemeService* theme,
     buildAiPage(aiPage);
     m_contentStack->addWidget(aiPage);
 
+    // 监听提供商变更以更新 UI
+    if (m_providers) {
+        connect(m_providers, &LLMProviderService::activeProviderChanged,
+                this, &SettingsDialog::refreshProviderFields);
+        connect(m_providers, &LLMProviderService::connectionTestResult,
+                this, &SettingsDialog::onConnectionTestResult);
+    }
+
     // 信号连接
     connect(m_navList, &QListWidget::currentRowChanged,
             this, &SettingsDialog::onNavItemClicked);
@@ -242,75 +255,333 @@ void SettingsDialog::buildThemePage(QWidget* parent)
 
 void SettingsDialog::buildAiPage(QWidget* parent)
 {
-    auto* layout = new QVBoxLayout(parent);
-    layout->setContentsMargins(24, 24, 24, 24);
-    layout->setSpacing(20);
+    auto* mainLayout = new QVBoxLayout(parent);
+    mainLayout->setContentsMargins(24, 24, 24, 24);
+    mainLayout->setSpacing(20);
 
     // 页面标题
     auto* titleLabel = new QLabel(tr("AI 设置"), parent);
     titleLabel->setObjectName("pageTitle");
-    layout->addWidget(titleLabel);
+    mainLayout->addWidget(titleLabel);
 
-    // 表单布局
+    // 提供商选择
+    auto* providerLayout = new QHBoxLayout();
+    providerLayout->setSpacing(12);
+
+    auto* providerLabel = new QLabel(tr("提供商"), parent);
+    providerLabel->setObjectName("formLabel");
+    providerLayout->addWidget(providerLabel);
+
+    m_providerCombo = new QComboBox(parent);
+    m_providerCombo->setObjectName("providerCombo");
+    m_providerCombo->setFixedHeight(36);
+    m_providerCombo->setMinimumWidth(200);
+
+    // 填充提供商列表
+    if (m_providers) {
+        const QVector<LLMProvider> providers = m_providers->allProviders();
+        for (const LLMProvider& p : providers) {
+            m_providerCombo->addItem(p.name, p.id);
+        }
+        // 设置当前激活的提供商
+        const QString activeId = m_providers->activeProviderId();
+        const int idx = m_providerCombo->findData(activeId);
+        if (idx >= 0) {
+            m_providerCombo->setCurrentIndex(idx);
+        }
+    }
+
+    connect(m_providerCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &SettingsDialog::onProviderChanged);
+
+    providerLayout->addWidget(m_providerCombo, 1);
+    mainLayout->addLayout(providerLayout);
+
+    // 配置表单
     auto* form = new QFormLayout();
     form->setSpacing(16);
     form->setLabelAlignment(Qt::AlignLeft);
 
     // Endpoint
-    auto* endpointEdit = new QLineEdit(parent);
-    endpointEdit->setObjectName("inputField");
-    endpointEdit->setFixedHeight(36);
-    endpointEdit->setPlaceholderText(tr("https://api.openai.com/v1"));
-    if (m_settings) {
-        endpointEdit->setText(m_settings->get(QStringLiteral("llm.endpoint"),
-                                             QStringLiteral("https://api.openai.com/v1")));
-    }
-    form->addRow(tr("Endpoint"), endpointEdit);
+    auto* endpointLabel = new QLabel(tr("API 端点"), parent);
+    endpointLabel->setObjectName("formLabel");
+    m_endpointEdit = new QLineEdit(parent);
+    m_endpointEdit->setObjectName("inputField");
+    m_endpointEdit->setFixedHeight(36);
+    m_endpointEdit->setPlaceholderText(tr("https://api.openai.com/v1"));
+    form->addRow(endpointLabel, m_endpointEdit);
 
     // 模型
-    auto* modelEdit = new QLineEdit(parent);
-    modelEdit->setObjectName("inputField");
-    modelEdit->setFixedHeight(36);
-    modelEdit->setPlaceholderText(tr("gpt-4o"));
-    if (m_settings) {
-        modelEdit->setText(m_settings->get(QStringLiteral("llm.model"),
-                                          QStringLiteral("gpt-4o")));
-    }
-    form->addRow(tr("模型"), modelEdit);
+    auto* modelLabel = new QLabel(tr("模型"), parent);
+    modelLabel->setObjectName("formLabel");
+    m_modelCombo = new QComboBox(parent);
+    m_modelCombo->setObjectName("modelCombo");
+    m_modelCombo->setFixedHeight(36);
+    m_modelCombo->setEditable(true);
+    m_modelCombo->setMinimumWidth(180);
+    form->addRow(modelLabel, m_modelCombo);
 
     // API Key
-    auto* keyEdit = new QLineEdit(parent);
-    keyEdit->setObjectName("inputField");
-    keyEdit->setEchoMode(QLineEdit::Password);
-    keyEdit->setFixedHeight(36);
-    keyEdit->setPlaceholderText(tr("sk-...（仅存于系统密钥库）"));
-    if (m_settings) {
-        keyEdit->setText(m_settings->secretGet(QStringLiteral("secret.llm.api_key")));
-    }
-    form->addRow(tr("API Key"), keyEdit);
+    auto* keyLabel = new QLabel(tr("API Key"), parent);
+    keyLabel->setObjectName("formLabel");
+    m_apiKeyEdit = new QLineEdit(parent);
+    m_apiKeyEdit->setObjectName("inputField");
+    m_apiKeyEdit->setEchoMode(QLineEdit::Password);
+    m_apiKeyEdit->setFixedHeight(36);
+    m_apiKeyEdit->setPlaceholderText(tr("sk-...（仅存于系统密钥库）"));
+    form->addRow(keyLabel, m_apiKeyEdit);
 
-    layout->addLayout(form);
+    mainLayout->addLayout(form);
+
+    // 状态提示
+    m_providerStatusLabel = new QLabel(parent);
+    m_providerStatusLabel->setObjectName("statusLabel");
+    mainLayout->addWidget(m_providerStatusLabel);
+
+    // 测试连接按钮
+    auto* testBtnLayout = new QHBoxLayout();
+    testBtnLayout->addStretch();
+
+    m_testConnectionBtn = new QPushButton(tr("测试连接"), parent);
+    m_testConnectionBtn->setObjectName("secondaryButton");
+    m_testConnectionBtn->setFixedHeight(36);
+    m_testConnectionBtn->setFixedWidth(100);
+    m_testConnectionBtn->setCursor(Qt::PointingHandCursor);
+    connect(m_testConnectionBtn, &QPushButton::clicked, this, &SettingsDialog::onTestConnection);
+    testBtnLayout->addWidget(m_testConnectionBtn);
+
+    mainLayout->addLayout(testBtnLayout);
+
+    mainLayout->addStretch(1);
 
     // 保存按钮
+    auto* buttonLayout = new QHBoxLayout();
+    buttonLayout->addStretch();
+
     auto* saveBtn = new QPushButton(tr("保存"), parent);
     saveBtn->setObjectName("primaryButton");
     saveBtn->setFixedHeight(40);
+    saveBtn->setFixedWidth(120);
     saveBtn->setCursor(Qt::PointingHandCursor);
-    connect(saveBtn, &QPushButton::clicked, this, [this, endpointEdit, modelEdit, keyEdit]() {
-        if (m_settings) {
-            m_settings->set(QStringLiteral("llm.endpoint"), endpointEdit->text().trimmed());
-            m_settings->set(QStringLiteral("llm.model"), modelEdit->text().trimmed());
-            m_settings->secretSet(QStringLiteral("secret.llm.api_key"), keyEdit->text().trimmed());
-        }
-        if (m_agent) {
-            m_agent->setEndpoint(endpointEdit->text().trimmed());
-            m_agent->setModel(modelEdit->text().trimmed());
-        }
-        accept();
-    });
-    layout->addWidget(saveBtn);
+    connect(saveBtn, &QPushButton::clicked, this, &SettingsDialog::onSaveAiSettings);
+    buttonLayout->addWidget(saveBtn);
 
-    layout->addStretch(1);
+    auto* cancelBtn = new QPushButton(tr("取消"), parent);
+    cancelBtn->setObjectName("secondaryButton");
+    cancelBtn->setFixedHeight(40);
+    cancelBtn->setFixedWidth(100);
+    cancelBtn->setCursor(Qt::PointingHandCursor);
+    connect(cancelBtn, &QPushButton::clicked, this, &QDialog::reject);
+    buttonLayout->addWidget(cancelBtn);
+
+    mainLayout->addLayout(buttonLayout);
+
+    // 初始加载当前配置
+    refreshProviderFields();
+}
+
+void SettingsDialog::onProviderChanged(int index)
+{
+    if (index < 0 || !m_providers) return;
+
+    const QString providerId = m_providerCombo->itemData(index).toString();
+    const LLMProvider provider = m_providers->providerById(providerId);
+    if (provider.id.isEmpty()) return;
+
+    // 更新端点和模型列表
+    m_endpointEdit->setText(provider.endpoint);
+
+    m_modelCombo->clear();
+    if (provider.models.isEmpty()) {
+        m_modelCombo->addItem(provider.defaultModel);
+    } else {
+        for (const QString& model : provider.models) {
+            m_modelCombo->addItem(model);
+        }
+        // 设置默认模型
+        const int defaultIdx = m_modelCombo->findText(provider.defaultModel);
+        if (defaultIdx >= 0) {
+            m_modelCombo->setCurrentIndex(defaultIdx);
+        }
+    }
+
+    // 清除 API Key 输入（用户需要重新输入）
+    m_apiKeyEdit->clear();
+
+    // 更新状态提示
+    updateProviderStatus(provider);
+}
+
+void SettingsDialog::onSaveAiSettings()
+{
+    if (!m_providers || !m_settings) return;
+
+    const int idx = m_providerCombo->currentIndex();
+    if (idx < 0) return;
+
+    const QString providerId = m_providerCombo->itemData(idx).toString();
+
+    // 保存提供商选择
+    m_providers->setActiveProvider(providerId);
+
+    // 保存端点
+    const QString endpoint = m_endpointEdit->text().trimmed();
+    if (!endpoint.isEmpty()) {
+        m_providers->setEndpoint(providerId, endpoint);
+    }
+
+    // 保存模型
+    const QString model = m_modelCombo->currentText().trimmed();
+    if (!model.isEmpty()) {
+        m_providers->setModel(providerId, model);
+    }
+
+    // 保存 API Key
+    const QString apiKey = m_apiKeyEdit->text().trimmed();
+    if (!apiKey.isEmpty()) {
+        m_providers->setApiKey(providerId, apiKey);
+    }
+
+    // 更新 AgentService 配置
+    if (m_agent) {
+        const LLMProvider provider = m_providers->activeProvider();
+        m_agent->setEndpoint(m_providers->getEndpoint(provider.id));
+        m_agent->setModel(m_providers->getModel(provider.id));
+    }
+
+    accept();
+}
+
+void SettingsDialog::refreshProviderFields()
+{
+    if (!m_providers) return;
+
+    const LLMProvider provider = m_providers->activeProvider();
+    if (provider.id.isEmpty()) return;
+
+    // 更新提供商下拉框
+    const int idx = m_providerCombo->findData(provider.id);
+    if (idx >= 0 && idx != m_providerCombo->currentIndex()) {
+        m_providerCombo->blockSignals(true);
+        m_providerCombo->setCurrentIndex(idx);
+        m_providerCombo->blockSignals(false);
+    }
+
+    // 更新端点
+    const QString endpoint = m_providers->getEndpoint(provider.id);
+    m_endpointEdit->setText(endpoint);
+
+    // 更新模型列表
+    m_modelCombo->clear();
+    if (!provider.models.isEmpty()) {
+        m_modelCombo->addItems(provider.models);
+    } else {
+        m_modelCombo->addItem(provider.defaultModel);
+    }
+
+    const QString currentModel = m_providers->getModel(provider.id);
+    if (!currentModel.isEmpty()) {
+        const int modelIdx = m_modelCombo->findText(currentModel);
+        if (modelIdx >= 0) {
+            m_modelCombo->setCurrentIndex(modelIdx);
+        } else {
+            // 如果当前模型不在列表中，添加到列表并选中
+            m_modelCombo->addItem(currentModel);
+            m_modelCombo->setCurrentIndex(m_modelCombo->count() - 1);
+        }
+    }
+
+    // 检查 API Key 是否已配置
+    const QString apiKey = m_providers->getApiKey(provider.id);
+    if (!apiKey.isEmpty()) {
+        m_apiKeyEdit->setText(QStringLiteral("********"));  // 不显示实际 key
+        m_apiKeyEdit->setProperty("hasValue", true);
+    } else {
+        m_apiKeyEdit->clear();
+        m_apiKeyEdit->setProperty("hasValue", false);
+    }
+
+    updateProviderStatus(provider);
+}
+
+void SettingsDialog::updateProviderStatus(const LLMProvider& provider)
+{
+    if (!m_providers) return;
+
+    const QString apiKey = m_providers->getApiKey(provider.id);
+    const bool hasKey = !apiKey.isEmpty();
+
+    QString status;
+    if (hasKey) {
+        status = QStringLiteral("✓ %1 已配置").arg(provider.name);
+        m_providerStatusLabel->setStyleSheet("color: #4CAF50;");
+    } else {
+        status = QStringLiteral("⚠ 请填写 %1 的 API Key").arg(provider.name);
+        m_providerStatusLabel->setStyleSheet("color: #FF9800;");
+    }
+
+    if (provider.supportsVision) {
+        status = status + QStringLiteral(" · 支持视觉");
+    } else {
+        status = status + QStringLiteral(" · 不支持视觉");
+    }
+
+    m_providerStatusLabel->setText(status);
+}
+
+void SettingsDialog::onTestConnection()
+{
+    if (!m_providers || !m_testConnectionBtn) return;
+
+    const int idx = m_providerCombo->currentIndex();
+    if (idx < 0) return;
+
+    const QString providerId = m_providerCombo->itemData(idx).toString();
+    const QString apiKey = m_apiKeyEdit->text().trimmed();
+
+    // 如果 API Key 输入框显示的是占位符，使用已保存的 key
+    QString keyToTest = apiKey;
+    if (apiKey == QStringLiteral("********") || apiKey.isEmpty()) {
+        keyToTest = m_providers->getApiKey(providerId);
+    }
+
+    if (keyToTest.isEmpty()) {
+        m_providerStatusLabel->setText(QStringLiteral("⚠ 请先填写 API Key"));
+        m_providerStatusLabel->setStyleSheet("color: #FF9800;");
+        return;
+    }
+
+    // 先临时保存 API Key
+    m_providers->setApiKey(providerId, keyToTest);
+
+    // 更新 UI 状态
+    m_connectionTesting = true;
+    m_testConnectionBtn->setEnabled(false);
+    m_testConnectionBtn->setText(QStringLiteral("测试中..."));
+    m_providerStatusLabel->setText(QStringLiteral("正在测试连接..."));
+    m_providerStatusLabel->setStyleSheet("color: #2196F3;");
+
+    // 执行测试
+    m_providers->testProviderConnection(providerId);
+}
+
+void SettingsDialog::onConnectionTestResult(const QString& providerId, bool success, const QString& message)
+{
+    // 恢复按钮状态
+    m_connectionTesting = false;
+    if (m_testConnectionBtn) {
+        m_testConnectionBtn->setEnabled(true);
+        m_testConnectionBtn->setText(QStringLiteral("测试连接"));
+    }
+
+    // 更新状态显示
+    if (success) {
+        m_providerStatusLabel->setText(QStringLiteral("✓ 连接成功"));
+        m_providerStatusLabel->setStyleSheet("color: #4CAF50;");
+    } else {
+        m_providerStatusLabel->setText(QStringLiteral("✗ 连接失败: %1").arg(message));
+        m_providerStatusLabel->setStyleSheet("color: #F44336;");
+    }
 }
 
 void SettingsDialog::applyThemeColors()
@@ -346,9 +617,18 @@ void SettingsDialog::applyThemeColors()
         "#primaryButton { background:%7; color:#FFFFFF; border:none; border-radius:8px; font-size:14px; font-weight:500; padding:0 24px; }"
         "#primaryButton:hover { background:%8; }"
         "#primaryButton:pressed { background:%9; }"
-        "#inputField { background:%10; color:%6; border:1px solid %2; border-radius:8px; padding:0 12px; font-size:14px; selection-background-color:%7; }"
+        "#secondaryButton { background:%10; color:%6; border:1px solid %2; border-radius:8px; font-size:14px; padding:0 16px; }"
+        "#secondaryButton:hover { background:%5; }"
+        "#inputField { background:%11; color:%6; border:1px solid %2; border-radius:8px; padding:0 12px; font-size:14px; selection-background-color:%7; }"
         "#inputField:focus { border-color:%7; }"
-        "#inputField::placeholder { color:%11; }"
+        "#inputField::placeholder { color:%12; }"
+        "#providerCombo, #modelCombo { background:%11; color:%6; border:1px solid %2; border-radius:8px; padding:0 12px; font-size:14px; selection-background-color:%7; }"
+        "#providerCombo:focus, #modelCombo:focus { border-color:%7; }"
+        "#providerCombo::drop-down, #modelCombo::drop-down { border:none; padding-right:8px; }"
+        "#providerCombo::down-arrow, #modelCombo::down-arrow { width:10px; height:10px; border:none; image:none; }"
+        "QComboBox QAbstractItemView { background:%11; color:%6; border:1px solid %2; selection-background-color:%7; }"
+        "#formLabel { color:%6; font-size:14px; min-width:80px; padding:8px 0; }"
+        "#statusLabel { color:%6; font-size:12px; background:transparent; border:none; padding:4px 0; }"
         "QLabel { color:%6; background:transparent; border:none; }"
         "QFormLayout { spacing:16px; }"
         "QFormLayout::label { color:%6; font-size:14px; min-width:80px; }"
@@ -360,6 +640,7 @@ void SettingsDialog::applyThemeColors()
         "QPushButton:hover { background:%4; }"
     ).arg(bgHex, borderHex, navBgHex, navHoverHex, navHoverHex,
           textHex, activeHex, "#4499FF", "#1177CC",
+          m_theme ? m_theme->color("surfaceVariant").name() : "#2D2D3D",
           m_theme ? m_theme->color("inputBg").name() : "#1A1A2A",
           textSecHex));
 

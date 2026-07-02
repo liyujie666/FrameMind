@@ -9,9 +9,14 @@ class QStackedWidget;
 class QListWidget;
 class QToolButton;
 class QWidget;
+class QComboBox;
+class QLineEdit;
+class QLabel;
+class QPushButton;
 class ThemeService;
 class SettingsService;
 class AgentService;
+class LLMProviderService;
 
 /**
  * 设置对话框：
@@ -25,6 +30,7 @@ public:
     explicit SettingsDialog(ThemeService* theme,
                            SettingsService* settings,
                            AgentService* agent,
+                           LLMProviderService* providers,
                            QWidget* parent = nullptr);
 
 signals:
@@ -36,6 +42,10 @@ protected:
 private slots:
     void onNavItemClicked(int row);
     void onOpenVideo();
+    void onProviderChanged(int index);
+    void onSaveAiSettings();
+    void onTestConnection();
+    void onConnectionTestResult(const QString& providerId, bool success, const QString& message);
 
 private:
     void buildGeneralPage(QWidget* parent);
@@ -43,13 +53,25 @@ private:
     void buildAiPage(QWidget* parent);
     void applyThemeColors();
     void updateNavIcons();
+    void refreshProviderFields();
+    void updateProviderStatus(const class LLMProvider& provider);
 
     ThemeService* m_theme = nullptr;
     SettingsService* m_settings = nullptr;
     AgentService* m_agent = nullptr;
+    LLMProviderService* m_providers = nullptr;
 
     QListWidget* m_navList = nullptr;
     QStackedWidget* m_contentStack = nullptr;
+
+    // AI 页面控件
+    QComboBox* m_providerCombo = nullptr;
+    QLineEdit* m_endpointEdit = nullptr;
+    QComboBox* m_modelCombo = nullptr;
+    QLineEdit* m_apiKeyEdit = nullptr;
+    QLabel* m_providerStatusLabel = nullptr;
+    class QPushButton* m_testConnectionBtn = nullptr;
+    bool m_connectionTesting = false;
 
     QColor m_bgColor;
     QColor m_navBgColor;

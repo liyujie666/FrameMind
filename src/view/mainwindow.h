@@ -19,6 +19,7 @@ class SettingsService;
 class AgentService;
 class FileManagerService;
 class ThemeService;
+class LLMProviderService;
 class QStackedWidget;
 class QStackedLayout;
 class QActionGroup;
@@ -40,6 +41,7 @@ public:
                AgentService* agent,
                FileManagerService* fileService,
                ThemeService* theme,
+               LLMProviderService* providers,
                QWidget* parent = nullptr);
 
 private slots:
@@ -84,6 +86,7 @@ private:
     AgentService*       m_agent = nullptr;
     FileManagerService* m_fileService = nullptr;
     ThemeService*       m_theme = nullptr;
+    LLMProviderService* m_providers = nullptr;
 };
 
 #endif // FRAMEMIND_MAINWINDOW_H
