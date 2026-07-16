@@ -9,7 +9,7 @@
 class QSlider;
 class QToolButton;
 class QLabel;
-class QComboBox;
+class QMenu;
 class QPaintEvent;
 class ThemeService;
 
@@ -49,13 +49,14 @@ private:
     QToolButton* m_playButton = nullptr;
     QToolButton* m_muteButton = nullptr;
     QToolButton* m_fullscreenButton = nullptr;
+    QToolButton* m_speedButton = nullptr;
     QLabel*      m_timeLabel = nullptr;
     QSlider*     m_volumeSlider = nullptr;
-    QComboBox*   m_speedCombo = nullptr;
     ThemeService* m_themeService = nullptr;
     bool         m_isMuted = false;
     bool         m_isFullscreen = false;
     int          m_currentVolume = 50;
+    float        m_currentSpeed = 1.0f;
     PlayerState  m_lastPlayState = PlayerState::Stopped;
 
     int64_t m_position = 0;

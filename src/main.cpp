@@ -1,5 +1,6 @@
 #include <QApplication>
 #include <QIcon>
+#include <QSurfaceFormat>
 
 #include "app/application.h"
 #include "model/playertypes.h"
@@ -9,6 +10,17 @@
 
 int main(int argc, char* argv[])
 {
+    QApplication::setAttribute(Qt::AA_ShareOpenGLContexts);
+
+    QSurfaceFormat fmt;
+    fmt.setVersion(3, 3);
+    fmt.setProfile(QSurfaceFormat::CoreProfile);
+    fmt.setDepthBufferSize(0);
+    fmt.setStencilBufferSize(0);
+    fmt.setSamples(0);
+    fmt.setSwapBehavior(QSurfaceFormat::DoubleBuffer);
+    QSurfaceFormat::setDefaultFormat(fmt);
+
     QApplication app(argc, argv);
     QApplication::setApplicationName(QStringLiteral("FrameMind"));
     QApplication::setOrganizationName(QStringLiteral("FrameMind"));

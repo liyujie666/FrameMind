@@ -43,7 +43,6 @@ private:
     QWidget*         m_header = nullptr;
     QToolButton*     m_convButton = nullptr;
     QToolButton*     m_newButton = nullptr;
-    QToolButton*     m_closeButton = nullptr;
     QLabel*          m_titleLabel = nullptr;
     ChatViewModel*   m_vm = nullptr;
     ThemeService*    m_theme = nullptr;

@@ -18,6 +18,7 @@ struct VideoFileItem {
     qint64   sizeBytes = 0;    // 文件大小（B）
     QDateTime lastOpened;      // 上次打开时间，未打开时为空
     QString  thumbnailPath;    // 磁盘缓存的缩略图 jpg 路径；不存在时为空
+    qint64   durationMs = 0;   // 媒体时长（ms）；未探测 / 不支持时为 0
 };
 
 /**
@@ -40,6 +41,8 @@ public:
 
     /// 把某路径加入最近文件（视频打开时调用）
     void addToRecent(const QString& path);
+    /// 把某路径加入最近文件，并记录时长（打开视频时由调用方提供更精确的值）
+    void addToRecent(const QString& path, qint64 durationMs);
 
     /// 从最近文件里移除
     void removeFromRecent(const QString& path);
@@ -55,6 +58,9 @@ public:
 
     /// 存缩略图（自动缩到 480 边长、jpg 85 质量）
     bool saveThumbnail(const QString& videoPath, const QImage& frame);
+
+    /// 更新某路径记录的 durationMs（不改变 last_opened）
+    void updateDurationMs(const QString& path, qint64 durationMs);
 
 signals:
     /// 最近文件列表发生变化（添加 / 删除 / 缩略图更新）

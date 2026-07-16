@@ -40,6 +40,22 @@ CustomTitleBar::CustomTitleBar(ThemeService* theme, QWidget* parent)
     layout->addWidget(m_logoLabel);
     layout->addStretch(1);
 
+    // 折叠/展开 AI 对话面板按钮（在主题切换按钮左侧）
+    m_chatPanelBtn = new QToolButton(this);
+    m_chatPanelBtn->setFixedSize(36, 40);
+    m_chatPanelBtn->setIconSize(QSize(18, 18));
+    m_chatPanelBtn->setCursor(Qt::PointingHandCursor);
+    m_chatPanelBtn->setToolTip(tr("折叠对话面板"));
+    m_chatPanelBtn->setStyleSheet(
+        "QToolButton { border:none; border-radius:6px; background:transparent; padding:4px; }"
+        "QToolButton:hover { background:rgba(255,255,255,10%); }");
+    connect(m_chatPanelBtn, &QToolButton::clicked, this, [this]() {
+        m_chatPanelVisible = !m_chatPanelVisible;
+        updateChatPanelIcon();
+        emit chatPanelToggled(m_chatPanelVisible);
+    });
+    layout->addWidget(m_chatPanelBtn);
+
     // 主题切换按钮
     m_themeToggleBtn = new QToolButton(this);
     m_themeToggleBtn->setFixedSize(44, 40);
@@ -93,10 +109,11 @@ CustomTitleBar::CustomTitleBar(ThemeService* theme, QWidget* parent)
     // 连接主题服务
     if (m_theme) {
         connect(m_theme, &ThemeService::themeChanged,
-                this, [this]() { applyThemeColors(); updateWindowButtonStates(); updateThemeToggleIcon(); updateLogo(); });
+                this, [this]() { applyThemeColors(); updateWindowButtonStates(); updateThemeToggleIcon(); updateChatPanelIcon(); updateLogo(); });
         applyThemeColors();
         updateWindowButtonStates();
         updateThemeToggleIcon();
+        updateChatPanelIcon();
         updateLogo();
     }
 }
@@ -108,10 +125,11 @@ void CustomTitleBar::setThemeService(ThemeService* theme)
     m_theme = theme;
     if (m_theme) {
         connect(m_theme, &ThemeService::themeChanged,
-                this, [this]() { applyThemeColors(); updateWindowButtonStates(); updateThemeToggleIcon(); updateLogo(); });
+                this, [this]() { applyThemeColors(); updateWindowButtonStates(); updateThemeToggleIcon(); updateChatPanelIcon(); updateLogo(); });
         applyThemeColors();
         updateWindowButtonStates();
         updateThemeToggleIcon();
+        updateChatPanelIcon();
         updateLogo();
     }
 }
@@ -175,6 +193,20 @@ void CustomTitleBar::updateWindowButtonStates()
         closeIcon = QIcon(":/icons/close_dark.png");
     }
     m_closeBtn->setIcon(closeIcon);
+}
+
+void CustomTitleBar::updateChatPanelIcon()
+{
+    if (!m_chatPanelBtn) return;
+    // 暗色主题用 light 图标，亮色主题用 dark 图标
+    const bool dark = !m_theme || m_theme->isDark();
+    const QString icon = dark
+        ? QStringLiteral(":/icons/fold_light.png")
+        : QStringLiteral(":/icons/fold_dark.png");
+    m_chatPanelBtn->setIcon(QIcon(icon));
+    m_chatPanelBtn->setToolTip(m_chatPanelVisible
+        ? tr("折叠对话面板")
+        : tr("展开对话面板"));
 }
 
 void CustomTitleBar::updateThemeToggleIcon()

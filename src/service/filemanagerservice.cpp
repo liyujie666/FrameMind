@@ -41,7 +41,7 @@ QList<VideoFileItem> FileManagerService::recentFiles(int limit) const
     if (!m_db) return list;
 
     const auto rows = m_db->query(
-        QStringLiteral("SELECT path, last_opened FROM recent_files "
+        QStringLiteral("SELECT path, last_opened, duration_ms FROM recent_files "
                        "ORDER BY last_opened DESC LIMIT ?"),
         { QVariant(limit) });
 
@@ -51,10 +51,11 @@ QList<VideoFileItem> FileManagerService::recentFiles(int limit) const
         QFileInfo fi(p);
         if (!fi.exists()) continue;
         VideoFileItem item;
-        item.path = p;
-        item.displayName = fi.fileName();
-        item.sizeBytes   = fi.size();
-        item.lastOpened  = row.value(QStringLiteral("last_opened")).toDateTime();
+        item.path          = p;
+        item.displayName   = fi.fileName();
+        item.sizeBytes     = fi.size();
+        item.lastOpened    = row.value(QStringLiteral("last_opened")).toDateTime();
+        item.durationMs    = row.value(QStringLiteral("duration_ms")).toLongLong();
         const QString thumb = thumbnailPathFor(p);
         if (QFileInfo::exists(thumb)) item.thumbnailPath = thumb;
         list.append(item);
@@ -93,14 +94,30 @@ QList<VideoFileItem> FileManagerService::scanDirectory(const QString& dir) const
 
 void FileManagerService::addToRecent(const QString& path)
 {
+    addToRecent(path, 0);
+}
+
+void FileManagerService::addToRecent(const QString& path, qint64 durationMs)
+{
     if (!m_db || path.isEmpty()) return;
     QFileInfo fi(path);
     if (!fi.exists()) return;
 
     m_db->exec(QStringLiteral(
-        "INSERT INTO recent_files(path, last_opened) VALUES(?, CURRENT_TIMESTAMP) "
-        "ON CONFLICT(path) DO UPDATE SET last_opened=CURRENT_TIMESTAMP"),
-        { QVariant(fi.absoluteFilePath()) });
+        "INSERT INTO recent_files(path, last_opened, duration_ms) VALUES(?, CURRENT_TIMESTAMP, ?) "
+        "ON CONFLICT(path) DO UPDATE SET "
+        "  last_opened=CURRENT_TIMESTAMP, "
+        "  duration_ms=CASE WHEN excluded.duration_ms>0 THEN excluded.duration_ms ELSE recent_files.duration_ms END"),
+        { QVariant(fi.absoluteFilePath()), QVariant(durationMs) });
+    emit recentFilesChanged();
+}
+
+void FileManagerService::updateDurationMs(const QString& path, qint64 durationMs)
+{
+    if (!m_db || path.isEmpty() || durationMs <= 0) return;
+    m_db->exec(QStringLiteral(
+        "UPDATE recent_files SET duration_ms=? WHERE path=?"),
+        { QVariant(durationMs), QVariant(path) });
     emit recentFilesChanged();
 }
 

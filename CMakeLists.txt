@@ -44,6 +44,8 @@ find_package(Qt6 6.9 REQUIRED COMPONENTS
     Sql
     Concurrent
     Svg
+    OpenGL
+    OpenGLWidgets
 )
 
 qt_standard_project_setup()
@@ -104,6 +106,8 @@ target_link_libraries(FrameMind PRIVATE
     Qt6::Sql
     Qt6::Concurrent
     Qt6::Svg
+    Qt6::OpenGL
+    Qt6::OpenGLWidgets
     smartplayer
 )
 

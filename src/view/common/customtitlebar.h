@@ -27,6 +27,9 @@ protected:
     void mouseReleaseEvent(QMouseEvent* event) override;
     void mouseDoubleClickEvent(QMouseEvent* event) override;
 
+signals:
+    void chatPanelToggled(bool visible);
+
 private slots:
     void onMinimize();
     void onMaximize();
@@ -37,16 +40,20 @@ private:
     void applyThemeColors();
     void updateWindowButtonStates();
     void updateThemeToggleIcon();
+    void updateChatPanelIcon();
     void updateLogo();
 
     ThemeService* m_theme = nullptr;
     QWidget* m_parentWindow = nullptr;
 
     QLabel* m_logoLabel = nullptr;
+    QToolButton* m_chatPanelBtn = nullptr;
     QToolButton* m_minimizeBtn = nullptr;
     QToolButton* m_maximizeBtn = nullptr;
     QToolButton* m_closeBtn = nullptr;
     QToolButton* m_themeToggleBtn = nullptr;
+
+    bool m_chatPanelVisible = true;
 
     QColor m_bgColor;
     QColor m_iconColor;

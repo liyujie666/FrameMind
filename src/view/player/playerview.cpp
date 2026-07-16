@@ -11,16 +11,10 @@
 #include <QEvent>
 #include <QResizeEvent>
 #include <QMouseEvent>
+#include <QKeyEvent>
 #include <QPropertyAnimation>
-#include <QParallelAnimationGroup>
 #include <QGraphicsOpacityEffect>
-#include <QApplication>
-#include <QScreen>
-#include <QtMath>
-
-namespace {
-constexpr int kOuterMargin = 0;
-}
+#include <QCursor>
 
 PlayerView::PlayerView(QWidget* parent)
     : QWidget(parent)
@@ -31,63 +25,63 @@ PlayerView::PlayerView(QWidget* parent)
     setAttribute(Qt::WA_StyledBackground, false);
     setAutoFillBackground(false);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-
-    // 允许接收键盘事件（全屏 ESC 退出）
     setFocusPolicy(Qt::StrongFocus);
+    setMinimumSize(320, 180);
 
-    // 圆角视频容器
+    // 视频容器直接用布局填满整个 PlayerView
     m_videoContainer = new RoundedVideoContainer(this);
-    m_videoContainer->setRadius(12);
+    m_videoContainer->setRadius(10);
+    m_videoContainer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
     m_renderWidget = new VideoRenderWidget(m_videoContainer);
     m_renderWidget->setContainerBgColor(Qt::black);
+    m_renderWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
     auto* videoLayout = new QVBoxLayout(m_videoContainer);
     videoLayout->setContentsMargins(0, 0, 0, 0);
     videoLayout->setSpacing(0);
     videoLayout->addWidget(m_renderWidget, 1);
 
-    // 控制栏容器（独立透明浮层，浮在视频上方）
-    auto* controlContainer = new QWidget(this);
-    controlContainer->setStyleSheet(
-        "background-color: rgba(20, 20, 20, 180); border-radius: 20px;");
-    m_controlContainer = controlContainer;
+    auto* rootLayout = new QVBoxLayout(this);
+    rootLayout->setContentsMargins(0, 0, 0, 0);
+    rootLayout->setSpacing(0);
+    rootLayout->addWidget(m_videoContainer, 1);
 
-    m_controlBar = new PlayerControlBar(controlContainer);
-    auto* controlLayout = new QHBoxLayout(controlContainer);
-    controlLayout->setContentsMargins(0, 0, 0, 0);
+    // 控制栏容器：悬浮在 PlayerView 上，绝对定位，不参与布局
+    // 不加 QGraphicsOpacityEffect（会破坏 QOpenGLWidget 渲染），
+    // 改用 QPropertyAnimation 直接动画 windowOpacity——但 windowOpacity 只对顶层窗口有效。
+    // 所以用最简单的方式：直接用 setVisible + 淡入淡出靠动画 styleSheet alpha 实现，
+    // 或者只做 show/hide，不做渐变（最安全）。
+    // 这里选择：控制栏始终存在但初始不可见，通过动画改变它的 maximumHeight 实现滑入效果。
+    m_controlContainer = new QWidget(this);
+    m_controlContainer->setStyleSheet(
+        "background-color: rgba(15, 15, 20, 210); border-radius: 16px;");
+    m_controlContainer->setFixedHeight(44);
+    m_controlContainer->hide();   // 初始隐藏，鼠标进入时 show
+
+    m_controlBar = new PlayerControlBar(m_controlContainer);
+    auto* controlLayout = new QHBoxLayout(m_controlContainer);
+    controlLayout->setContentsMargins(8, 0, 8, 0);
     controlLayout->setSpacing(0);
     controlLayout->addWidget(m_controlBar);
-
-    // 初始化透明度效果
-    auto* opacity = new QGraphicsOpacityEffect(controlContainer);
-    controlContainer->setGraphicsEffect(opacity);
-    opacity->setOpacity(0);
-
-    // 保证控制栏浮在最上层
-    m_videoContainer->stackUnder(controlContainer);
 
     // 隐藏定时器
     m_hideTimer.setSingleShot(true);
     m_hideTimer.setInterval(m_hideDelayMs);
     connect(&m_hideTimer, &QTimer::timeout, this, &PlayerView::hideControlBar);
 
-    // 安装事件过滤器以追踪鼠标进入/离开
     m_videoContainer->installEventFilter(this);
-    controlContainer->installEventFilter(this);
 
-    // 连接全屏按钮信号
     connect(m_controlBar, &PlayerControlBar::fullscreenClicked,
             this, &PlayerView::toggleFullscreen);
 
-    layoutChildren();
+    // 首次布局
+    updateControlBarGeometry();
 }
 
 QSize PlayerView::sizeHint() const
 {
-    constexpr double kAspect = 16.0 / 9.0;
-    constexpr int kBaseW = 720;
-    return QSize(kBaseW, qRound(kBaseW / kAspect));
+    return QSize(720, 405);
 }
 
 void PlayerView::setThemeService(ThemeService* theme)
@@ -100,63 +94,76 @@ void PlayerView::setThemeService(ThemeService* theme)
 void PlayerView::resizeEvent(QResizeEvent* event)
 {
     QWidget::resizeEvent(event);
-    layoutChildren();
+    updateControlBarGeometry();
 }
 
-void PlayerView::layoutChildren()
+void PlayerView::updateControlBarGeometry()
 {
-    if (!m_videoContainer) return;
+    if (!m_controlContainer) return;
 
-    constexpr double kVideoAspect = 16.0 / 9.0;
-    const int availW = width();
-    const int availH = height();
+    // 全屏时基于全屏窗口尺寸，否则基于 PlayerView 自身尺寸
+    QWidget* host = (m_isFullscreen && m_fullscreenWindow) ? m_fullscreenWindow : this;
+    const int w = host->width();
+    const int h = host->height();
+    if (w <= 0 || h <= 0) return;
 
-    int videoW, videoH;
-    if (availW * 1.0 / availH > kVideoAspect) {
-        videoH = availH;
-        videoW = qRound(videoH * kVideoAspect);
-    } else {
-        videoW = availW;
-        videoH = qRound(videoW / kVideoAspect);
-    }
+    const int barW = w * 2 / 3;
+    const int barH = 44;
+    const int barX = (w - barW) / 2;
+    const int barY = h - barH - 12;
 
-    const int cx = (width() - videoW) / 2;
-    const int cy = (height() - videoH) / 2;
-    m_videoContainer->setFixedSize(videoW, videoH);
-    m_videoContainer->move(cx, cy);
-
-    // 全屏时去除圆角
-    if (m_isFullscreen) {
-        m_videoContainer->setRadius(0);
-    } else {
-        m_videoContainer->setRadius(12);
-    }
-
-    // 控制栏位置：视频底部内侧
-    if (m_controlContainer) {
-        const int controlWidth  = m_isFullscreen ? qMin(videoW * 4 / 5, 900) : videoW * 4 / 5;
-        const int controlHeight = 40;
-        const int controlX = cx + (videoW - controlWidth) / 2;
-        const int controlY = cy + videoH - controlHeight - 8;
-        m_controlContainer->setFixedSize(controlWidth, controlHeight);
-        m_controlContainer->move(controlX, controlY);
-        m_controlBar->setFixedSize(controlWidth, controlHeight);
-        m_controlContainer->raise();
-    }
+    m_controlContainer->setGeometry(barX, barY, barW, barH);
+    m_controlContainer->raise();
 }
 
 bool PlayerView::eventFilter(QObject* obj, QEvent* event)
 {
-    if (event->type() == QEvent::Enter) {
-        m_mouseOver = true;
-        m_hideTimer.stop();
-        showControlBar();
-        // 返回 false，不吞噬事件，让子控件也能收到 hover 效果
-        return false;
-    } else if (event->type() == QEvent::Leave) {
-        m_mouseOver = false;
-        m_hideTimer.start();
-        return false;
+    if (obj == m_videoContainer) {
+        if (event->type() == QEvent::Enter) {
+            m_mouseOver = true;
+            m_hideTimer.stop();
+            showControlBar();
+            return false;
+        } else if (event->type() == QEvent::Leave) {
+            // 检查鼠标是否移到了控制栏上，是的话不隐藏
+            const QPoint globalPos = QCursor::pos();
+            if (m_controlContainer && m_controlContainer->isVisible()) {
+                const QRect controlGlobal = QRect(
+                    m_controlContainer->mapToGlobal(QPoint(0,0)),
+                    m_controlContainer->size());
+                if (controlGlobal.contains(globalPos)) return false;
+            }
+            m_mouseOver = false;
+            m_hideTimer.start();
+            return false;
+        }
+    }
+    if (obj == m_fullscreenWindow) {
+        if (event->type() == QEvent::KeyPress) {
+            auto* ke = static_cast<QKeyEvent*>(event);
+            if (ke->key() == Qt::Key_Escape) {
+                exitFullscreen();
+                return true;
+            }
+            if (ke->key() == Qt::Key_F11) {
+                toggleFullscreen();
+                return true;
+            }
+        }
+        if (event->type() == QEvent::MouseMove) {
+            m_hideTimer.stop();
+            showControlBar();
+            m_hideTimer.start();
+            return false;
+        }
+        if (event->type() == QEvent::Resize) {
+            updateControlBarGeometry();
+            return false;
+        }
+        if (event->type() == QEvent::MouseButtonDblClick) {
+            exitFullscreen();
+            return true;
+        }
     }
     return QWidget::eventFilter(obj, event);
 }
@@ -199,100 +206,91 @@ void PlayerView::toggleFullscreen()
 void PlayerView::enterFullscreen()
 {
     if (m_isFullscreen) return;
-
-    // 保存当前状态
-    m_originalParent = parentWidget();
-    m_originalPos = pos();
-    m_originalSize = size();
-    m_originalFlags = windowFlags();
-
     m_isFullscreen = true;
 
-    // 脱离父窗口，变为独立顶层窗口
-    setParent(nullptr);
-    setWindowFlags(Qt::Window | Qt::FramelessWindowHint);
-    showFullScreen();
+    if (!m_fullscreenWindow) {
+        m_fullscreenWindow = new QWidget(nullptr, Qt::Window | Qt::FramelessWindowHint);
+        m_fullscreenWindow->setStyleSheet("background: black;");
+        m_fullscreenWindow->installEventFilter(this);
+        m_fullscreenWindow->setMouseTracking(true);
 
-    // 确保焦点在此控件上以接收键盘事件
-    setFocus();
-    activateWindow();
+        auto* fsLayout = new QVBoxLayout(m_fullscreenWindow);
+        fsLayout->setContentsMargins(0, 0, 0, 0);
+        fsLayout->setSpacing(0);
+    }
 
-    // 更新控制栏全屏状态
+    auto* fsLayout = qobject_cast<QVBoxLayout*>(m_fullscreenWindow->layout());
+    if (fsLayout) {
+        fsLayout->addWidget(m_videoContainer);
+    }
+    m_videoContainer->setRadius(0);
+    m_videoContainer->setMouseTracking(true);
+    m_videoContainer->show();
+
+    // 控制栏移入全屏窗口，绝对定位，初始隐藏
+    m_controlContainer->setParent(m_fullscreenWindow);
+    m_controlContainer->hide();
+    m_controlBarVisible = false;
+
+    m_fullscreenWindow->showFullScreen();
+    m_fullscreenWindow->setFocus();
+    m_fullscreenWindow->activateWindow();
+
+    // 更新控制栏位置（基于全屏窗口尺寸）
+    updateControlBarGeometry();
+
+    m_videoContainer->installEventFilter(this);
+
     m_controlBar->setFullscreen(true);
-    layoutChildren();
-
     emit fullscreenChanged(true);
 }
 
 void PlayerView::exitFullscreen()
 {
     if (!m_isFullscreen) return;
-
     m_isFullscreen = false;
 
-    // 恢复为子窗口
-    setWindowFlags(m_originalFlags);
-    if (m_originalParent) {
-        setParent(m_originalParent);
-        move(m_originalPos);
-        resize(m_originalSize);
-        show();
+    // 把视频容器移回 PlayerView 的布局
+    auto* fsLayout = m_fullscreenWindow ? m_fullscreenWindow->layout() : nullptr;
+    if (fsLayout) fsLayout->removeWidget(m_videoContainer);
 
-        // 重新将自己放入父布局（如果布局还存在）
-        if (m_originalParent->layout()) {
-            // 不需要手动 addWidget，setParent 后 show 即可（布局自动管理）
-        }
-    } else {
-        show();
-    }
+    m_videoContainer->setParent(this);
+    m_videoContainer->setRadius(10);
 
-    // 更新控制栏全屏状态
+    auto* rootLayout = qobject_cast<QVBoxLayout*>(layout());
+    if (rootLayout) rootLayout->addWidget(m_videoContainer, 1);
+    m_videoContainer->show();
+
+    // 控制栏容器移回 PlayerView
+    m_controlContainer->setParent(this);
+    m_controlContainer->hide();
+    m_controlBarVisible = false;
+
+    if (m_fullscreenWindow) m_fullscreenWindow->hide();
+
     m_controlBar->setFullscreen(false);
-    layoutChildren();
-
+    updateControlBarGeometry();
     emit fullscreenChanged(false);
 }
 
 void PlayerView::showControlBar()
 {
-    if (!m_controlContainer || !m_videoContainer) return;
     if (m_controlBarVisible) return;
     m_controlBarVisible = true;
-
-    auto* opacity = qobject_cast<QGraphicsOpacityEffect*>(
-        m_controlContainer->graphicsEffect());
-    if (!opacity) {
-        opacity = new QGraphicsOpacityEffect(m_controlContainer);
-        m_controlContainer->setGraphicsEffect(opacity);
+    if (m_controlContainer) {
+        updateControlBarGeometry();
+        m_controlContainer->show();
+        m_controlContainer->raise();
     }
-
-    auto* fadeAnim = new QPropertyAnimation(opacity, "opacity", this);
-    fadeAnim->setDuration(200);
-    fadeAnim->setStartValue(0.0);
-    fadeAnim->setEndValue(1.0);
-    fadeAnim->setEasingCurve(QEasingCurve::OutCubic);
-    fadeAnim->start(QAbstractAnimation::DeleteWhenStopped);
 }
 
 void PlayerView::hideControlBar()
 {
-    if (!m_controlContainer || !m_videoContainer) return;
     if (!m_controlBarVisible) return;
     m_controlBarVisible = false;
-
-    auto* opacity = qobject_cast<QGraphicsOpacityEffect*>(
-        m_controlContainer->graphicsEffect());
-    if (!opacity) {
-        opacity = new QGraphicsOpacityEffect(m_controlContainer);
-        m_controlContainer->setGraphicsEffect(opacity);
+    if (m_controlContainer) {
+        m_controlContainer->hide();
     }
-
-    auto* fadeAnim = new QPropertyAnimation(opacity, "opacity", this);
-    fadeAnim->setDuration(200);
-    fadeAnim->setStartValue(1.0);
-    fadeAnim->setEndValue(0.0);
-    fadeAnim->setEasingCurve(QEasingCurve::InCubic);
-    fadeAnim->start(QAbstractAnimation::DeleteWhenStopped);
 }
 
 void PlayerView::setViewModel(PlayerViewModel* vm)

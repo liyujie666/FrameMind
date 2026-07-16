@@ -36,7 +36,10 @@
 #include <QFileInfo>
 #include <QIcon>
 #include <QToolButton>
-#include <QResizeEvent>
+#include <QMouseEvent>
+#include <QApplication>
+#include <QScreen>
+#include <QCursor>
 
 namespace {
 
@@ -207,6 +210,10 @@ MainWindow::MainWindow(PlayerViewModel* playerVM,
     connect(m_sidebar, &SidebarView::settingsClicked,
             this, &MainWindow::onOpenSettings);
 
+    // 连接标题栏折叠/展开 AI 面板按钮
+    connect(m_titleBar, &CustomTitleBar::chatPanelToggled,
+            this, &MainWindow::onChatPanelToggled);
+
     if (m_playerView && m_playerVM) {
         m_playerView->setViewModel(m_playerVM);
         connect(m_playerView, &PlayerView::fullscreenChanged,
@@ -237,49 +244,69 @@ QWidget* MainWindow::buildChatPage()
 {
     m_chatPage = new QWidget(this);
     m_chatPage->setAttribute(Qt::WA_StyledBackground, true);
-    m_chatPage->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
-    // 页面底色由 onThemeChanged 应用
+    m_chatPage->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
-    auto* pageLayout = new QHBoxLayout(m_chatPage);
-    pageLayout->setContentsMargins(16, 16, 16, 16);
-    pageLayout->setSpacing(12);
+    auto* pageLayout = new QVBoxLayout(m_chatPage);
+    pageLayout->setContentsMargins(12, 12, 12, 12);
+    pageLayout->setSpacing(0);
 
-    // ---- 左侧列（播放器容器 + 分析容器）----
-    m_leftContainer = new QWidget(m_chatPage);
+    // ---- 水平 Splitter：左侧内容 | 右侧 ChatView ----
+    m_mainSplitter = new QSplitter(Qt::Horizontal, m_chatPage);
+    m_mainSplitter->setHandleWidth(6);
+    m_mainSplitter->setChildrenCollapsible(false);
+
+    // ---- 左侧：竖向 Splitter：播放器 | 分析面板 ----
+    m_leftContainer = new QWidget(m_mainSplitter);
     m_leftContainer->setAttribute(Qt::WA_StyledBackground, false);
     m_leftContainer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    auto* leftLayout = new QVBoxLayout(m_leftContainer);
-    leftLayout->setContentsMargins(0, 0, 0, 0);
-    leftLayout->setSpacing(8);
 
-    // 播放器容器（ThemedPanel 圆角卡片，内嵌 PlayerView）
-    m_playerPanel = new ThemedPanel(m_leftContainer);
-    m_playerPanel->setRadius(16);
-    m_playerPanel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
+    m_leftSplitter = new QSplitter(Qt::Vertical, m_leftContainer);
+    m_leftSplitter->setHandleWidth(6);
+    m_leftSplitter->setChildrenCollapsible(false);
+
+    // 播放器面板：圆角卡片，极小内边距
+    m_playerPanel = new ThemedPanel(m_leftSplitter);
+    m_playerPanel->setRadius(14);
+    m_playerPanel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     if (m_theme) m_playerPanel->setThemeService(m_theme);
 
     auto* playerPanelLayout = new QVBoxLayout(m_playerPanel);
-    playerPanelLayout->setContentsMargins(16, 16, 16, 16);
+    playerPanelLayout->setContentsMargins(0, 0, 0, 0);
     playerPanelLayout->setSpacing(0);
 
     m_playerView = new PlayerView(m_playerPanel);
     if (m_theme) m_playerView->setThemeService(m_theme);
-    playerPanelLayout->addWidget(m_playerView, 1); // stretch=1 填满剩余空间
+    playerPanelLayout->addWidget(m_playerView, 1);
 
-    // 分析容器
-    m_analysisPanel = buildAnalysisPanel(m_leftContainer);
+    // 分析面板
+    m_analysisPanel = buildAnalysisPanel(m_leftSplitter);
 
-    leftLayout->addWidget(m_playerPanel, 65);
-    leftLayout->addWidget(m_analysisPanel, 35);
+    m_leftSplitter->addWidget(m_playerPanel);
+    m_leftSplitter->addWidget(m_analysisPanel);
+    // 播放器:分析 = 65:35
+    m_leftSplitter->setSizes({ 650, 350 });
 
-    // ---- 右侧：ChatView 圆角卡片 ----
-    m_chatView = new ChatView(m_chatPage);
-    m_chatView->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
-    m_chatView->setMinimumWidth(340);
-    m_chatView->setMaximumWidth(520);
+    auto* leftLayout = new QVBoxLayout(m_leftContainer);
+    leftLayout->setContentsMargins(0, 0, 0, 0);
+    leftLayout->setSpacing(0);
+    leftLayout->addWidget(m_leftSplitter);
 
-    pageLayout->addWidget(m_leftContainer, 3);
-    pageLayout->addWidget(m_chatView, 2);
+    // ---- 右侧：ChatView ----
+    m_chatView = new ChatView(m_mainSplitter);
+    m_chatView->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+    m_chatView->setMinimumWidth(300);
+    m_chatView->setMaximumWidth(600);
+
+    m_mainSplitter->addWidget(m_leftContainer);
+    m_mainSplitter->addWidget(m_chatView);
+    // 左:右 = 62:38，初始比例
+    m_mainSplitter->setSizes({ 620, 380 });
+    m_mainSplitter->setStretchFactor(0, 1);
+    m_mainSplitter->setStretchFactor(1, 0);
+
+    pageLayout->addWidget(m_mainSplitter);
+
+    updateSplitterStyle();
 
     return m_chatPage;
 }
@@ -422,6 +449,33 @@ void MainWindow::applyPageBackground()
     if (m_pageStack) {
         m_pageStack->setStyleSheet(QString("QStackedWidget { background:%1; }").arg(bg));
     }
+
+    updateSplitterStyle();
+
+}
+
+void MainWindow::updateSplitterStyle()
+{
+    // Handle 平时透明不可见，hover 时显示一条极细的高亮线，不影响视觉布局
+    const QString hoverColor = m_theme
+        ? m_theme->color(QStringLiteral("primary")).name()
+        : QStringLiteral("#2979FF");
+
+    const QString splitterStyle = QString(
+        "QSplitter::handle { background: transparent; }"
+        "QSplitter::handle:hover { background: %1; }"
+        "QSplitter::handle:horizontal { width: 4px; }"
+        "QSplitter::handle:vertical   { height: 4px; }"
+    ).arg(hoverColor);
+
+    if (m_mainSplitter) {
+        m_mainSplitter->setHandleWidth(4);
+        m_mainSplitter->setStyleSheet(splitterStyle);
+    }
+    if (m_leftSplitter) {
+        m_leftSplitter->setHandleWidth(4);
+        m_leftSplitter->setStyleSheet(splitterStyle);
+    }
 }
 
 void MainWindow::onNavRequested(int index)
@@ -456,47 +510,133 @@ void MainWindow::onOpenVideoPath(const QString& path)
 
 void MainWindow::onPlayerFullscreenChanged(bool fullscreen)
 {
-    if (!fullscreen && m_playerView) {
-        // 退出全屏后，确保 PlayerView 重新归位到播放器面板布局中
-        if (m_playerPanel && m_playerPanel->layout()) {
-            auto* layout = qobject_cast<QVBoxLayout*>(m_playerPanel->layout());
-            if (layout && layout->indexOf(m_playerView) < 0) {
-                layout->addWidget(m_playerView, 1);
-            }
-        }
-        m_playerView->show();
+    Q_UNUSED(fullscreen);
+}
+
+void MainWindow::onCollapseChatPanel()
+{
+    if (m_chatView) m_chatView->hide();
+}
+
+void MainWindow::onExpandChatPanel()
+{
+    if (m_chatView) m_chatView->show();
+}
+
+void MainWindow::onChatPanelToggled(bool visible)
+{
+    if (!m_chatView) return;
+    if (visible) {
+        m_chatView->show();
+    } else {
+        m_chatView->hide();
     }
 }
 
-void MainWindow::resizeEvent(QResizeEvent* event)
+void MainWindow::mousePressEvent(QMouseEvent* event)
 {
-    QMainWindow::resizeEvent(event);
+    if (event->button() == Qt::LeftButton) {
+        m_resizeEdge = edgeAt(event->globalPosition().toPoint());
+        if (m_resizeEdge != None) {
+            m_resizing = true;
+            m_resizeStartGlobal = event->globalPosition().toPoint();
+            m_resizeStartGeometry = geometry();
+            event->accept();
+            return;
+        }
+    }
+    QMainWindow::mousePressEvent(event);
+}
 
-    if (m_resizeGuard > 0) return;
-    ++m_resizeGuard;
+void MainWindow::mouseMoveEvent(QMouseEvent* event)
+{
+    if (m_resizing && (event->buttons() & Qt::LeftButton)) {
+        const QPoint delta = event->globalPosition().toPoint() - m_resizeStartGlobal;
+        QRect geo = m_resizeStartGeometry;
+        const int minW = minimumWidth();
+        const int minH = minimumHeight();
 
-    // 比例分配：左侧播放器+分析占 60%，右侧聊天占 40%
-    if (!m_leftContainer || !m_chatView) {
-        --m_resizeGuard;
+        if (m_resizeEdge & Left) {
+            int newX = geo.x() + delta.x();
+            int newW = geo.width() - delta.x();
+            if (newW >= minW) { geo.setX(newX); geo.setWidth(newW); }
+        }
+        if (m_resizeEdge & Right) {
+            geo.setWidth(qMax(minW, geo.width() + delta.x()));
+        }
+        if (m_resizeEdge & Top) {
+            int newY = geo.y() + delta.y();
+            int newH = geo.height() - delta.y();
+            if (newH >= minH) { geo.setY(newY); geo.setHeight(newH); }
+        }
+        if (m_resizeEdge & Bottom) {
+            geo.setHeight(qMax(minH, geo.height() + delta.y()));
+        }
+        setGeometry(geo);
+        event->accept();
         return;
     }
 
-    int w = event->size().width();
-    const int pad = 16;
-    const int gap = 12;
-    const int availW = w - 2 * pad - gap;
-    const int leftW = qRound(availW * 0.6);
-    const int chatW = availW - leftW;
+    // Update cursor when hovering over edges (not resizing)
+    if (!m_resizing) {
+        ResizeEdge edge = edgeAt(event->globalPosition().toPoint());
+        setCursor(cursorForEdge(edge));
+    }
+    QMainWindow::mouseMoveEvent(event);
+}
 
-    const int chatMinW = 340;
-    const int leftMinW = 200;
-    if (leftW < leftMinW || chatW < chatMinW) {
-        --m_resizeGuard;
+void MainWindow::mouseReleaseEvent(QMouseEvent* event)
+{
+    if (event->button() == Qt::LeftButton && m_resizing) {
+        m_resizing = false;
+        m_resizeEdge = None;
+        setCursor(Qt::ArrowCursor);
+        event->accept();
         return;
     }
+    QMainWindow::mouseReleaseEvent(event);
+}
 
-    // 只设置最小宽度，高度由布局自适应
-    m_analysisPanel->setMinimumWidth(leftW - 16); // 留出边距
+void MainWindow::mouseDoubleClickEvent(QMouseEvent* event)
+{
+    QMainWindow::mouseDoubleClickEvent(event);
+}
 
-    --m_resizeGuard;
+MainWindow::ResizeEdge MainWindow::edgeAt(const QPoint& globalPos) const
+{
+    const QRect geo = geometry();
+    const QPoint local = globalPos - geo.topLeft();
+    const int b = kResizeBorder;
+    const int w = geo.width();
+    const int h = geo.height();
+
+    bool left   = local.x() <= b;
+    bool right  = local.x() >= w - b;
+    bool top    = local.y() <= b;
+    bool bottom = local.y() >= h - b;
+
+    if (left  && top)    return TopLeft;
+    if (right && top)    return TopRight;
+    if (left  && bottom) return BottomLeft;
+    if (right && bottom) return BottomRight;
+    if (left)   return Left;
+    if (right)  return Right;
+    if (top)    return Top;
+    if (bottom) return Bottom;
+    return None;
+}
+
+Qt::CursorShape MainWindow::cursorForEdge(ResizeEdge edge)
+{
+    switch (edge) {
+    case Left:
+    case Right:        return Qt::SizeHorCursor;
+    case Top:
+    case Bottom:       return Qt::SizeVerCursor;
+    case TopLeft:
+    case BottomRight:  return Qt::SizeFDiagCursor;
+    case TopRight:
+    case BottomLeft:   return Qt::SizeBDiagCursor;
+    default:           return Qt::ArrowCursor;
+    }
 }

@@ -3,12 +3,17 @@
 
 #include <QAbstractListModel>
 #include <QList>
+#include <QHash>
+#include <QFuture>
+#include <QFutureWatcher>
+#include <QPointer>
 
 #include "service/filemanagerservice.h"
 
 class FileManagerService;
 class EventBus;
 class PlayerService;
+struct MediaProbeResult;
 
 /**
  * 文件列表 ViewModel（QAbstractListModel），驱动 FileListView 的网格显示。
@@ -25,12 +30,14 @@ public:
         SizeRole,
         LastOpenedRole,
         ThumbnailPathRole,
+        DurationRole,
     };
 
     explicit FileListViewModel(FileManagerService* fileService,
                                EventBus* eventBus,
                                PlayerService* playerService,
                                QObject* parent = nullptr);
+    ~FileListViewModel() override;
 
     // QAbstractListModel
     int rowCount(const QModelIndex& parent = QModelIndex()) const override;
@@ -57,6 +64,11 @@ signals:
 private slots:
     void onRecentFilesChanged();
     void onPlayerFrameDecoded(const QImage& frame);
+    void onProbeFinished(int row);
+
+private:
+    /// 对 m_items 中 durationMs=0 且未启动 probe 的条目启动异步 probe
+    void enqueueMissingProbes();
 
 private:
     FileManagerService* m_fileService = nullptr;
@@ -67,6 +79,9 @@ private:
 
     // 首帧回填缩略图：记录当前"待截图"的视频路径
     QString m_pendingThumbForPath;
+
+    // 行 row → probe watcher：用于异步补全 durationMs/thumbnailPath
+    QHash<int, QPointer<QFutureWatcher<MediaProbeResult>>> m_probeWatchers;
 };
 
 #endif // FRAMEMIND_FILELISTVIEWMODEL_H

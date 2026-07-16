@@ -51,9 +51,10 @@ ChatView::ChatView(QWidget* parent)
     hl->addWidget(m_titleLabel);
 
     m_convButton = new QToolButton(m_header);
-    m_convButton->setText(QStringLiteral("▾"));
     m_convButton->setToolTip(tr("切换会话"));
-    m_convButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    m_convButton->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    m_convButton->setIconSize(QSize(16, 16));
+    m_convButton->setFixedSize(24, 24);
     connect(m_convButton, &QToolButton::clicked,
             this, &ChatView::showConversationMenu);
     hl->addWidget(m_convButton);
@@ -65,14 +66,6 @@ ChatView::ChatView(QWidget* parent)
     m_newButton->setToolTip(tr("新建对话"));
     m_newButton->setFixedSize(28, 28);
     hl->addWidget(m_newButton);
-
-    m_closeButton = new QToolButton(m_header);
-    m_closeButton->setText(QStringLiteral("×"));
-    m_closeButton->setToolTip(tr("折叠对话面板"));
-    m_closeButton->setFixedSize(28, 28);
-    connect(m_closeButton, &QToolButton::clicked,
-            this, &ChatView::collapseRequested);
-    hl->addWidget(m_closeButton);
 
     layout->addWidget(m_header);
 
@@ -143,21 +136,22 @@ void ChatView::applyThemeColors()
         "font-size:15px; font-weight:600; color:%1; background:transparent; border:none;")
         .arg(m_textPrimary.name()));
 
-    // 下拉小箭头
+    // 下拉小箭头 — 图标跟随主题（亮色主题用 dark 图标，暗色主题用 light 图标）
     m_convButton->setStyleSheet(QString(
-        "QToolButton { border:none; color:%1; padding:2px 6px; border-radius:4px; font-size:12px; background:transparent; }"
-        "QToolButton:hover { color:%2; background:%3; }")
-        .arg(m_textSecondary.name(), m_textPrimary.name(), m_surfaceVariant.name()));
+        "QToolButton { border:none; padding:2px; border-radius:4px; background:transparent; }"
+        "QToolButton:hover { background:%1; }")
+        .arg(m_surfaceVariant.name()));
+    {
+        const bool dark = !m_theme || m_theme->isDark();
+        m_convButton->setIcon(QIcon(dark
+            ? QStringLiteral(":/icons/down_light.png")
+            : QStringLiteral(":/icons/down_dark.png")));
+    }
 
     m_newButton->setStyleSheet(QString(
         "QToolButton { border:none; color:%1; border-radius:6px; font-size:18px; background:transparent; }"
         "QToolButton:hover { color:#FFFFFF; background:%2; }")
         .arg(m_textSecondary.name(), m_primary.name()));
-
-    m_closeButton->setStyleSheet(QString(
-        "QToolButton { border:none; color:%1; border-radius:6px; font-size:20px; background:transparent; }"
-        "QToolButton:hover { color:%2; background:%3; }")
-        .arg(m_textSecondary.name(), m_textPrimary.name(), m_surfaceVariant.name()));
 
     // 消息列表滚动条 - 现代简约风格
     const QColor scrollThumb = m_theme

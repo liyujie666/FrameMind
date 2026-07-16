@@ -34,6 +34,9 @@ private:
     Q_DISABLE_COPY(DatabaseManager)
 
     void createTables();
+    /// 兼容旧库：检查表中是否存在某列，缺则 ALTER TABLE 添加
+    void ensureColumn(const QString& table, const QString& column,
+                      const QString& definition);
 
     QSqlDatabase m_db;
     QString      m_lastError;

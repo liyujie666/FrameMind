@@ -4,7 +4,9 @@
 #include <QSlider>
 #include <QToolButton>
 #include <QLabel>
-#include <QComboBox>
+#include <QMenu>
+#include <QAction>
+#include <QActionGroup>
 #include <QIcon>
 #include <QSizePolicy>
 
@@ -93,24 +95,68 @@ PlayerControlBar::PlayerControlBar(QWidget* parent)
         "QToolButton:hover { background:rgba(255,255,255,20); }"));
     connect(m_muteButton, &QToolButton::clicked, this, &PlayerControlBar::muteClicked);
 
-    // 倍速
-    m_speedCombo = new QComboBox(this);
-    m_speedCombo->addItem(QStringLiteral("0.5x"), 0.5f);
-    m_speedCombo->addItem(QStringLiteral("1.0x"), 1.0f);
-    m_speedCombo->addItem(QStringLiteral("1.25x"), 1.25f);
-    m_speedCombo->addItem(QStringLiteral("1.5x"), 1.5f);
-    m_speedCombo->addItem(QStringLiteral("2.0x"), 2.0f);
-    m_speedCombo->setCurrentIndex(1);
-    m_speedCombo->setStyleSheet(QStringLiteral(
-        "QComboBox { background:rgba(255,255,255,20); color:#CCCCCC; border:1px solid rgba(255,255,255,30); "
-        "border-radius:4px; padding:4px 8px; }"
-        "QComboBox:hover { border-color:#2979FF; }"
-        "QComboBox::drop-down { border:none; }"
-        "QComboBox QAbstractItemView { color:#FFFFFF; background:#141414; border-radius:4px; selection-background-color:#2979FF; }"));
-    connect(m_speedCombo, &QComboBox::currentIndexChanged, this,
-            [this](int) {
-                emit speedChanged(m_speedCombo->currentData().toFloat());
-            });
+    // 倍速 — 用 QToolButton + QMenu 代替 QComboBox，彻底避免 Windows 原生样式矩形
+    m_speedButton = new QToolButton(this);
+    m_speedButton->setText(QStringLiteral("1.0x"));
+    m_speedButton->setToolTip(tr("播放速度"));
+    m_speedButton->setAutoRaise(true);
+    m_speedButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    m_speedButton->setStyleSheet(QStringLiteral(
+        "QToolButton {"
+        "  border: 1px solid rgba(255,255,255,30);"
+        "  border-radius: 4px;"
+        "  background: rgba(255,255,255,20);"
+        "  color: #CCCCCC;"
+        "  padding: 4px 8px;"
+        "  font-size: 12px;"
+        "}"
+        "QToolButton:hover { border-color: #2979FF; color: #FFFFFF; }"
+        "QToolButton::menu-indicator { width: 0; height: 0; }"
+    ));
+
+    auto* speedMenu = new QMenu(m_speedButton);
+    speedMenu->setStyleSheet(QStringLiteral(
+        "QMenu {"
+        "  background: #1A1A2E;"
+        "  border: 1px solid rgba(255,255,255,15);"
+        "  border-radius: 6px;"
+        "  padding: 4px 0;"
+        "}"
+        "QMenu::item {"
+        "  color: #CCCCCC;"
+        "  padding: 6px 20px;"
+        "  font-size: 12px;"
+        "  background: transparent;"
+        "}"
+        "QMenu::item:selected { background: #2979FF; color: #FFFFFF; border-radius: 4px; }"
+        "QMenu::item:checked { color: #2979FF; font-weight: 600; }"
+    ));
+
+    const QList<QPair<QString, float>> speeds = {
+        { QStringLiteral("0.5x"), 0.5f },
+        { QStringLiteral("0.75x"), 0.75f },
+        { QStringLiteral("1.0x"), 1.0f },
+        { QStringLiteral("1.25x"), 1.25f },
+        { QStringLiteral("1.5x"), 1.5f },
+        { QStringLiteral("2.0x"), 2.0f },
+    };
+    auto* speedActionGroup = new QActionGroup(speedMenu);
+    speedActionGroup->setExclusive(true);
+    for (const auto& [label, val] : speeds) {
+        auto* act = speedMenu->addAction(label);
+        act->setCheckable(true);
+        act->setChecked(val == 1.0f);
+        act->setData(val);
+        speedActionGroup->addAction(act);
+        connect(act, &QAction::triggered, this, [this, act]() {
+            const float spd = act->data().toFloat();
+            m_currentSpeed = spd;
+            m_speedButton->setText(act->text());
+            emit speedChanged(spd);
+        });
+    }
+    m_speedButton->setMenu(speedMenu);
+    m_speedButton->setPopupMode(QToolButton::InstantPopup);
 
     // 全屏
     m_fullscreenButton = new QToolButton(this);
@@ -127,7 +173,7 @@ PlayerControlBar::PlayerControlBar(QWidget* parent)
     layout->addWidget(m_timeLabel);
     layout->addWidget(m_muteButton);
     layout->addWidget(m_volumeSlider);
-    layout->addWidget(m_speedCombo);
+    layout->addWidget(m_speedButton);
     layout->addWidget(m_fullscreenButton);
 
     updateIcons();

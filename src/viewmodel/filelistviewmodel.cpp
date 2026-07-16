@@ -3,11 +3,16 @@
 #include "service/filemanagerservice.h"
 #include "service/playerservice.h"
 #include "infrastructure/eventbus.h"
+#include "util/mediaprobe.h"
 
 #include <QFileInfo>
 #include <QDir>
 #include <QLocale>
 #include <QSet>
+#include <QHash>
+#include <QThread>
+#include <QElapsedTimer>
+#include <algorithm>
 
 FileListViewModel::FileListViewModel(FileManagerService* fileService,
                                      EventBus* eventBus,
@@ -40,6 +45,24 @@ FileListViewModel::FileListViewModel(FileManagerService* fileService,
     refresh();
 }
 
+FileListViewModel::~FileListViewModel()
+{
+    // QPointer watcher's auto-delete 由 QObject parent 控制；显式清空一次保证析构顺序
+    const auto watchers = m_probeWatchers.values();
+    m_probeWatchers.clear();
+    for (const auto& w : watchers) {
+        if (!w) continue;
+        w->disconnect();
+        w->cancel();
+        // Qt6 的 QFutureWatcher::waitForFinished() 无超时参数；析构期短轮询避免长 probe 阻塞进程退出
+        QElapsedTimer t; t.start();
+        while (w->isRunning() && t.elapsed() < 5000) {
+            QThread::msleep(10);
+        }
+        w->deleteLater();
+    }
+}
+
 int FileListViewModel::rowCount(const QModelIndex& parent) const
 {
     if (parent.isValid()) return 0;
@@ -66,6 +89,8 @@ QVariant FileListViewModel::data(const QModelIndex& index, int role) const
         return it.lastOpened;
     case ThumbnailPathRole:
         return it.thumbnailPath;
+    case DurationRole:
+        return it.durationMs;
     default:
         return {};
     }
@@ -79,6 +104,7 @@ QHash<int, QByteArray> FileListViewModel::roleNames() const
         { SizeRole,          "sizeBytes" },
         { LastOpenedRole,    "lastOpened" },
         { ThumbnailPathRole, "thumbnailPath" },
+        { DurationRole,      "durationMs" },
     };
 }
 
@@ -102,6 +128,9 @@ void FileListViewModel::addFromDirectory(const QString& dir)
         if (!exist.contains(it.path)) m_items.append(it);
     }
     endResetModel();
+
+    // 新加入的文件：启动异步 probe 补 duration/thumbnail
+    enqueueMissingProbes();
 }
 
 void FileListViewModel::refresh()
@@ -110,6 +139,8 @@ void FileListViewModel::refresh()
     beginResetModel();
     m_items = m_fileService->recentFiles(120);
     endResetModel();
+
+    enqueueMissingProbes();
 }
 
 void FileListViewModel::removeAt(int row)
@@ -117,6 +148,28 @@ void FileListViewModel::removeAt(int row)
     if (row < 0 || row >= m_items.size()) return;
     const QString path = m_items.at(row).path;
     if (m_fileService) m_fileService->removeFromRecent(path);
+
+    // 取消该行以及后续所有按 row 索引的 watcher（它们的 row 在 removeAt 后会偏移）
+    QList<int> toRemove;
+    for (auto it = m_probeWatchers.begin(); it != m_probeWatchers.end(); ++it) {
+        if (it.key() >= row) toRemove.append(it.key());
+    }
+    for (int k : toRemove) {
+        auto it = m_probeWatchers.find(k);
+        if (it != m_probeWatchers.end()) {
+            if (*it) {
+                (*it)->disconnect();
+                (*it)->cancel();
+                QElapsedTimer t; t.start();
+                while ((*it)->isRunning() && t.elapsed() < 2000) {
+                    QThread::msleep(10);
+                }
+                (*it)->deleteLater();
+            }
+            m_probeWatchers.erase(it);
+        }
+    }
+
     beginRemoveRows({}, row, row);
     m_items.removeAt(row);
     endRemoveRows();
@@ -137,4 +190,72 @@ void FileListViewModel::onPlayerFrameDecoded(const QImage& frame)
     m_pendingThumbForPath.clear();
     m_fileService->saveThumbnail(path, frame);
     // saveThumbnail 会发 recentFilesChanged，间接 refresh 更新缩略图路径
+}
+
+// ---------------------------------------------------------------------------
+// 异步 probe 调度
+// ---------------------------------------------------------------------------
+
+void FileListViewModel::enqueueMissingProbes()
+{
+    // 跳过时长已知的条目；缩略图单独靠 saveThumbnail/open 流程补
+    for (int i = 0; i < m_items.size(); ++i) {
+        const auto& it = m_items.at(i);
+        if (it.durationMs > 0) continue;
+        if (m_probeWatchers.contains(i)) continue;
+
+        const QString p = it.path;
+        // 只处理本地存在文件；流/URL 跳过
+        const QFileInfo fi(p);
+        if (!fi.exists()) continue;
+
+        const QString lower = p.toLower();
+        if (lower.startsWith(QStringLiteral("rtsp")) ||
+            lower.startsWith(QStringLiteral("rtmp")) ||
+            lower.startsWith(QStringLiteral("http"))) continue;
+
+        auto* watcher = new QFutureWatcher<MediaProbeResult>(this);
+        const QString mediaPath = p;
+        watcher->setFuture(MediaProbe().probeAsync(mediaPath, 480));
+
+        // row 必须按值捕获：watcher 完成时 m_items 可能已经重排
+        const int row = i;
+        connect(watcher, &QFutureWatcher<MediaProbeResult>::finished,
+                this, [this, watcher, row, mediaPath]() {
+            if (!watcher) return;
+            const auto r = watcher->result();
+            watcher->deleteLater();
+
+            // 越界（refresh 后）→ 丢弃
+            if (row < 0 || row >= m_items.size()) return;
+
+            VideoFileItem& it2 = m_items[row];
+            // 路径检查：若 refresh 后该行的 path 已经不同，丢弃本次结果
+            if (it2.path != mediaPath) return;
+
+            bool changed = false;
+            if (r.durationMs > 0 && it2.durationMs != r.durationMs) {
+                it2.durationMs = r.durationMs;
+                changed = true;
+                if (m_fileService) m_fileService->updateDurationMs(it2.path, r.durationMs);
+            }
+            if (!r.thumbnail.isEmpty() && it2.thumbnailPath != r.thumbnail) {
+                it2.thumbnailPath = r.thumbnail;
+                changed = true;
+            }
+            if (changed) {
+                const QModelIndex idx = index(row);
+                emit dataChanged(idx, idx,
+                                 { ThumbnailPathRole, DurationRole });
+            }
+            m_probeWatchers.remove(row);
+        });
+
+        m_probeWatchers.insert(i, watcher);
+    }
+}
+
+void FileListViewModel::onProbeFinished(int /*row*/)
+{
+    // 仅作接口占位，便于后续扩展；实际逻辑由 lambda 直接处理
 }

@@ -78,7 +78,8 @@ void DatabaseManager::createTables()
         // 最近文件
         "CREATE TABLE IF NOT EXISTS recent_files ("
         "  path TEXT PRIMARY KEY,"
-        "  last_opened DATETIME DEFAULT CURRENT_TIMESTAMP)",
+        "  last_opened DATETIME DEFAULT CURRENT_TIMESTAMP,"
+        "  duration_ms INTEGER NOT NULL DEFAULT 0)",
         // 索引
         "CREATE INDEX IF NOT EXISTS idx_messages_conv "
         "  ON messages(conversation_id, timestamp)",
@@ -92,6 +93,32 @@ void DatabaseManager::createTables()
             m_lastError = q.lastError().text();
         }
     }
+
+    // 兼容升级：旧库可能没有 duration_ms；缺则 ALTER 加上
+    ensureColumn(QStringLiteral("recent_files"),
+                 QStringLiteral("duration_ms"),
+                 QStringLiteral("INTEGER NOT NULL DEFAULT 0"));
+}
+
+void DatabaseManager::ensureColumn(const QString& table,
+                                   const QString& column,
+                                   const QString& definition)
+{
+    // PRAGMA 不支持 ? 绑定，需要拼接（此处 table/column/definition 均为内部硬编码常量）
+    QSqlQuery q(m_db);
+    if (!q.exec(QStringLiteral("PRAGMA table_info(%1)").arg(table))) return;
+    bool exists = false;
+    while (q.next()) {
+        if (q.value(1).toString().compare(column, Qt::CaseInsensitive) == 0) {
+            exists = true;
+            break;
+        }
+    }
+    if (exists) return;
+
+    QSqlQuery alter(m_db);
+    alter.exec(QStringLiteral("ALTER TABLE %1 ADD COLUMN %2 %3")
+               .arg(table, column, definition));
 }
 
 bool DatabaseManager::exec(const QString& sql, const QVariantList& bindings)

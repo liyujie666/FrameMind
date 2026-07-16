@@ -50,5 +50,10 @@
         <file>icons/up_light.png</file>
         <file>icons/volume_dark.png</file>
         <file>icons/volume_light.png</file>
+        <file>icons/image_audio_2.jpg</file>
+        <file>icons/image_rtmp.png</file>
+        <file>icons/image_rtsp.png</file>
+        <file>icons/fold_dark.png</file>
+        <file>icons/fold_light.png</file>
     </qresource>
 </RCC>

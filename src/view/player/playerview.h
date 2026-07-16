@@ -6,7 +6,7 @@
 #include <QResizeEvent>
 #include <QKeyEvent>
 #include <QTimer>
-#include <QPointer>
+
 
 class VideoRenderWidget;
 class PlayerControlBar;
@@ -42,8 +42,8 @@ public slots:
 
 private:
     void bindViewModel();
-    void layoutChildren();
     void enterFullscreen();
+    void updateControlBarGeometry();
     bool eventFilter(QObject* obj, QEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
@@ -60,11 +60,7 @@ private:
     QTimer                 m_hideTimer;
     int                    m_hideDelayMs = 3000;
 
-    // 全屏前保存的父窗口和布局信息
-    QPointer<QWidget>      m_originalParent;
-    QPoint                 m_originalPos;
-    QSize                  m_originalSize;
-    Qt::WindowFlags        m_originalFlags{};
+    QWidget*               m_fullscreenWindow = nullptr;
 };
 
 #endif // FRAMEMIND_PLAYERVIEW_H

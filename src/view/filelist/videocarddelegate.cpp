@@ -5,7 +5,6 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QLinearGradient>
-#include <QFileInfo>
 #include <QPixmap>
 #include <QFontMetrics>
 
@@ -123,49 +122,70 @@ void VideoCardDelegate::paint(QPainter* painter,
     }
     painter->restore();
 
-    // ---- 时长 / 扩展名 徽标（右下角）----
-    QFileInfo fi(index.data(FileListViewModel::PathRole).toString());
-    const QString ext = fi.suffix().toUpper();
-    if (!ext.isEmpty()) {
+    // ---- 缩略图右下角时长徽标 ----
+    qint64 durationMs = index.data(FileListViewModel::DurationRole).toLongLong();
+    QString durationText;
+    if (durationMs > 0) {
+        const qint64 totalSec = durationMs / 1000;
+        const qint64 h = totalSec / 3600;
+        const qint64 m = (totalSec % 3600) / 60;
+        const qint64 s = totalSec % 60;
+        if (h > 0)
+            durationText = QStringLiteral("%1:%2:%3")
+                .arg(h)
+                .arg(m, 2, 10, QLatin1Char('0'))
+                .arg(s, 2, 10, QLatin1Char('0'));
+        else
+            durationText = QStringLiteral("%1:%2")
+                .arg(m)
+                .arg(s, 2, 10, QLatin1Char('0'));
+    }
+
+    if (!durationText.isEmpty()) {
         QFont badgeFont = option.font;
         badgeFont.setPixelSize(10);
         badgeFont.setBold(true);
         painter->setFont(badgeFont);
         QFontMetrics fm(badgeFont);
-        const int w = fm.horizontalAdvance(ext) + 12;
-        const int h = 18;
-        QRect badge(thumbRect.right() - w - 8,
-                    thumbRect.bottom() - h - 8, w, h);
+        const int dw = fm.horizontalAdvance(durationText) + 12;
+        const int dh = 18;
+        QRect dRect(thumbRect.right() - dw - 8,
+                    thumbRect.bottom() - dh - 8, dw, dh);
         painter->setPen(Qt::NoPen);
         painter->setBrush(QColor(0, 0, 0, 170));
-        painter->drawRoundedRect(badge, 4, 4);
+        painter->drawRoundedRect(dRect, 4, 4);
         painter->setPen(QColor("#E0E0E0"));
-        painter->drawText(badge, Qt::AlignCenter, ext);
+        painter->drawText(dRect, Qt::AlignCenter, durationText);
     }
 
-    // ---- 文本区（文件名 + 大小）----
+    // ---- 信息栏：单行 = 左 文件名 | 右 文件大小 ----
     QRect textRect = card;
     textRect.setTop(thumbRect.bottom() + 1);
     textRect = textRect.adjusted(12, 8, -12, -8);
 
-    QFont nameFont = option.font;
-    nameFont.setPixelSize(13);
-    nameFont.setWeight(QFont::Medium);
-    painter->setFont(nameFont);
-    painter->setPen(QColor("#E0E0E0"));
-    const QString elidedName = QFontMetrics(nameFont).elidedText(
-        displayName, Qt::ElideMiddle, textRect.width());
-    painter->drawText(textRect.adjusted(0, 0, 0, -18),
-                      Qt::AlignLeft | Qt::AlignTop, elidedName);
+    // 文件大小：先算好右侧宽度，便于文件名按剩余宽度 elide
+    const qint64 sz = index.data(FileListViewModel::SizeRole).toLongLong();
+    const QString sizeText = sz > 0 ? humanFileSize(sz) : QStringLiteral("—");
 
     QFont metaFont = option.font;
     metaFont.setPixelSize(11);
     painter->setFont(metaFont);
+    QFontMetrics metaFm(metaFont);
+    const int sizeW = metaFm.horizontalAdvance(sizeText);
+
+    QRect nameRect = textRect;
+    nameRect.setRight(nameRect.right() - sizeW - 8);
+
+    QRect sizeRect = textRect;
+    sizeRect.setLeft(sizeRect.right() - sizeW);
+
+    painter->setPen(QColor("#E0E0E0"));
+    const QString elidedName = metaFm.elidedText(
+        displayName, Qt::ElideMiddle, nameRect.width());
+    painter->drawText(nameRect, Qt::AlignLeft | Qt::AlignVCenter, elidedName);
+
     painter->setPen(QColor("#8B8B8B"));
-    const qint64 sz = index.data(FileListViewModel::SizeRole).toLongLong();
-    const QString meta = sz > 0 ? humanFileSize(sz) : QStringLiteral("—");
-    painter->drawText(textRect,
-                      Qt::AlignLeft | Qt::AlignBottom, meta);
+    painter->drawText(sizeRect, Qt::AlignRight | Qt::AlignVCenter, sizeText);
 
     // ---- hover / selected 描边 ----
     QColor strokeColor;
