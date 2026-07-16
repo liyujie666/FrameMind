@@ -79,8 +79,8 @@ PlayerControlBar::PlayerControlBar(QWidget* parent)
     connect(m_volumeSlider, &QSlider::valueChanged, this,
             [this](int value) {
                 m_currentVolume = value;
-                m_volumeSlider->setValue(value);
                 updateVolumeIcon(m_isMuted, value);
+                emit volumeChanged(value);
             });
 
     // 静音
@@ -120,6 +120,7 @@ PlayerControlBar::PlayerControlBar(QWidget* parent)
     m_fullscreenButton->setStyleSheet(QStringLiteral(
         "QToolButton { border:none; padding:4px; border-radius:4px; background:transparent; }"
         "QToolButton:hover { background:rgba(255,255,255,20); }"));
+    connect(m_fullscreenButton, &QToolButton::clicked, this, &PlayerControlBar::fullscreenClicked);
 
     layout->addWidget(m_playButton);
     layout->addWidget(m_positionSlider, 1);
@@ -150,8 +151,28 @@ void PlayerControlBar::updateIcons()
     updateVolumeIcon(m_isMuted, m_currentVolume);
 
     // 全屏图标
-    QIcon fullscreenIcon(":/icons/fullscreen_light.png");
-    m_fullscreenButton->setIcon(fullscreenIcon);
+    updateFullscreenIcon();
+}
+
+void PlayerControlBar::updateFullscreenIcon()
+{
+    if (m_isFullscreen) {
+        // 使用 emptyscreen 图标表示"退出全屏"
+        QIcon exitIcon(":/icons/emptyscreen_light.png");
+        m_fullscreenButton->setIcon(exitIcon);
+        m_fullscreenButton->setToolTip(tr("退出全屏"));
+    } else {
+        QIcon fullscreenIcon(":/icons/fullscreen_light.png");
+        m_fullscreenButton->setIcon(fullscreenIcon);
+        m_fullscreenButton->setToolTip(tr("全屏"));
+    }
+}
+
+void PlayerControlBar::setFullscreen(bool fullscreen)
+{
+    if (m_isFullscreen == fullscreen) return;
+    m_isFullscreen = fullscreen;
+    updateFullscreenIcon();
 }
 
 void PlayerControlBar::updatePlayPauseIcon(PlayerState state)

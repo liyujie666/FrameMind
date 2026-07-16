@@ -2,6 +2,7 @@
 
 #include "view/chat/chatbubblewidget.h"
 #include "viewmodel/chatmessagelistmodel.h"
+#include "service/themeservice.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -30,6 +31,23 @@ ChatMessageList::ChatMessageList(QWidget* parent)
     m_layout->setSpacing(12);
     m_layout->addStretch(1);   // 末尾弹簧，气泡插入其前
     setWidget(m_container);
+}
+
+void ChatMessageList::setThemeService(ThemeService* theme)
+{
+    m_theme = theme;
+}
+
+void ChatMessageList::refreshBubbleColors()
+{
+    // 批量刷新：暂停布局更新以减少重绘次数
+    m_container->setUpdatesEnabled(false);
+    for (ChatBubbleWidget* bubble : std::as_const(m_bubbles)) {
+        bubble->setThemeService(m_theme);
+        bubble->refreshColors();
+    }
+    m_container->setUpdatesEnabled(true);
+    m_container->update();
 }
 
 void ChatMessageList::setModel(ChatMessageListModel* model)
@@ -86,10 +104,12 @@ void ChatMessageList::appendRow(int row)
     const ChatMessage msg = m_model->messageAt(row);
 
     auto* wrapper = new QWidget(m_container);
+    wrapper->setAttribute(Qt::WA_StyledBackground, false);
     auto* h = new QHBoxLayout(wrapper);
     h->setContentsMargins(0, 0, 0, 0);
 
     auto* bubble = new ChatBubbleWidget(wrapper);
+    bubble->setThemeService(m_theme);
     bubble->setMessage(msg);
     connect(bubble, &ChatBubbleWidget::linkActivated,
             this, &ChatMessageList::linkActivated);

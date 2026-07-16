@@ -99,12 +99,28 @@ void ChatView::setThemeService(ThemeService* theme)
     if (m_theme == theme) return;
     if (m_theme) disconnect(m_theme, nullptr, this, nullptr);
     m_theme = theme;
+
+    // 传播到子组件
+    if (m_messageList) m_messageList->setThemeService(theme);
+    if (m_inputWidget) m_inputWidget->setThemeService(theme);
+
     if (m_theme) {
         connect(m_theme, &ThemeService::themeChanged,
-                this, [this]() { applyThemeColors(); update(); });
+                this, &ChatView::onThemeChanged);
         applyThemeColors();
         update();
     }
+}
+
+void ChatView::onThemeChanged()
+{
+    applyThemeColors();
+
+    // 批量刷新气泡颜色（不重建 widget，避免布局抖动）
+    if (m_messageList) m_messageList->refreshBubbleColors();
+    if (m_inputWidget) m_inputWidget->setThemeService(m_theme);
+
+    update();
 }
 
 void ChatView::applyThemeColors()
@@ -118,6 +134,9 @@ void ChatView::applyThemeColors()
         m_surfaceVariant     = m_theme->color(QStringLiteral("surfaceVariant"));
         m_primary            = m_theme->color(QStringLiteral("primary"));
     }
+
+    // 暂停本控件树的更新，合并多次 setStyleSheet 的重绘为一次
+    setUpdatesEnabled(false);
 
     // 标题
     m_titleLabel->setStyleSheet(QString(
@@ -144,7 +163,6 @@ void ChatView::applyThemeColors()
     const QColor scrollThumb = m_theme
         ? m_theme->color(QStringLiteral("scrollThumb"))
         : QColor("#3A3A4A");
-    const QColor scrollTrack = m_surfaceVariant.lighter(105);
     const QString thumbHover = scrollThumb.lighter(130).name();
     const QString thumbPressed = scrollThumb.lighter(160).name();
     m_messageList->setStyleSheet(QString(
@@ -167,6 +185,9 @@ void ChatView::applyThemeColors()
         "QScrollBar::handle:vertical:hover { background:%2; }"
         "QScrollBar::handle:vertical:pressed { background:%3; }")
         .arg(scrollThumb.name(), thumbHover, thumbPressed));
+
+    // 恢复更新，触发一次统一重绘
+    setUpdatesEnabled(true);
 }
 
 void ChatView::paintEvent(QPaintEvent* /*event*/)

@@ -10,13 +10,15 @@
 #include <QStackedLayout>
 #include <QEvent>
 #include <QResizeEvent>
+#include <QMouseEvent>
 #include <QPropertyAnimation>
 #include <QParallelAnimationGroup>
 #include <QGraphicsOpacityEffect>
+#include <QApplication>
+#include <QScreen>
 #include <QtMath>
 
 namespace {
-// 视频与外层容器间距由 playerPanelLayout->setContentsMargins 控制，此处为 0
 constexpr int kOuterMargin = 0;
 }
 
@@ -24,22 +26,22 @@ PlayerView::PlayerView(QWidget* parent)
     : QWidget(parent)
     , m_mouseOver(false)
     , m_controlBarVisible(false)
+    , m_isFullscreen(false)
 {
-    // 顶层透明：底色由外层 ThemedPanel / 页面容器提供
     setAttribute(Qt::WA_StyledBackground, false);
     setAutoFillBackground(false);
-
-    // 视频容器自适应外层尺寸，保持 16:9
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
-    // 圆角视频容器（尺寸由 layoutChildren 动态计算）
+    // 允许接收键盘事件（全屏 ESC 退出）
+    setFocusPolicy(Qt::StrongFocus);
+
+    // 圆角视频容器
     m_videoContainer = new RoundedVideoContainer(this);
     m_videoContainer->setRadius(12);
 
     m_renderWidget = new VideoRenderWidget(m_videoContainer);
     m_renderWidget->setContainerBgColor(Qt::black);
 
-    // 视频容器内部布局（占满容器）
     auto* videoLayout = new QVBoxLayout(m_videoContainer);
     videoLayout->setContentsMargins(0, 0, 0, 0);
     videoLayout->setSpacing(0);
@@ -57,7 +59,7 @@ PlayerView::PlayerView(QWidget* parent)
     controlLayout->setSpacing(0);
     controlLayout->addWidget(m_controlBar);
 
-    // 初始化透明度效果（控制栏始终保持在正确位置，初始隐藏）
+    // 初始化透明度效果
     auto* opacity = new QGraphicsOpacityEffect(controlContainer);
     controlContainer->setGraphicsEffect(opacity);
     opacity->setOpacity(0);
@@ -65,15 +67,19 @@ PlayerView::PlayerView(QWidget* parent)
     // 保证控制栏浮在最上层
     m_videoContainer->stackUnder(controlContainer);
 
-    // 隐藏定时器：鼠标离开 3s 后隐藏控制栏
+    // 隐藏定时器
     m_hideTimer.setSingleShot(true);
     m_hideTimer.setInterval(m_hideDelayMs);
     connect(&m_hideTimer, &QTimer::timeout, this, &PlayerView::hideControlBar);
 
+    // 安装事件过滤器以追踪鼠标进入/离开
     m_videoContainer->installEventFilter(this);
     controlContainer->installEventFilter(this);
 
-    // 初始位置摆放
+    // 连接全屏按钮信号
+    connect(m_controlBar, &PlayerControlBar::fullscreenClicked,
+            this, &PlayerView::toggleFullscreen);
+
     layoutChildren();
 }
 
@@ -86,7 +92,6 @@ QSize PlayerView::sizeHint() const
 
 void PlayerView::setThemeService(ThemeService* theme)
 {
-    // 视频渲染背景保持黑色（无论亮暗主题）；预留接口。
     if (m_controlBar) {
         m_controlBar->setThemeService(theme);
     }
@@ -102,19 +107,15 @@ void PlayerView::layoutChildren()
 {
     if (!m_videoContainer) return;
 
-    // 根据 PlayerView 当前尺寸计算 16:9 视频区域
-    // 外层间距由 playerPanelLayout->setContentsMargins(16,16,16,16) 控制
     constexpr double kVideoAspect = 16.0 / 9.0;
     const int availW = width();
     const int availH = height();
 
     int videoW, videoH;
     if (availW * 1.0 / availH > kVideoAspect) {
-        // 高度受限
         videoH = availH;
         videoW = qRound(videoH * kVideoAspect);
     } else {
-        // 宽度受限
         videoW = availW;
         videoH = qRound(videoW / kVideoAspect);
     }
@@ -124,13 +125,18 @@ void PlayerView::layoutChildren()
     m_videoContainer->setFixedSize(videoW, videoH);
     m_videoContainer->move(cx, cy);
 
-    // 控制栏位置：视频底部内侧，宽度 = 视频宽 * 4/5，居中，距底 8px
-    // 注意：控制栏始终保持在视频内，通过透明度控制可见性
+    // 全屏时去除圆角
+    if (m_isFullscreen) {
+        m_videoContainer->setRadius(0);
+    } else {
+        m_videoContainer->setRadius(12);
+    }
+
+    // 控制栏位置：视频底部内侧
     if (m_controlContainer) {
-        const int controlWidth  = videoW * 4 / 5;
+        const int controlWidth  = m_isFullscreen ? qMin(videoW * 4 / 5, 900) : videoW * 4 / 5;
         const int controlHeight = 40;
         const int controlX = cx + (videoW - controlWidth) / 2;
-        // 控制栏始终保持在视频底部内侧
         const int controlY = cy + videoH - controlHeight - 8;
         m_controlContainer->setFixedSize(controlWidth, controlHeight);
         m_controlContainer->move(controlX, controlY);
@@ -145,13 +151,106 @@ bool PlayerView::eventFilter(QObject* obj, QEvent* event)
         m_mouseOver = true;
         m_hideTimer.stop();
         showControlBar();
-        return true;
+        // 返回 false，不吞噬事件，让子控件也能收到 hover 效果
+        return false;
     } else if (event->type() == QEvent::Leave) {
         m_mouseOver = false;
         m_hideTimer.start();
-        return true;
+        return false;
     }
     return QWidget::eventFilter(obj, event);
+}
+
+void PlayerView::keyPressEvent(QKeyEvent* event)
+{
+    if (event->key() == Qt::Key_Escape && m_isFullscreen) {
+        exitFullscreen();
+        event->accept();
+        return;
+    }
+    // F11 也可切换全屏
+    if (event->key() == Qt::Key_F11) {
+        toggleFullscreen();
+        event->accept();
+        return;
+    }
+    QWidget::keyPressEvent(event);
+}
+
+void PlayerView::mouseDoubleClickEvent(QMouseEvent* event)
+{
+    if (event->button() == Qt::LeftButton) {
+        toggleFullscreen();
+        event->accept();
+        return;
+    }
+    QWidget::mouseDoubleClickEvent(event);
+}
+
+void PlayerView::toggleFullscreen()
+{
+    if (m_isFullscreen) {
+        exitFullscreen();
+    } else {
+        enterFullscreen();
+    }
+}
+
+void PlayerView::enterFullscreen()
+{
+    if (m_isFullscreen) return;
+
+    // 保存当前状态
+    m_originalParent = parentWidget();
+    m_originalPos = pos();
+    m_originalSize = size();
+    m_originalFlags = windowFlags();
+
+    m_isFullscreen = true;
+
+    // 脱离父窗口，变为独立顶层窗口
+    setParent(nullptr);
+    setWindowFlags(Qt::Window | Qt::FramelessWindowHint);
+    showFullScreen();
+
+    // 确保焦点在此控件上以接收键盘事件
+    setFocus();
+    activateWindow();
+
+    // 更新控制栏全屏状态
+    m_controlBar->setFullscreen(true);
+    layoutChildren();
+
+    emit fullscreenChanged(true);
+}
+
+void PlayerView::exitFullscreen()
+{
+    if (!m_isFullscreen) return;
+
+    m_isFullscreen = false;
+
+    // 恢复为子窗口
+    setWindowFlags(m_originalFlags);
+    if (m_originalParent) {
+        setParent(m_originalParent);
+        move(m_originalPos);
+        resize(m_originalSize);
+        show();
+
+        // 重新将自己放入父布局（如果布局还存在）
+        if (m_originalParent->layout()) {
+            // 不需要手动 addWidget，setParent 后 show 即可（布局自动管理）
+        }
+    } else {
+        show();
+    }
+
+    // 更新控制栏全屏状态
+    m_controlBar->setFullscreen(false);
+    layoutChildren();
+
+    emit fullscreenChanged(false);
 }
 
 void PlayerView::showControlBar()

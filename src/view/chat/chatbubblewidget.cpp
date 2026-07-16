@@ -4,16 +4,28 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QPixmap>
+#include <QPainter>
+#include <QPainterPath>
+
+#include "service/themeservice.h"
 
 ChatBubbleWidget::ChatBubbleWidget(QWidget* parent)
     : QFrame(parent)
 {
+    // 禁用 QFrame 默认绘制，完全自绘
+    setFrameShape(QFrame::NoFrame);
+    setAttribute(Qt::WA_StyledBackground, false);
+    setAutoFillBackground(false);
+    // 去掉继承的全局 QSS 影响
+    setStyleSheet(QStringLiteral("ChatBubbleWidget { background:transparent; border:none; }"));
+
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(12, 8, 12, 8);
     layout->setSpacing(6);
 
     // 帧缩略图横排
     m_thumbs = new QWidget(this);
+    m_thumbs->setAttribute(Qt::WA_StyledBackground, false);
     m_thumbsLayout = new QHBoxLayout(m_thumbs);
     m_thumbsLayout->setContentsMargins(0, 0, 0, 0);
     m_thumbsLayout->setSpacing(6);
@@ -27,31 +39,81 @@ ChatBubbleWidget::ChatBubbleWidget(QWidget* parent)
     m_content->setTextInteractionFlags(Qt::TextSelectableByMouse
                                        | Qt::LinksAccessibleByMouse);
     m_content->setOpenExternalLinks(false);
+    // 使用透明背景，让自绘的圆角底色透出来
+    m_content->setStyleSheet(QStringLiteral("QLabel { background:transparent; border:none; }"));
     connect(m_content, &QLabel::linkActivated,
             this, &ChatBubbleWidget::linkActivated);
     layout->addWidget(m_content);
 
     setMaximumWidth(560);
-    applyStyle();
+
+    // 初始默认颜色（暗色方案）
+    m_bgColor = QColor("#252536");
+    m_textColor = QColor("#E0E0E0");
+    updateColors();
 }
 
-void ChatBubbleWidget::applyStyle()
+void ChatBubbleWidget::setThemeService(ThemeService* theme)
 {
-    if (m_role == ChatMessage::User) {
-        setStyleSheet(QStringLiteral(
-            "QFrame { background:#2979FF; border-radius:12px; }"
-            "QLabel { color:#FFFFFF; background:transparent; }"));
+    m_theme = theme;
+    updateColors();
+}
+
+void ChatBubbleWidget::refreshColors()
+{
+    updateColors();
+    update();
+}
+
+void ChatBubbleWidget::updateColors()
+{
+    if (m_theme) {
+        if (m_role == ChatMessage::User) {
+            m_bgColor = m_theme->color(QStringLiteral("userBubble"));
+            m_textColor = m_theme->color(QStringLiteral("userBubbleText"));
+        } else {
+            m_bgColor = m_theme->color(QStringLiteral("aiBubble"));
+            m_textColor = m_theme->color(QStringLiteral("aiBubbleText"));
+        }
     } else {
-        setStyleSheet(QStringLiteral(
-            "QFrame { background:#252536; border-radius:12px; }"
-            "QLabel { color:#E0E0E0; background:transparent; }"));
+        if (m_role == ChatMessage::User) {
+            m_bgColor = QColor("#2979FF");
+            m_textColor = QColor("#FFFFFF");
+        } else {
+            m_bgColor = QColor("#252536");
+            m_textColor = QColor("#E0E0E0");
+        }
     }
+
+    // 仅更新文字颜色（通过 QPalette，不触发样式重算）
+    QPalette pal = m_content->palette();
+    pal.setColor(QPalette::WindowText, m_textColor);
+    pal.setColor(QPalette::Text, m_textColor);
+    m_content->setPalette(pal);
+
+    // 链接颜色
+    const QColor linkColor = m_role == ChatMessage::User
+        ? QColor("#B3D9FF")   // 亮蓝对比白色背景
+        : (m_theme ? m_theme->color(QStringLiteral("primary")) : QColor("#2979FF"));
+    QPalette linkPal = m_content->palette();
+    linkPal.setColor(QPalette::Link, linkColor);
+    m_content->setPalette(linkPal);
+}
+
+void ChatBubbleWidget::paintEvent(QPaintEvent* /*event*/)
+{
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+
+    QPainterPath path;
+    path.addRoundedRect(QRectF(rect()), 12, 12);
+    painter.fillPath(path, m_bgColor);
 }
 
 void ChatBubbleWidget::setMessage(const ChatMessage& msg)
 {
     m_role = msg.role;
-    applyStyle();
+    updateColors();
 
     // 缩略图
     QLayoutItem* item = nullptr;
@@ -64,7 +126,7 @@ void ChatBubbleWidget::setMessage(const ChatMessage& msg)
             auto* thumb = new QLabel(m_thumbs);
             thumb->setPixmap(QPixmap::fromImage(img).scaled(
                 96, 54, Qt::KeepAspectRatio, Qt::SmoothTransformation));
-            thumb->setStyleSheet(QStringLiteral("border-radius:4px;"));
+            thumb->setStyleSheet(QStringLiteral("border-radius:4px; background:transparent;"));
             m_thumbsLayout->addWidget(thumb);
         }
         m_thumbsLayout->addStretch(1);
@@ -78,6 +140,5 @@ void ChatBubbleWidget::setMessage(const ChatMessage& msg)
 
 void ChatBubbleWidget::updateContent(const QString& markdown)
 {
-    // 流式初期可能为空，给一个占位避免气泡塌陷
     m_content->setText(markdown.isEmpty() ? QStringLiteral("…") : markdown);
 }

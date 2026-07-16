@@ -36,6 +36,7 @@ private:
     void showConversationMenu();
     void onLinkActivated(const QString& href);
     void applyThemeColors();
+    void onThemeChanged();
 
     ChatMessageList* m_messageList = nullptr;
     ChatInputWidget* m_inputWidget = nullptr;

@@ -4,6 +4,7 @@
 #include <QApplication>
 #include <QFile>
 #include <QPalette>
+#include <QWidget>
 
 ThemeService::ThemeService(SettingsService* settings, QObject* parent)
     : QObject(parent)
@@ -75,7 +76,18 @@ void ThemeService::applyTheme()
     }
 
     if (!qss.isEmpty()) {
+        // 性能优化：在应用全局样式表前暂停所有顶层窗口的更新，
+        // 避免 setStyleSheet 逐个遍历 widget 树时触发大量中间重绘。
+        const auto topLevelWidgets = qApp->topLevelWidgets();
+        for (QWidget* w : topLevelWidgets) {
+            w->setUpdatesEnabled(false);
+        }
+
         qApp->setStyleSheet(qss);
+
+        for (QWidget* w : topLevelWidgets) {
+            w->setUpdatesEnabled(true);
+        }
     }
 
     emit themeChanged(dark);

@@ -4,7 +4,9 @@
 #include <QWidget>
 #include <QEvent>
 #include <QResizeEvent>
+#include <QKeyEvent>
 #include <QTimer>
+#include <QPointer>
 
 class VideoRenderWidget;
 class PlayerControlBar;
@@ -15,6 +17,7 @@ class ThemeService;
 /**
  * 播放器视图：组合 VideoRenderWidget + PlayerControlBar。
  * 视频容器固定尺寸（720×405，16:9），不随窗口大小变化；外围留白由父容器提供。
+ * 支持全屏模式：双击视频区域或点击全屏按钮进入全屏，ESC 退出。
  */
 class PlayerView : public QWidget {
     Q_OBJECT
@@ -22,22 +25,29 @@ public:
     explicit PlayerView(QWidget* parent = nullptr);
 
     void setViewModel(PlayerViewModel* vm);
-    void setThemeService(ThemeService* theme);   // 预留：主题变更时可调整外壳配色
+    void setThemeService(ThemeService* theme);
 
     QSize sizeHint() const override;
+    bool isFullscreen() const { return m_isFullscreen; }
 
 signals:
     void requestShowControlBar(bool show);
+    void fullscreenChanged(bool fullscreen);
 
 public slots:
     void showControlBar();
     void hideControlBar();
+    void toggleFullscreen();
+    void exitFullscreen();
 
 private:
     void bindViewModel();
     void layoutChildren();
+    void enterFullscreen();
     bool eventFilter(QObject* obj, QEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
+    void keyPressEvent(QKeyEvent* event) override;
+    void mouseDoubleClickEvent(QMouseEvent* event) override;
 
     RoundedVideoContainer* m_videoContainer = nullptr;
     QWidget*               m_controlContainer = nullptr;
@@ -46,8 +56,15 @@ private:
     PlayerViewModel*       m_vm = nullptr;
     bool                   m_mouseOver = false;
     bool                   m_controlBarVisible = false;
+    bool                   m_isFullscreen = false;
     QTimer                 m_hideTimer;
     int                    m_hideDelayMs = 3000;
+
+    // 全屏前保存的父窗口和布局信息
+    QPointer<QWidget>      m_originalParent;
+    QPoint                 m_originalPos;
+    QSize                  m_originalSize;
+    Qt::WindowFlags        m_originalFlags{};
 };
 
 #endif // FRAMEMIND_PLAYERVIEW_H

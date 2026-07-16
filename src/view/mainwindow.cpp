@@ -209,6 +209,8 @@ MainWindow::MainWindow(PlayerViewModel* playerVM,
 
     if (m_playerView && m_playerVM) {
         m_playerView->setViewModel(m_playerVM);
+        connect(m_playerView, &PlayerView::fullscreenChanged,
+                this, &MainWindow::onPlayerFullscreenChanged);
     }
     if (m_chatView && m_chatVM) {
         m_chatView->setViewModel(m_chatVM);
@@ -386,20 +388,26 @@ void MainWindow::onOpenSettings()
 
 void MainWindow::onThemeChanged(bool /*isDark*/)
 {
+    // 暂停整个主窗口更新，避免逐个 widget 刷新带来的闪烁和卡顿
+    setUpdatesEnabled(false);
+
     applyPageBackground();
 
-    // 重建 Analysis Tab 内容（简单粗暴刷新占位配色）
+    // 重建 Analysis Tab 内容（占位配色刷新）
     if (m_analysisStack) {
+        const int prevIdx = m_analysisTabs ? m_analysisTabs->currentIndex() : 0;
         while (m_analysisStack->count() > 0) {
             QWidget* w = m_analysisStack->widget(0);
             m_analysisStack->removeWidget(w);
-            w->deleteLater();
+            delete w;  // 直接 delete，不用 deleteLater（已从布局移除）
         }
         m_analysisStack->addWidget(buildAnalysisTabContent(nullptr, m_theme, 0));
         m_analysisStack->addWidget(buildAnalysisTabContent(nullptr, m_theme, 1));
         m_analysisStack->addWidget(buildAnalysisTabContent(nullptr, m_theme, 2));
-        if (m_analysisTabs) m_analysisStack->setCurrentIndex(m_analysisTabs->currentIndex());
+        m_analysisStack->setCurrentIndex(prevIdx);
     }
+
+    setUpdatesEnabled(true);
 }
 
 void MainWindow::applyPageBackground()
@@ -443,6 +451,20 @@ void MainWindow::onOpenVideoPath(const QString& path)
 
     if (m_pageStack && m_pageStack->currentIndex() != 0) {
         m_pageStack->setCurrentIndex(0);
+    }
+}
+
+void MainWindow::onPlayerFullscreenChanged(bool fullscreen)
+{
+    if (!fullscreen && m_playerView) {
+        // 退出全屏后，确保 PlayerView 重新归位到播放器面板布局中
+        if (m_playerPanel && m_playerPanel->layout()) {
+            auto* layout = qobject_cast<QVBoxLayout*>(m_playerPanel->layout());
+            if (layout && layout->indexOf(m_playerView) < 0) {
+                layout->addWidget(m_playerView, 1);
+            }
+        }
+        m_playerView->show();
     }
 }
 

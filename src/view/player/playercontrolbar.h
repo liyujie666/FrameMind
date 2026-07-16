@@ -26,12 +26,16 @@ public slots:
     void setVolumeDisplay(int vol);
     void setMuted(bool muted);
 
+public slots:
+    void setFullscreen(bool fullscreen);
+
 signals:
     void seekRequested(int64_t posMs);
     void playClicked();
     void volumeChanged(int vol);
     void speedChanged(float speed);
     void muteClicked();
+    void fullscreenClicked();
 
 private:
     static QString formatTime(int64_t ms);
@@ -39,6 +43,7 @@ private:
     void updateIcons();
     void updatePlayPauseIcon(PlayerState state);
     void updateVolumeIcon(bool muted, int volume);
+    void updateFullscreenIcon();
 
     QSlider*     m_positionSlider = nullptr;
     QToolButton* m_playButton = nullptr;
@@ -49,6 +54,7 @@ private:
     QComboBox*   m_speedCombo = nullptr;
     ThemeService* m_themeService = nullptr;
     bool         m_isMuted = false;
+    bool         m_isFullscreen = false;
     int          m_currentVolume = 50;
     PlayerState  m_lastPlayState = PlayerState::Stopped;
 

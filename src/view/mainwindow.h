@@ -50,6 +50,7 @@ private slots:
     void onNavRequested(int index);
     void onThemeChanged(bool isDark);
     void onOpenSettings();
+    void onPlayerFullscreenChanged(bool fullscreen);
 
 private:
     QWidget* buildChatPage();

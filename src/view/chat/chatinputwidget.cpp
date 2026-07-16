@@ -7,6 +7,8 @@
 #include <QHBoxLayout>
 #include <QKeyEvent>
 
+#include "service/themeservice.h"
+
 ChatInputWidget::ChatInputWidget(QWidget* parent)
     : QWidget(parent)
     , m_streaming(false)
@@ -27,11 +29,6 @@ ChatInputWidget::ChatInputWidget(QWidget* parent)
     m_frameBtn->setText(QStringLiteral("[📷] 当前帧"));
     m_frameBtn->setCheckable(true);
     m_frameBtn->setToolTip(tr("附带当前播放画面一起提问"));
-    m_frameBtn->setStyleSheet(QStringLiteral(
-        "QToolButton { border:1px solid #2D2D3D; background:#252538; color:#8B8B8B; "
-        "padding:4px 10px; border-radius:14px; font-size:12px; }"
-        "QToolButton:hover { border-color:#2979FF; color:#E0E0E0; }"
-        "QToolButton:checked { border-color:#2979FF; background:#2979FF; color:#FFFFFF; }"));
     topRow->addWidget(m_frameBtn);
 
     topRow->addStretch(1);
@@ -42,11 +39,6 @@ ChatInputWidget::ChatInputWidget(QWidget* parent)
     m_edit->setPlaceholderText(tr("输入问题…（Enter 发送，Shift+Enter 换行）"));
     m_edit->setFixedHeight(72);
     m_edit->installEventFilter(this);
-    m_edit->setStyleSheet(QStringLiteral(
-        "QTextEdit { background:#1A1A2A; border:1px solid #2D2D3D; border-radius:8px; "
-        "color:#E0E0E0; padding:8px 10px; font-size:13px; selection-background-color:#2979FF; }"
-        "QTextEdit:focus { border-color:#2979FF; }"
-        "QTextEdit:disabled { background:#161622; color:#5A5A5A; }"));
     layout->addWidget(m_edit);
 
     // 发送/停止
@@ -56,12 +48,6 @@ ChatInputWidget::ChatInputWidget(QWidget* parent)
     m_sendBtn = new QPushButton(tr("发送"), this);
     m_sendBtn->setMinimumWidth(72);
     m_sendBtn->setCursor(Qt::PointingHandCursor);
-    m_sendBtn->setStyleSheet(QStringLiteral(
-        "QPushButton { background:#2979FF; color:#FFFFFF; border:none; border-radius:6px; "
-        "padding:8px 20px; font-size:13px; font-weight:500; }"
-        "QPushButton:hover { background:#448AFF; }"
-        "QPushButton:pressed { background:#1565C0; }"
-        "QPushButton:disabled { background:#2979FF66; color:#8B8B8B; }"));
     connect(m_sendBtn, &QPushButton::clicked, this, [this]() {
         if (m_streaming) {
             emit stopRequested();
@@ -71,6 +57,69 @@ ChatInputWidget::ChatInputWidget(QWidget* parent)
     });
     bottomRow->addWidget(m_sendBtn);
     layout->addLayout(bottomRow);
+
+    // 应用默认颜色
+    applyColors();
+}
+
+void ChatInputWidget::setThemeService(ThemeService* theme)
+{
+    m_theme = theme;
+    applyColors();
+}
+
+void ChatInputWidget::applyColors()
+{
+    // 从 ThemeService 获取颜色，若无则使用暗色默认值
+    const QColor border = m_theme
+        ? m_theme->color(QStringLiteral("border"))
+        : QColor("#2D2D3D");
+    const QColor surface = m_theme
+        ? m_theme->color(QStringLiteral("surfaceVariant"))
+        : QColor("#252538");
+    const QColor textSecondary = m_theme
+        ? m_theme->color(QStringLiteral("textSecondary"))
+        : QColor("#8B8B8B");
+    const QColor textPrimary = m_theme
+        ? m_theme->color(QStringLiteral("textPrimary"))
+        : QColor("#E0E0E0");
+    const QColor primary = m_theme
+        ? m_theme->color(QStringLiteral("primary"))
+        : QColor("#2979FF");
+    const QColor primaryHover = m_theme
+        ? m_theme->color(QStringLiteral("primaryHover"))
+        : QColor("#448AFF");
+    const QColor primaryPressed = m_theme
+        ? m_theme->color(QStringLiteral("primaryPressed"))
+        : QColor("#1565C0");
+    const QColor inputBg = m_theme
+        ? m_theme->color(QStringLiteral("inputBg"))
+        : QColor("#1A1A2A");
+
+    m_frameBtn->setStyleSheet(QString(
+        "QToolButton { border:1px solid %1; background:%2; color:%3; "
+        "padding:4px 10px; border-radius:14px; font-size:12px; }"
+        "QToolButton:hover { border-color:%4; color:%5; }"
+        "QToolButton:checked { border-color:%4; background:%4; color:#FFFFFF; }")
+        .arg(border.name(), surface.name(), textSecondary.name(),
+             primary.name(), textPrimary.name()));
+
+    m_edit->setStyleSheet(QString(
+        "QTextEdit { background:%1; border:1px solid %2; border-radius:8px; "
+        "color:%3; padding:8px 10px; font-size:13px; selection-background-color:%4; }"
+        "QTextEdit:focus { border-color:%4; }"
+        "QTextEdit:disabled { background:%5; color:%6; }")
+        .arg(inputBg.name(), border.name(), textPrimary.name(),
+             primary.name(), surface.name(), textSecondary.name()));
+
+    m_sendBtn->setStyleSheet(QString(
+        "QPushButton { background:%1; color:#FFFFFF; border:none; border-radius:6px; "
+        "padding:8px 20px; font-size:13px; font-weight:500; }"
+        "QPushButton:hover { background:%2; }"
+        "QPushButton:pressed { background:%3; }"
+        "QPushButton:disabled { background:%4; color:#8B8B8B; }")
+        .arg(primary.name(), primaryHover.name(), primaryPressed.name(),
+             primary.name() + "66"));
 }
 
 void ChatInputWidget::setStreaming(bool streaming)
