@@ -254,3 +254,142 @@ void AgentService::clearHistory(const QString& conversationId)
 {
     m_histories.remove(conversationId);
 }
+
+// ============================================================
+// Tool Calling 版本（M4）
+// ============================================================
+
+void AgentService::sendMessageWithTools(const QString& conversationId,
+                                         const QString& text,
+                                         const QList<QImage>& frames,
+                                         const VideoContext& videoCtx,
+                                         const QJsonArray& tools)
+{
+    if (!m_network) {
+        emit responseError(conversationId, tr("网络组件未初始化"));
+        return;
+    }
+    applyActiveProvider();
+    if (m_apiKey.isEmpty()) {
+        emit responseError(conversationId,
+                            tr("未配置 API Key，请在设置中填写"));
+        return;
+    }
+    m_network->setAuthToken(m_apiKey);
+
+    // 记录活跃 ctx
+    if (!videoCtx.isEmpty()) m_activeCtx = videoCtx;
+    const VideoContext& ctx = videoCtx.isEmpty() ? m_activeCtx : videoCtx;
+
+    QJsonObject payload = buildRequestPayload(conversationId, text, frames, ctx);
+    if (!tools.isEmpty()) {
+        payload.insert(QStringLiteral("tools"), tools);
+        payload.insert(QStringLiteral("tool_choice"), QStringLiteral("auto"));
+    }
+    sendStreamWithTools(conversationId, payload);
+}
+
+void AgentService::continueWithToolResults(const QString& conversationId,
+                                             const QJsonArray& assistantToolCallMsg,
+                                             const QJsonArray& toolMessages,
+                                             const QJsonArray& tools)
+{
+    if (!m_network) {
+        emit responseError(conversationId, tr("网络组件未初始化"));
+        return;
+    }
+    applyActiveProvider();
+    m_network->setAuthToken(m_apiKey);
+
+    // 把 assistant tool_calls 消息 + tool 结果消息 追加到历史
+    QJsonArray& history = m_histories[conversationId];
+    for (const auto& v : assistantToolCallMsg) history.append(v);
+    for (const auto& v : toolMessages) history.append(v);
+
+    // 构造 messages
+    QJsonArray messages;
+    messages.append(QJsonObject{
+        { QStringLiteral("role"), QStringLiteral("system") },
+        { QStringLiteral("content"), buildSystemPrompt(m_activeCtx) } });
+    for (const auto& v : std::as_const(history)) messages.append(v);
+
+    QJsonObject payload;
+    payload.insert(QStringLiteral("model"), m_model);
+    payload.insert(QStringLiteral("stream"), true);
+    payload.insert(QStringLiteral("messages"), messages);
+    if (!tools.isEmpty()) {
+        payload.insert(QStringLiteral("tools"), tools);
+        payload.insert(QStringLiteral("tool_choice"), QStringLiteral("auto"));
+    }
+    sendStreamWithTools(conversationId, payload);
+}
+
+void AgentService::sendStreamWithTools(const QString& convId,
+                                          const QJsonObject& payload)
+{
+    m_currentConvId       = convId;
+    m_accumulated.clear();
+    m_pendingToolCalls    = QJsonArray();
+    m_pendingFinishReason.clear();
+    m_streaming = true;
+
+    QString base = m_endpoint;
+    while (base.endsWith('/')) base.chop(1);
+    const QUrl url(base + QStringLiteral("/chat/completions"));
+
+    m_network->streamPostRaw(
+        url, payload,
+        // onChoice: 完整 delta 对象
+        [this](const QJsonObject& choice) {
+            const QJsonObject delta = choice.value(QStringLiteral("delta")).toObject();
+            const QString content = delta.value(QStringLiteral("content")).toString();
+            if (!content.isEmpty()) {
+                m_accumulated += content;
+                emit responseChunk(m_currentConvId, content);
+            }
+            // 累积 tool_calls 增量
+            const QJsonArray tcArr = delta.value(QStringLiteral("tool_calls")).toArray();
+            for (const auto& v : tcArr) {
+                const QJsonObject tc = v.toObject();
+                const int index = tc.value(QStringLiteral("index")).toInt(0);
+                // 扩容
+                while (m_pendingToolCalls.size() <= index) {
+                    m_pendingToolCalls.append(QJsonObject{});
+                }
+                QJsonObject slot = m_pendingToolCalls.at(index).toObject();
+                if (tc.contains(QStringLiteral("id"))) {
+                    slot.insert(QStringLiteral("id"), tc.value(QStringLiteral("id")));
+                }
+                const QJsonObject fn = tc.value(QStringLiteral("function")).toObject();
+                if (!fn.isEmpty()) {
+                    QJsonObject slotFn = slot.value(QStringLiteral("function")).toObject();
+                    if (fn.contains(QStringLiteral("name"))) {
+                        slotFn.insert(QStringLiteral("name"), fn.value(QStringLiteral("name")));
+                    }
+                    if (fn.contains(QStringLiteral("arguments"))) {
+                        const QString add = fn.value(QStringLiteral("arguments")).toString();
+                        const QString cur = slotFn.value(QStringLiteral("arguments")).toString();
+                        slotFn.insert(QStringLiteral("arguments"), cur + add);
+                    }
+                    slot.insert(QStringLiteral("function"), slotFn);
+                }
+                slot.insert(QStringLiteral("type"), QStringLiteral("function"));
+                m_pendingToolCalls.replace(index, slot);
+            }
+            const QString fr = choice.value(QStringLiteral("finish_reason")).toString();
+            if (!fr.isEmpty()) m_pendingFinishReason = fr;
+        },
+        // onDone
+        [this]() {
+            m_streaming = false;
+            emit responseFinishedWithTools(m_currentConvId,
+                                            m_pendingToolCalls,
+                                            m_pendingFinishReason,
+                                            m_accumulated);
+        },
+        // onError
+        [this](const QString& err) {
+            m_streaming = false;
+            emit responseError(m_currentConvId, err);
+        });
+}

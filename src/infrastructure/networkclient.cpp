@@ -56,9 +56,10 @@ void NetworkClient::streamPost(const QUrl& url, const QJsonObject& body,
     // 先取消上一个流，保证单流
     cancelStream();
 
-    m_onChunk = std::move(onChunk);
-    m_onDone  = std::move(onDone);
-    m_onError = std::move(onError);
+    m_onChunk  = std::move(onChunk);
+    m_onChoice = nullptr;
+    m_onDone   = std::move(onDone);
+    m_onError  = std::move(onError);
     m_buffer.clear();
     m_done = false;
 
@@ -128,6 +129,43 @@ void NetworkClient::streamPost(const QUrl& url, const QJsonObject& body,
     });
 }
 
+void NetworkClient::streamPostRaw(const QUrl& url, const QJsonObject& body,
+                                    std::function<void(const QJsonObject&)> onChoice,
+                                    std::function<void()> onDone,
+                                    std::function<void(const QString&)> onError)
+{
+    cancelStream();
+
+    m_onChunk  = nullptr;
+    m_onChoice = std::move(onChoice);
+    m_onDone   = std::move(onDone);
+    m_onError  = std::move(onError);
+    m_buffer.clear();
+    m_done = false;
+
+    QNetworkRequest req(url);
+    applyCommonHeaders(req, {});
+    req.setRawHeader("Accept", "text/event-stream");
+
+    const QByteArray payload = QJsonDocument(body).toJson(QJsonDocument::Compact);
+    m_activeStream = m_nam->post(req, payload);
+
+    connect(m_activeStream, &QNetworkReply::readyRead, this, [this]() {
+        if (m_activeStream) parseSSEChunk(m_activeStream->readAll());
+    });
+    connect(m_activeStream, &QNetworkReply::finished, this, [this]() {
+        if (!m_activeStream) return;
+        const auto err = m_activeStream->error();
+        if (err != QNetworkReply::NoError && err != QNetworkReply::OperationCanceledError) {
+            if (m_onError) m_onError(m_activeStream->errorString());
+        } else if (!m_done) {
+            finishStream();
+        }
+        m_activeStream->deleteLater();
+        m_activeStream = nullptr;
+    });
+}
+
 void NetworkClient::parseSSEChunk(const QByteArray& chunk)
 {
     m_buffer.append(chunk);
@@ -155,13 +193,20 @@ void NetworkClient::parseSSEChunk(const QByteArray& chunk)
             const QJsonObject obj = QJsonDocument::fromJson(payload).object();
             const QJsonArray choices = obj.value(QStringLiteral("choices")).toArray();
             if (choices.isEmpty()) continue;
-            const QJsonObject delta =
-                choices.at(0).toObject().value(QStringLiteral("delta")).toObject();
+            const QJsonObject choice = choices.at(0).toObject();
+
+            // Raw 路径：把整个 choice 对象透传给调用方（Tool Calling 场景）
+            if (m_onChoice) {
+                m_onChoice(choice);
+                continue;
+            }
+
+            // 兼容路径：仅回调 delta.content
+            const QJsonObject delta = choice.value(QStringLiteral("delta")).toObject();
             const QString content = delta.value(QStringLiteral("content")).toString();
             if (!content.isEmpty() && m_onChunk) {
                 m_onChunk(content);
             }
-            // tool_calls 在 M4 处理，这里忽略
         }
     }
 }
