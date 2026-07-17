@@ -10,6 +10,14 @@
 #include "service/llmproviderservice.h"
 #include "service/conversationservice.h"
 #include "service/filemanagerservice.h"
+#include "service/scene_detector.h"
+#ifdef FRAMEMIND_HAS_ONNXRUNTIME
+#include "service/clip_service.h"
+#include "service/embedding_service.h"
+#endif
+#ifdef FRAMEMIND_HAS_WHISPER
+#include "service/whisper_service.h"
+#endif
 #include "viewmodel/playerviewmodel.h"
 #include "viewmodel/chatviewmodel.h"
 #include "viewmodel/filelistviewmodel.h"
@@ -44,6 +52,35 @@ void DIContainer::initialize()
                                                       m_providerService.get());
     m_convService    = std::make_unique<ConversationService>(m_db);
     m_fileService    = std::make_unique<FileManagerService>(m_db);
+
+    // ---- Video RAG 小模型服务 ----
+
+    // 模型目录：AppData/models/
+    const QString modelsDir = appData + QStringLiteral("/models");
+    QDir().mkpath(modelsDir);
+
+    // SceneDetector（直方图差异，无需外部模型，始终可用）
+    m_sceneDetector = std::make_unique<SceneDetector>();
+
+#ifdef FRAMEMIND_HAS_ONNXRUNTIME
+    // CLIP 视觉/文本 embedding
+    m_clipService = std::make_unique<ClipService>();
+    m_clipService->initialize(
+        modelsDir + QStringLiteral("/clip_visual.onnx"),
+        modelsDir + QStringLiteral("/clip_text.onnx"));
+
+    // BGE 文本 embedding
+    m_embeddingService = std::make_unique<EmbeddingService>();
+    m_embeddingService->initialize(
+        modelsDir + QStringLiteral("/bge-small-zh.onnx"));
+#endif
+
+#ifdef FRAMEMIND_HAS_WHISPER
+    // Whisper 语音转写
+    m_whisperService = std::make_unique<WhisperService>();
+    m_whisperService->initialize(
+        modelsDir + QStringLiteral("/ggml-small.bin"));
+#endif
 
     // ViewModels
     m_playerVM = std::make_unique<PlayerViewModel>(m_playerService.get(),

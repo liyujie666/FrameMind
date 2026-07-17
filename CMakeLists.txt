@@ -73,6 +73,24 @@ file(GLOB_RECURSE FRAMEMIND_HEADERS CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.h"
 )
 
+# ---------------------------------------------------------------------------
+# Video RAG 小模型集成（可选）
+#   默认 OFF，下载依赖后通过 -DFRAMEMIND_ENABLE_ONNX=ON 开启
+# ---------------------------------------------------------------------------
+option(FRAMEMIND_ENABLE_ONNX    "Enable ONNX Runtime (CLIP/BGE/TransNetV2)" OFF)
+option(FRAMEMIND_ENABLE_WHISPER "Enable whisper.cpp speech-to-text"          OFF)
+
+# ONNX Runtime 未启用时，排除依赖它的源文件
+if(NOT FRAMEMIND_ENABLE_ONNX)
+    list(FILTER FRAMEMIND_SOURCES EXCLUDE REGEX
+        "onnx_runtime_engine\\.cpp|clip_service\\.cpp|embedding_service\\.cpp")
+endif()
+
+# whisper.cpp 未启用时，排除依赖它的源文件
+if(NOT FRAMEMIND_ENABLE_WHISPER)
+    list(FILTER FRAMEMIND_SOURCES EXCLUDE REGEX "whisper_service\\.cpp")
+endif()
+
 set(FRAMEMIND_RESOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/resources/resources.qrc"
 )
@@ -110,6 +128,45 @@ target_link_libraries(FrameMind PRIVATE
     Qt6::OpenGLWidgets
     smartplayer
 )
+
+# ---------------------------------------------------------------------------
+# ONNX Runtime 链接（FRAMEMIND_ENABLE_ONNX=ON 时生效）
+#   下载 onnxruntime-win-x64-1.18.1.zip 解压到 third_party/onnxruntime/
+# ---------------------------------------------------------------------------
+if(FRAMEMIND_ENABLE_ONNX)
+    set(ONNXRUNTIME_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/onnxruntime")
+
+    add_library(onnxruntime SHARED IMPORTED)
+    set_target_properties(onnxruntime PROPERTIES
+        IMPORTED_IMPLIB   "${ONNXRUNTIME_ROOT}/lib/onnxruntime.lib"
+        IMPORTED_LOCATION "${ONNXRUNTIME_ROOT}/bin/onnxruntime.dll"
+        INTERFACE_INCLUDE_DIRECTORIES "${ONNXRUNTIME_ROOT}/include"
+    )
+
+    target_compile_definitions(FrameMind PRIVATE FRAMEMIND_HAS_ONNXRUNTIME)
+    target_link_libraries(FrameMind PRIVATE onnxruntime)
+
+    # 运行时 DLL 拷贝
+    add_custom_command(TARGET FrameMind POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${ONNXRUNTIME_ROOT}/bin/onnxruntime.dll"
+            "$<TARGET_FILE_DIR:FrameMind>"
+        COMMENT "Copying onnxruntime.dll"
+    )
+endif()
+
+# ---------------------------------------------------------------------------
+# whisper.cpp 链接（FRAMEMIND_ENABLE_WHISPER=ON 时生效）
+#   git clone https://github.com/ggerganov/whisper.cpp third_party/whisper.cpp
+# ---------------------------------------------------------------------------
+if(FRAMEMIND_ENABLE_WHISPER)
+    set(WHISPER_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(WHISPER_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    add_subdirectory(third_party/whisper.cpp)
+
+    target_compile_definitions(FrameMind PRIVATE FRAMEMIND_HAS_WHISPER)
+    target_link_libraries(FrameMind PRIVATE whisper)
+endif()
 
 # Windows DPAPI（SettingsService 密钥存储）
 if(WIN32)

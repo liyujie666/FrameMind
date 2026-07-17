@@ -16,6 +16,14 @@ class PlayerViewModel;
 class ChatViewModel;
 class FileListViewModel;
 class LLMProviderService;
+class SceneDetector;
+#ifdef FRAMEMIND_HAS_ONNXRUNTIME
+class ClipService;
+class EmbeddingService;
+#endif
+#ifdef FRAMEMIND_HAS_WHISPER
+class WhisperService;
+#endif
 
 /**
  * 简易依赖注入容器。负责装配 Infrastructure / Service / ViewModel 的生命周期。
@@ -39,6 +47,16 @@ public:
     LLMProviderService* llmProviderService() const { return m_providerService.get(); }
     EventBus*           eventBus() const { return m_eventBus; }
 
+    // Video RAG 服务（M3/M4）
+    SceneDetector*      sceneDetector() const { return m_sceneDetector.get(); }
+#ifdef FRAMEMIND_HAS_ONNXRUNTIME
+    ClipService*        clipService() const { return m_clipService.get(); }
+    EmbeddingService*   embeddingService() const { return m_embeddingService.get(); }
+#endif
+#ifdef FRAMEMIND_HAS_WHISPER
+    WhisperService*     whisperService() const { return m_whisperService.get(); }
+#endif
+
 private:
     EventBus*        m_eventBus = nullptr;        // 不持有所有权
     DatabaseManager* m_db = nullptr;              // 不持有所有权（单例）
@@ -51,6 +69,16 @@ private:
     std::unique_ptr<AgentService>       m_agentService;
     std::unique_ptr<ConversationService> m_convService;
     std::unique_ptr<FileManagerService> m_fileService;
+
+    // Video RAG 服务
+    std::unique_ptr<SceneDetector>      m_sceneDetector;
+#ifdef FRAMEMIND_HAS_ONNXRUNTIME
+    std::unique_ptr<ClipService>       m_clipService;
+    std::unique_ptr<EmbeddingService>  m_embeddingService;
+#endif
+#ifdef FRAMEMIND_HAS_WHISPER
+    std::unique_ptr<WhisperService>    m_whisperService;
+#endif
 
     std::unique_ptr<PlayerViewModel>   m_playerVM;
     std::unique_ptr<ChatViewModel>     m_chatVM;
