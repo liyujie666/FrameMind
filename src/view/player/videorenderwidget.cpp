@@ -49,7 +49,6 @@ VideoRenderWidget::VideoRenderWidget(QWidget* parent)
     // 关闭 Qt 的自动背景填充（接管绘制）
     setAutoFillBackground(false);
     setMinimumSize(320, 180);
-    m_throttle.start();
 }
 
 VideoRenderWidget::~VideoRenderWidget()
@@ -81,11 +80,9 @@ void VideoRenderWidget::updateFrame(const QImage& frame)
     if (frame.isNull()) return;
     m_currentFrame = frame;  // 隐式共享
 
-    // 30fps 节流
-    if (m_throttle.elapsed() >= kMinIntervalMs) {
-        m_throttle.restart();
-        update();
-    }
+    // SDK 内部已通过 AVSyncClock 精确控制帧投递节奏（含 A/V sync），
+    // 此处不再做额外节流，每帧均触发渲染以保持音视频同步。
+    update();
 }
 
 void VideoRenderWidget::clear()

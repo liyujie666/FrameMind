@@ -7,7 +7,6 @@
 #include <QOpenGLBuffer>
 #include <QOpenGLVertexArrayObject>
 #include <QImage>
-#include <QElapsedTimer>
 
 class QOpenGLTexture;
 
@@ -59,8 +58,6 @@ private:
 
     QColor        m_bgColor = Qt::black;
     int           m_radius  = 8;           // 仅占位，OpenGL 不直接画圆角；由 RoundedVideoContainer 处理
-    QElapsedTimer m_throttle;
-    static constexpr int kMinIntervalMs = 33;  // ~30fps
 };
 
 /**
