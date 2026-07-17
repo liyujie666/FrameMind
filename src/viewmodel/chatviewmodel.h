@@ -9,10 +9,12 @@
 
 #include "model/conversation.h"
 #include "model/chatmessage.h"
+#include "model/videocontext.h"
 
 class AgentService;
 class ConversationService;
 class EventBus;
+class PlayerViewModel;
 class ChatMessageListModel;
 class QTimer;
 
@@ -35,6 +37,8 @@ public:
                            QObject* parent = nullptr);
 
     ChatMessageListModel* messageModel() const { return m_messageModel; }
+    void setPlayerViewModel(PlayerViewModel* playerVM);
+    VideoContext getVideoContext() const;
 
     bool isStreaming() const { return m_streaming; }
     bool isCollapsed() const { return m_collapsed; }
@@ -74,6 +78,7 @@ private:
     AgentService*         m_agentService = nullptr;
     ConversationService*  m_convService = nullptr;
     EventBus*             m_eventBus = nullptr;
+    PlayerViewModel*      m_playerVM = nullptr;
     ChatMessageListModel* m_messageModel = nullptr;
 
     bool    m_streaming = false;

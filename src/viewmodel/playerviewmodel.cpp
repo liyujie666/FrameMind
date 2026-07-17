@@ -4,6 +4,8 @@
 #include "infrastructure/eventbus.h"
 #include "model/videoinfo.h"
 
+#include <QDebug>
+
 PlayerViewModel::PlayerViewModel(PlayerService* playerService,
                                  EventBus* eventBus,
                                  QObject* parent)

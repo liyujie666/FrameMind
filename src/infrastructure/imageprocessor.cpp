@@ -1,6 +1,7 @@
 #include "infrastructure/imageprocessor.h"
 
 #include <QBuffer>
+#include <QDebug>
 #include <algorithm>
 #include <cstring>
 
@@ -16,8 +17,11 @@ QImage ImageProcessor::fromVideoFrame(const uint8_t* data, int width, int height
                                       SmartPixelFormat format)
 {
     if (!data || width <= 0 || height <= 0) {
+        qWarning() << "[ImageProcessor] Invalid params: data=" << data << "size:" << width << "x" << height;
         return QImage();
     }
+
+    //qDebug() << "[ImageProcessor] Converting frame:" << width << "x" << height << "format:" << format;
 
     switch (format) {
     case SP_FMT_RGBA: {
@@ -36,6 +40,7 @@ QImage ImageProcessor::fromVideoFrame(const uint8_t* data, int width, int height
         return fromNV12(data, width, height);
     case SP_FMT_UNKNOWN:
     default:
+        qWarning() << "[ImageProcessor] Unknown pixel format:" << format;
         return QImage();
     }
 }

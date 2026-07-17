@@ -4,11 +4,15 @@
 #include "infrastructure/databasemanager.h"
 #include "infrastructure/networkclient.h"
 #include "service/settingsservice.h"
+#include "service/themeservice.h"
 #include "service/playerservice.h"
 #include "service/agentservice.h"
+#include "service/llmproviderservice.h"
 #include "service/conversationservice.h"
+#include "service/filemanagerservice.h"
 #include "viewmodel/playerviewmodel.h"
 #include "viewmodel/chatviewmodel.h"
+#include "viewmodel/filelistviewmodel.h"
 
 #include <QStandardPaths>
 #include <QDir>
@@ -31,15 +35,24 @@ void DIContainer::initialize()
 
     // Services
     m_settingsService = std::make_unique<SettingsService>(m_db);
+    m_themeService    = std::make_unique<ThemeService>(m_settingsService.get());
     m_playerService   = std::make_unique<PlayerService>();
-    m_agentService    = std::make_unique<AgentService>(m_network.get(),
-                                                       m_settingsService.get());
-    m_convService     = std::make_unique<ConversationService>(m_db);
+    m_providerService = std::make_unique<LLMProviderService>(m_settingsService.get());
+    m_providerService->setNetworkClient(m_network.get());
+    m_agentService   = std::make_unique<AgentService>(m_network.get(),
+                                                      m_settingsService.get(),
+                                                      m_providerService.get());
+    m_convService    = std::make_unique<ConversationService>(m_db);
+    m_fileService    = std::make_unique<FileManagerService>(m_db);
 
     // ViewModels
     m_playerVM = std::make_unique<PlayerViewModel>(m_playerService.get(),
-                                                   m_eventBus);
+                                                  m_eventBus);
     m_chatVM   = std::make_unique<ChatViewModel>(m_agentService.get(),
-                                                 m_convService.get(),
-                                                 m_eventBus);
+                                                m_convService.get(),
+                                                m_eventBus);
+    m_chatVM->setPlayerViewModel(m_playerVM.get());
+    m_fileListVM = std::make_unique<FileListViewModel>(m_fileService.get(),
+                                                      m_eventBus,
+                                                      m_playerService.get());
 }

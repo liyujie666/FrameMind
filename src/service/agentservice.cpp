@@ -3,6 +3,7 @@
 #include "infrastructure/networkclient.h"
 #include "infrastructure/imageprocessor.h"
 #include "service/settingsservice.h"
+#include "service/llmproviderservice.h"
 
 #include <QJsonDocument>
 #include <QUrl>
@@ -16,21 +17,43 @@ constexpr int kMaxImagesPerRequest = 10;  // 架构防御：单次请求图片�
 
 AgentService::AgentService(NetworkClient* network,
                            SettingsService* settings,
+                           LLMProviderService* providers,
                            QObject* parent)
     : QObject(parent)
     , m_network(network)
     , m_settings(settings)
+    , m_providers(providers)
 {
-    if (m_settings) {
-        m_endpoint = m_settings->get(QStringLiteral("llm.endpoint"),
-                                     QStringLiteral("https://api.openai.com/v1"));
-        m_model = m_settings->get(QStringLiteral("llm.model"),
-                                  QStringLiteral("gpt-4o"));
+    if (m_providers) {
+        // 监听激活提供商变更
+        connect(m_providers, &LLMProviderService::activeProviderChanged,
+                this, &AgentService::applyActiveProvider);
+        applyActiveProvider();
     }
 }
 
-void AgentService::setModel(const QString& modelName)    { m_model = modelName; }
-void AgentService::setEndpoint(const QString& endpoint)  { m_endpoint = endpoint; }
+void AgentService::applyActiveProvider()
+{
+    if (!m_providers) return;
+    const LLMProvider provider = m_providers->activeProvider();
+    m_endpoint = provider.fullEndpoint();
+    m_model = m_providers->getModel(provider.id);
+    m_apiKey = m_providers->getApiKey(provider.id);
+}
+
+void AgentService::setModel(const QString& modelName)
+{
+    m_model = modelName;
+    // 如果使用了提供商服务，同步更新
+    if (m_providers) {
+        m_providers->setModel(m_providers->activeProviderId(), modelName);
+    }
+}
+
+void AgentService::setEndpoint(const QString& endpoint)
+{
+    m_endpoint = endpoint;
+}
 
 QString AgentService::buildSystemPrompt(const VideoContext& ctx)
 {
@@ -143,16 +166,16 @@ void AgentService::sendMessage(const QString& conversationId,
         return;
     }
 
+    // 重新应用当前提供商配置（确保使用最新的 API Key）
+    applyActiveProvider();
+
     // 安全：API Key 从密钥服务取，禁止落库/打印
-    const QString apiKey = m_settings
-        ? m_settings->secretGet(QStringLiteral("secret.llm.api_key"))
-        : QString();
-    if (apiKey.isEmpty()) {
+    if (m_apiKey.isEmpty()) {
         emit responseError(conversationId,
-                           tr("未配置 API Key，请在「文件 → AI 设置」中填写"));
+                           tr("未配置 API Key，请在「设置 → AI」中选择提供商并填写 API Key"));
         return;
     }
-    m_network->setAuthToken(apiKey);
+    m_network->setAuthToken(m_apiKey);
 
     const QJsonObject payload =
         buildRequestPayload(conversationId, text, frames, videoCtx);

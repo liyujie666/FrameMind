@@ -6,6 +6,7 @@
 
 class ChatMessageListModel;
 class ChatBubbleWidget;
+class ThemeService;
 class QVBoxLayout;
 class QWidget;
 
@@ -20,6 +21,10 @@ public:
     explicit ChatMessageList(QWidget* parent = nullptr);
 
     void setModel(ChatMessageListModel* model);
+    void setThemeService(ThemeService* theme);
+
+    /// 主题变更时批量刷新所有气泡颜色（不重建 widget）
+    void refreshBubbleColors();
 
 signals:
     void linkActivated(const QString& href);
@@ -32,6 +37,7 @@ private:
     void scrollToBottom();
 
     ChatMessageListModel*     m_model = nullptr;
+    ThemeService*             m_theme = nullptr;
     QWidget*                  m_container = nullptr;
     QVBoxLayout*              m_layout = nullptr;
     QList<ChatBubbleWidget*>  m_bubbles;

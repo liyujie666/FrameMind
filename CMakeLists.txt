@@ -19,9 +19,23 @@ endif()
 
 # ---------------------------------------------------------------------------
 # Qt6
-#   若 CMake 找不到 Qt，请在配置时传入：
-#   -DCMAKE_PREFIX_PATH="C:/Qt/6.9.0/msvc2019_64"
+#   CMake 自动查找系统中的 Qt，或通过 -DCMAKE_PREFIX_PATH 指定
 # ---------------------------------------------------------------------------
+# 尝试从常见位置查找 Qt
+set(QT_PATHS
+    "D:/Qt/6.9.1/msvc2022_64"
+    "D:/Qt/6.9.0/msvc2022_64"
+    "C:/Qt/6.9.1/msvc2022_64"
+    "C:/Qt/6.9.0/msvc2022_64"
+)
+
+foreach(path IN LISTS QT_PATHS)
+    if(EXISTS "${path}/lib/cmake/Qt6")
+        list(APPEND CMAKE_PREFIX_PATH "${path}")
+        break()
+    endif()
+endforeach()
+
 find_package(Qt6 6.9 REQUIRED COMPONENTS
     Core
     Gui
@@ -30,6 +44,8 @@ find_package(Qt6 6.9 REQUIRED COMPONENTS
     Sql
     Concurrent
     Svg
+    OpenGL
+    OpenGLWidgets
 )
 
 qt_standard_project_setup()
@@ -67,6 +83,17 @@ qt_add_executable(FrameMind WIN32
     ${FRAMEMIND_RESOURCES}
 )
 
+# 设置 Windows 任务栏图标
+if(WIN32)
+    set(APP_ICON "${CMAKE_CURRENT_SOURCE_DIR}/resources/icons/app.ico")
+    if(EXISTS "${APP_ICON}")
+        set_target_properties(FrameMind PROPERTIES
+            WIN32_EXECUTABLE TRUE
+            ICON "${APP_ICON}"
+        )
+    endif()
+endif()
+
 target_include_directories(FrameMind PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
 )
@@ -79,6 +106,8 @@ target_link_libraries(FrameMind PRIVATE
     Qt6::Sql
     Qt6::Concurrent
     Qt6::Svg
+    Qt6::OpenGL
+    Qt6::OpenGLWidgets
     smartplayer
 )
 

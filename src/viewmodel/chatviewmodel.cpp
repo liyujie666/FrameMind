@@ -1,9 +1,11 @@
 #include "viewmodel/chatviewmodel.h"
 
 #include "viewmodel/chatmessagelistmodel.h"
+#include "viewmodel/playerviewmodel.h"
 #include "service/agentservice.h"
 #include "service/conversationservice.h"
 #include "infrastructure/eventbus.h"
+#include "model/videocontext.h"
 
 #include <QTimer>
 #include <QUuid>
@@ -106,6 +108,22 @@ QList<Conversation> ChatViewModel::conversations() const
                          : QList<Conversation>{};
 }
 
+void ChatViewModel::setPlayerViewModel(PlayerViewModel* playerVM)
+{
+    m_playerVM = playerVM;
+}
+
+VideoContext ChatViewModel::getVideoContext() const
+{
+    VideoContext ctx;
+    if (!m_playerVM) return ctx;
+    ctx.fileName = m_playerVM->mediaTitle();
+    ctx.durationMs = m_playerVM->duration();
+    ctx.width = 0;  // TODO: 从 PlayerService 获取
+    ctx.height = 0; // TODO: 从 PlayerService 获取
+    return ctx;
+}
+
 void ChatViewModel::ensureConversation()
 {
     if (!m_currentConversationId.isEmpty()) return;
@@ -162,7 +180,9 @@ void ChatViewModel::doSend(const QString& text, const QList<QImage>& frames)
     emit streamingChanged(true);
 
     if (m_agentService) {
-        m_agentService->sendMessage(m_currentConversationId, text, frames);
+        // 获取视频上下文并发送消息
+        VideoContext ctx = getVideoContext();
+        m_agentService->sendMessage(m_currentConversationId, text, frames, ctx);
     }
 }
 
@@ -199,6 +219,7 @@ void ChatViewModel::onScreenshotForAI(const QImage& frame, int64_t /*ts*/)
     const QString text = m_pendingFrameText;
     m_pendingFrameText.clear();
     if (frame.isNull()) {
+        qWarning() << "[ChatViewModel] Frame is null, sending text only";
         emit errorOccurred(tr("未获取到当前帧，已仅按文字提问"));
         doSend(text, {});
     } else {

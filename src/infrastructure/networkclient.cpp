@@ -5,6 +5,7 @@
 #include <QNetworkReply>
 #include <QJsonDocument>
 #include <QJsonArray>
+#include <QEventLoop>
 
 NetworkClient::NetworkClient(QObject* parent)
     : QObject(parent)
@@ -79,16 +80,39 @@ void NetworkClient::streamPost(const QUrl& url, const QJsonObject& body,
         const auto err = m_activeStream->error();
         if (err != QNetworkReply::NoError && err != QNetworkReply::OperationCanceledError) {
             const QString msg = m_activeStream->errorString();
+            // 获取 HTTP 状态码
+            const int statusCode = m_activeStream->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
             // HTTP 错误体可能含 OpenAI 风格 error 信息
             const QByteArray rest = m_activeStream->readAll();
             QString detail = msg;
+            if (statusCode > 0) {
+                detail = QStringLiteral("HTTP %1: ").arg(statusCode);
+            }
             if (!rest.isEmpty()) {
-                QJsonObject obj = QJsonDocument::fromJson(rest).object();
-                const QString apiMsg = obj.value(QStringLiteral("error"))
-                                           .toObject()
-                                           .value(QStringLiteral("message"))
-                                           .toString();
-                if (!apiMsg.isEmpty()) detail = apiMsg;
+                // 尝试解析 JSON 错误响应
+                const QJsonDocument doc = QJsonDocument::fromJson(rest);
+                if (!doc.isNull() && doc.isObject()) {
+                    const QJsonObject obj = doc.object();
+                    // 尝试多种错误格式
+                    QString apiMsg = obj.value(QStringLiteral("error"))
+                                        .toObject()
+                                        .value(QStringLiteral("message"))
+                                        .toString();
+                    if (apiMsg.isEmpty()) {
+                        apiMsg = obj.value(QStringLiteral("message")).toString();
+                    }
+                    if (!apiMsg.isEmpty()) {
+                        detail += apiMsg;
+                    } else {
+                        // 如果不是 JSON，直接显示响应内容
+                        detail += QString::fromUtf8(rest);
+                    }
+                } else {
+                    // 非 JSON 响应，显示原始内容
+                    detail += QString::fromUtf8(rest);
+                }
+            } else {
+                detail += msg;
             }
             if (m_onError) m_onError(detail);
             m_activeStream->deleteLater();
@@ -160,4 +184,51 @@ void NetworkClient::cancelStream()
     }
     m_buffer.clear();
     m_done = true;
+}
+
+bool NetworkClient::testConnection(const QUrl& url, QString* errorString)
+{
+    QNetworkRequest req(url);
+    req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    if (!m_authToken.isEmpty()) {
+        req.setRawHeader("Authorization",
+                         QStringLiteral("Bearer %1").arg(m_authToken).toUtf8());
+    }
+    req.setTransferTimeout(15000);  // 15s 超时
+
+    QNetworkReply* reply = m_nam->get(req);
+    if (!reply) {
+        if (errorString) *errorString = QStringLiteral("无法创建网络请求");
+        return false;
+    }
+
+    // 同步等待完成（使用事件循环）
+    QEventLoop loop;
+    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    loop.exec();
+
+    const auto err = reply->error();
+    const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    const QByteArray response = reply->readAll();
+    reply->deleteLater();
+
+    if (err != QNetworkReply::NoError) {
+        if (errorString) {
+            *errorString = QStringLiteral("HTTP %1: %2").arg(statusCode).arg(reply->errorString());
+            if (!response.isEmpty()) {
+                *errorString += QStringLiteral(" | ") + QString::fromUtf8(response.left(500));
+            }
+        }
+        return false;
+    }
+
+    // 检查是否返回 401/403（认证问题）
+    if (statusCode == 401 || statusCode == 403) {
+        if (errorString) {
+            *errorString = QStringLiteral("HTTP %1: 认证失败，请检查 API Key 是否正确").arg(statusCode);
+        }
+        return false;
+    }
+
+    return true;
 }

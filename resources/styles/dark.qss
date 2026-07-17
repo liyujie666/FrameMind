@@ -1,0 +1,225 @@
+/* FrameMind Dark Theme - based on client_ui_design.md color scheme */
+
+/* 主窗口 + 页面容器统一背景；子 widget 背景由自身控制，避免覆盖 ThemedPanel 等自绘容器 */
+QMainWindow,
+QMainWindow > QWidget,
+QStackedWidget,
+QStackedWidget > QWidget {
+    background-color: #0D1117;
+    color: #E0E0E0;
+}
+
+QWidget {
+    color: #E0E0E0;
+}
+
+/* ========== Scrollbar ========== */
+QScrollBar:vertical {
+    background: transparent;
+    width: 8px;
+    margin: 0;
+}
+
+QScrollBar::handle:vertical {
+    background: #3A3A4A;
+    border-radius: 4px;
+    min-height: 30px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background: #4A4A5A;
+}
+
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical {
+    height: 0;
+}
+
+QScrollBar:horizontal {
+    background: transparent;
+    height: 8px;
+    margin: 0;
+}
+
+QScrollBar::handle:horizontal {
+    background: #3A3A4A;
+    border-radius: 4px;
+    min-width: 30px;
+}
+
+QScrollBar::handle:horizontal:hover {
+    background: #4A4A5A;
+}
+
+/* ========== Text Input ========== */
+QLineEdit,
+QTextEdit {
+    background-color: #1A1A2A;
+    color: #E0E0E0;
+    border: 1px solid #2D2D3D;
+    border-radius: 6px;
+    padding: 6px 10px;
+    selection-background-color: #2979FF;
+}
+
+QLineEdit:focus,
+QTextEdit:focus {
+    border: 1px solid #2979FF;
+}
+
+/* ========== Buttons ========== */
+QPushButton {
+    background-color: #2979FF;
+    color: #FFFFFF;
+    border: none;
+    border-radius: 6px;
+    padding: 8px 16px;
+    font-size: 13px;
+}
+
+QPushButton:hover {
+    background-color: #448AFF;
+}
+
+QPushButton:pressed {
+    background-color: #1565C0;
+}
+
+QPushButton:disabled {
+    background-color: #2979FF66;
+    color: #8B8B8B;
+}
+
+/* ========== Tool Buttons ========== */
+QToolButton {
+    background-color: transparent;
+    border: none;
+    border-radius: 6px;
+    padding: 6px;
+    color: #E0E0E0;
+}
+
+QToolButton:hover {
+    background-color: #252538;
+}
+
+QToolButton:pressed {
+    background-color: #1E1E2E;
+}
+
+/* ========== ComboBox ========== */
+QComboBox {
+    background-color: #1E1E2E;
+    color: #E0E0E0;
+    border: 1px solid #2D2D3D;
+    border-radius: 4px;
+    padding: 4px 10px;
+}
+
+QComboBox:hover {
+    border: 1px solid #2979FF;
+}
+
+QComboBox::drop-down {
+    border: none;
+}
+
+QComboBox::down-arrow {
+    image: none;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 5px solid #8B8B8B;
+}
+
+QComboBox QAbstractItemView {
+    background-color: #1E1E2E;
+    border: 1px solid #2D2D3D;
+    selection-background-color: #2979FF;
+    outline: none;
+}
+
+/* ========== Slider ========== */
+QSlider::groove:horizontal {
+    background: #2D2D3D;
+    height: 4px;
+    border-radius: 2px;
+}
+
+QSlider::handle:horizontal {
+    background: #2979FF;
+    width: 12px;
+    height: 12px;
+    margin: -4px 0;
+    border-radius: 6px;
+}
+
+QSlider::handle:horizontal:hover {
+    background: #448AFF;
+}
+
+QSlider::sub-page:horizontal {
+    background: #2979FF;
+    border-radius: 2px;
+}
+
+/* ========== TabWidget ========== */
+QTabWidget::pane {
+    background-color: #1E1E2E;
+    border: 1px solid #2D2D3D;
+    border-radius: 4px;
+}
+
+QTabBar::tab {
+    background-color: transparent;
+    color: #8B8B8B;
+    padding: 8px 16px;
+    border: none;
+}
+
+QTabBar::tab:selected {
+    color: #2979FF;
+    border-bottom: 2px solid #2979FF;
+}
+
+QTabBar::tab:hover:!selected {
+    color: #E0E0E0;
+}
+
+/* ========== Menu ========== */
+QMenu {
+    background-color: #1E1E2E;
+    border: 1px solid #2D2D3D;
+    border-radius: 6px;
+    padding: 4px;
+}
+
+QMenu::item {
+    padding: 8px 24px 8px 12px;
+    border-radius: 4px;
+}
+
+QMenu::item:selected {
+    background-color: #252538;
+}
+
+QMenuBar {
+    background-color: #0D1117;
+    border-bottom: 1px solid #2D2D3D;
+}
+
+QMenuBar::item {
+    padding: 6px 12px;
+}
+
+QMenuBar::item:selected {
+    background-color: #1E1E2E;
+}
+
+/* ========== ToolTip ========== */
+QToolTip {
+    background-color: #252538;
+    color: #E0E0E0;
+    border: 1px solid #2D2D3D;
+    border-radius: 4px;
+    padding: 4px 8px;
+}

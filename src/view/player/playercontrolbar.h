@@ -9,24 +9,25 @@
 class QSlider;
 class QToolButton;
 class QLabel;
-class QComboBox;
+class QMenu;
+class QPaintEvent;
+class ThemeService;
 
-/**
- * 播放控制栏：进度条 + 播放/暂停 + 时长 + 音量 + 倍速 + 全屏占位。
- *
- * 控制栏不直接调用 PlayerService，所有用户操作通过信号上抛给 ViewModel；
- * 位置/时长/状态由 ViewModel 推送（setPosition / setDuration / setPlayState）。
- */
 class PlayerControlBar : public QWidget {
     Q_OBJECT
 public:
     explicit PlayerControlBar(QWidget* parent = nullptr);
+    void setThemeService(ThemeService* theme);
 
 public slots:
     void setPosition(int64_t posMs);
     void setDuration(int64_t durationMs);
     void setPlayState(PlayerState state);
     void setVolumeDisplay(int vol);
+    void setMuted(bool muted);
+
+public slots:
+    void setFullscreen(bool fullscreen);
 
 signals:
     void seekRequested(int64_t posMs);
@@ -34,18 +35,29 @@ signals:
     void volumeChanged(int vol);
     void speedChanged(float speed);
     void muteClicked();
+    void fullscreenClicked();
 
 private:
     static QString formatTime(int64_t ms);
     void updateTimeLabel();
+    void updateIcons();
+    void updatePlayPauseIcon(PlayerState state);
+    void updateVolumeIcon(bool muted, int volume);
+    void updateFullscreenIcon();
 
     QSlider*     m_positionSlider = nullptr;
     QToolButton* m_playButton = nullptr;
     QToolButton* m_muteButton = nullptr;
     QToolButton* m_fullscreenButton = nullptr;
+    QToolButton* m_speedButton = nullptr;
     QLabel*      m_timeLabel = nullptr;
     QSlider*     m_volumeSlider = nullptr;
-    QComboBox*   m_speedCombo = nullptr;
+    ThemeService* m_themeService = nullptr;
+    bool         m_isMuted = false;
+    bool         m_isFullscreen = false;
+    int          m_currentVolume = 50;
+    float        m_currentSpeed = 1.0f;
+    PlayerState  m_lastPlayState = PlayerState::Stopped;
 
     int64_t m_position = 0;
     int64_t m_duration = 0;

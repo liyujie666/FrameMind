@@ -37,6 +37,9 @@ public:
                     std::function<void()> onDone,
                     std::function<void(const QString& error)> onError);
 
+    /// 简单 GET 请求用于连通性检测（同步）
+    bool testConnection(const QUrl& url, QString* errorString = nullptr);
+
     /// 立即终止当前流式请求
     void cancelStream();
 
