@@ -3,6 +3,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QHash>
 #include <QThreadPool>
 #include <QMutex>
 #include <QSharedPointer>

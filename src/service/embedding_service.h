@@ -8,7 +8,10 @@
 #include <vector>
 #include <memory>
 
+#ifdef FRAMEMIND_HAS_ONNXRUNTIME
 class OnnxRuntimeEngine;
+class BertTokenizer;
+#endif
 
 /**
  * BGE-small-zh-v1.5 文本 Embedding 服务。
@@ -21,8 +24,7 @@ class OnnxRuntimeEngine;
  *   - CLIP text encoder：偏视觉语义（"红衣服的人" → 找画面中匹配的人）
  *   - BGE：偏自然语言语义（转写文本、场景描述的精确语义搜索）
  *
- * 模型：BAAI/bge-small-zh-v1.5 ONNX 导出 (~100MB)
- * 下载：HuggingFace BAAI/bge-small-zh-v1.5
+ * 注意：实际功能仅在 FRAMEMIND_HAS_ONNXRUNTIME 宏定义时可用。
  */
 class EmbeddingService : public QObject {
     Q_OBJECT
@@ -32,6 +34,8 @@ public:
 
     EmbeddingService(const EmbeddingService&) = delete;
     EmbeddingService& operator=(const EmbeddingService&) = delete;
+
+#ifdef FRAMEMIND_HAS_ONNXRUNTIME
 
     /// 加载 BGE-small ONNX 模型
     /// @param modelPath bge-small-zh.onnx 路径
@@ -52,11 +56,10 @@ public:
 
     // ---- 常量 ----
     static constexpr int EMBEDDING_DIM = 512;
-    static constexpr int MAX_SEQ_LEN   = 512;   // BGE 最大 token 长度
+    static constexpr int MAX_SEQ_LEN   = 512;
 
 private:
     /// BGE (BERT-based) WordPiece tokenizer
-    /// TODO: 接入完整的 BERT WordPiece tokenizer
     std::vector<int64_t> tokenize(const QString& text);
 
     /// 构建 attention mask（有效 token 位置为 1，padding 为 0）
@@ -66,6 +69,8 @@ private:
     static void l2Normalize(std::vector<float>& vec);
 
     std::unique_ptr<OnnxRuntimeEngine> m_engine;
+    std::unique_ptr<BertTokenizer>     m_tokenizer;
+#endif // FRAMEMIND_HAS_ONNXRUNTIME
 };
 
 #endif // FRAMEMIND_EMBEDDING_SERVICE_H

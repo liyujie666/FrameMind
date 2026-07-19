@@ -38,6 +38,12 @@ class ToolRegistry;
 class ToolOrchestrator;
 class VideoAgent;
 
+// Analysis ViewModel (分析面板)
+class VideoAnalysisViewModel;
+
+// Knowledge base ViewModel
+class KnowledgeViewModel;
+
 /**
  * 简易依赖注入容器。负责装配 Infrastructure / Service / ViewModel 的生命周期。
  * 不引入新的全局单例（EventBus / DatabaseManager 的 instance() 为既有例外）。
@@ -83,6 +89,8 @@ public:
     ToolRegistry*         toolRegistry() const;
     ToolOrchestrator*     toolOrchestrator() const;
     VideoAgent*           videoAgent() const;
+    VideoAnalysisViewModel* videoAnalysisVM() const;
+    KnowledgeViewModel*     knowledgeVM() const;
 
 private:
     EventBus*        m_eventBus = nullptr;        // 不持有所有权
@@ -120,9 +128,11 @@ private:
     std::unique_ptr<ToolOrchestrator>     m_toolOrchestrator;
     std::unique_ptr<VideoAgent>           m_videoAgent;
 
-    std::unique_ptr<PlayerViewModel>   m_playerVM;
-    std::unique_ptr<ChatViewModel>     m_chatVM;
-    std::unique_ptr<FileListViewModel> m_fileListVM;
+    std::unique_ptr<PlayerViewModel>        m_playerVM;
+    std::unique_ptr<ChatViewModel>          m_chatVM;
+    std::unique_ptr<FileListViewModel>      m_fileListVM;
+    std::unique_ptr<VideoAnalysisViewModel> m_videoAnalysisVM;
+    std::unique_ptr<KnowledgeViewModel>     m_knowledgeVM;
 };
 
 #endif // FRAMEMIND_DICONTAINER_H

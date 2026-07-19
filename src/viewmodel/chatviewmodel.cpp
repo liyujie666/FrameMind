@@ -4,6 +4,9 @@
 #include "viewmodel/playerviewmodel.h"
 #include "service/agentservice.h"
 #include "service/conversationservice.h"
+#include "service/agent/video_agent.h"
+#include "service/agent/video_analysis_service.h"
+#include "service/agent/video_indexer.h"
 #include "infrastructure/eventbus.h"
 #include "model/videocontext.h"
 
@@ -111,16 +114,64 @@ QList<Conversation> ChatViewModel::conversations() const
 void ChatViewModel::setPlayerViewModel(PlayerViewModel* playerVM)
 {
     m_playerVM = playerVM;
+
+    if (!m_playerVM) return;
+
+    // 等播放器 SDK 真正打开成功后再启动索引（此时 filePath 已填好）
+    connect(m_playerVM, &PlayerViewModel::videoOpened,
+            this, [this](const QString& filePath) {
+        if (filePath.isEmpty() || filePath == m_indexingPath) return;
+        m_activeVideoPath = filePath;
+        m_indexingPath = filePath;
+
+        if (m_videoAgent) {
+            const QString videoId = VideoIndexer::computeVideoId(filePath);
+            m_videoAgent->setActiveVideo(filePath, videoId);
+        }
+        if (m_videoAnalysis) {
+            m_videoAnalysis->onVideoOpened(filePath);
+        }
+
+        qDebug() << "[ChatViewModel] 视频就绪，启动 RAG 索引:" << filePath;
+    });
+}
+
+void ChatViewModel::setVideoAgent(VideoAgent* agent)
+{
+    m_videoAgent = agent;
+}
+
+void ChatViewModel::setVideoAnalysisService(VideoAnalysisService* vas)
+{
+    m_videoAnalysis = vas;
+}
+
+void ChatViewModel::onVideoOpened(const QString& videoPath)
+{
+    if (videoPath.isEmpty()) return;
+    // 仅路径变化时才清空 m_indexingPath，允许新视频触发一次索引。
+    // 同一路径（重播场景）不清空，保留去重守卫，避免重复构建 RAG。
+    if (videoPath != m_activeVideoPath) {
+        m_indexingPath.clear();
+    }
+    m_activeVideoPath = videoPath;
 }
 
 VideoContext ChatViewModel::getVideoContext() const
 {
+    // 优先从 VideoAnalysisService 构建，包含已生成的摘要和场景概览
+    if (m_videoAnalysis && !m_activeVideoPath.isEmpty()) {
+        auto repr = m_videoAnalysis->representation(m_activeVideoPath);
+        if (repr && repr->isValid()) {
+            return m_videoAnalysis->buildVideoContext(repr);
+        }
+    }
+
+    // 降级：repr 尚未就绪时只提供基础元信息
     VideoContext ctx;
     if (!m_playerVM) return ctx;
-    ctx.fileName = m_playerVM->mediaTitle();
+    ctx.fileName  = m_playerVM->mediaTitle();
     ctx.durationMs = m_playerVM->duration();
-    ctx.width = 0;  // TODO: 从 PlayerService 获取
-    ctx.height = 0; // TODO: 从 PlayerService 获取
     return ctx;
 }
 
@@ -179,9 +230,59 @@ void ChatViewModel::doSend(const QString& text, const QList<QImage>& frames)
     m_flushTimer->start();
     emit streamingChanged(true);
 
-    if (m_agentService) {
-        // 获取视频上下文并发送消息
-        VideoContext ctx = getVideoContext();
+    VideoContext ctx = getVideoContext();
+    const int64_t currentPos = m_playerVM ? m_playerVM->position() : 0;
+
+    if (m_videoAgent && !m_activeVideoPath.isEmpty()) {
+        // VideoAgent 五阶段路径：RAG 检索 + Tool Calling
+        m_videoAgent->ask(
+            m_currentConversationId,
+            text,
+            frames,
+            ctx,
+            currentPos,
+            [this](const QString& delta) {
+                // onProgress：流式 delta，与 AgentService::responseChunk 等效
+                m_messageModel->appendDeltaSilent(m_assistantRow, delta);
+                m_dirty = true;
+            },
+            [this](const AgentAnswer& answer) {
+                // onDone
+                m_flushTimer->stop();
+                m_messageModel->updateContent(m_assistantRow, answer.answer);
+                m_messageModel->setStreaming(m_assistantRow, false);
+                emit messageUpdated(m_assistantRow);
+
+                if (m_convService) {
+                    ChatMessage saved;
+                    saved.id = m_assistantId;
+                    saved.role = ChatMessage::Assistant;
+                    saved.content = answer.answer;
+                    saved.timestamp = QDateTime::currentDateTime();
+                    m_convService->saveMessage(m_currentConversationId, saved);
+                }
+                m_assistantRow = -1;
+                m_streaming = false;
+                emit streamingChanged(false);
+                emit conversationsChanged();
+            },
+            [this](const QString& err) {
+                // onError
+                m_flushTimer->stop();
+                if (m_assistantRow >= 0) {
+                    m_messageModel->updateContent(
+                        m_assistantRow,
+                        QStringLiteral("⚠️ 生成失败：%1").arg(err));
+                    m_messageModel->setStreaming(m_assistantRow, false);
+                    emit messageUpdated(m_assistantRow);
+                    m_assistantRow = -1;
+                }
+                m_streaming = false;
+                emit streamingChanged(false);
+                emit errorOccurred(err);
+            });
+    } else if (m_agentService) {
+        // 降级路径：未打开视频时走裸 AgentService（纯文字对话）
         m_agentService->sendMessage(m_currentConversationId, text, frames, ctx);
     }
 }

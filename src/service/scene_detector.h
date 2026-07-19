@@ -2,6 +2,7 @@
 #define FRAMEMIND_SCENE_DETECTOR_H
 
 #include <QObject>
+#include <QFuture>
 #include <QImage>
 #include <QVector>
 #include <cstdint>
@@ -15,23 +16,24 @@ class OnnxRuntimeEngine;
 #endif
 
 /**
- * 场景分割服务。
+ * 场景分割服务（两阶段混合策略）。
  *
- * 两种模式：
- *   1. 直方图差异（默认）— 纯 Qt/OpenCV 算法，无需模型，速度极快
- *      适合 M3 第一阶段快速验证
- *   2. TransNetV2（可选）— 深度学习场景检测，需加载 ONNX 模型
- *      当直方图差异精度不足时升级（需要 FRAMEMIND_HAS_ONNXRUNTIME）
+ * 阶段 1 — 粗分割：
+ *   对稀疏采样帧（每 10s 一帧）用直方图 Bhattacharyya 距离检测候选边界。
+ *   速度极快，适合任意采样间隔。
+ *
+ * 阶段 2 — 精确确认（可选，需 TransNetV2）：
+ *   对每个候选边界附近做局部密集采样（1 fps），将连续帧送入 TransNetV2
+ *   确认精确切换位置。若 TransNetV2 未加载则跳过此阶段。
  *
  * 调用流程：
  *   SceneDetector detector;
  *   detector.setThreshold(0.3f);
- *   // 逐帧或按间隔采样调用
- *   float diff = detector.computeDifference(currentFrame, prevFrame);
- *   if (diff > threshold) { /* 场景切换 */ }
- *
- *   或一次性处理整个视频的采样帧序列：
  *   auto scenes = detector.detectScenes(frames, timestamps);
+ *
+ * 或两阶段分离调用：
+ *   auto candidates = detector.detectCandidateBoundaries(sparseFrames, timestamps);
+ *   auto refined = detector.refineBoundaries(denseFrames, denseTimestamps);
  */
 class SceneDetector : public QObject {
     Q_OBJECT
@@ -67,11 +69,24 @@ public:
     // ---- 批量检测 ----
 
     /// 对一组采样帧执行场景分割，返回场景列表
-    /// @param frames 均匀采样的帧序列
+    /// 稀疏采样时自动使用直方图算法；密集采样且 TransNetV2 可用时使用深度学习
+    /// @param frames 采样的帧序列
     /// @param timestampsMs 每帧对应的时间戳(ms)
     /// @return 场景列表（keyframe 取每个场景的首帧）
     QVector<Scene> detectScenes(const QVector<QImage>& frames,
                                  const QVector<int64_t>& timestampsMs);
+
+    /// 阶段 1：直方图粗分割，返回候选边界时间戳列表
+    /// 每个元素是 (boundaryTimestampMs, score)
+    QVector<QPair<int64_t, float>> detectCandidateBoundaries(
+        const QVector<QImage>& frames,
+        const QVector<int64_t>& timestampsMs);
+
+    /// 阶段 2：用 TransNetV2 对密集采样帧做精确边界检测
+    /// 输入应为连续帧序列（1~3 fps），返回确认的边界时间戳
+    QVector<int64_t> refineBoundariesWithTransNet(
+        const QVector<QImage>& denseFrames,
+        const QVector<int64_t>& denseTimestampsMs);
 
     /// 异步批量检测
     QFuture<QVector<Scene>> detectScenesAsync(
@@ -86,11 +101,23 @@ private:
     /// 直方图差异计算（纯 Qt 实现）
     float histogramDifference(const QImage& a, const QImage& b);
 
-    /// TransNetV2 推理（可选）
-    float transnetPredict(const QImage& current, const QImage& previous);
+    /// TransNetV2 批量推理：对整个帧序列一次性计算所有切换概率
+    /// 返回长度为 frames.size() 的概率向量，probs[i] 表示第 i 帧与第 i+1 帧之间的切换概率
+    std::vector<float> transnetBatchPredict(const QVector<QImage>& frames);
 
-    /// 降采样
+    /// 将单帧预处理为 TransNetV2 所需格式：resize 到 48x27，归一化到 [0,1]，RGB float
+    /// 写入 dst，共 27×48×3 个 float
+    void preprocessTransnetFrame(const QImage& img, float* dst) const;
+
+    /// 降采样（直方图模式用）
     QImage downscale(const QImage& img) const;
+
+    // TransNetV2 模型参数（由 ONNX shape [1,100,27,48,3] 确定）
+    // 输入语义: [batch, n_frames, H, W, C]
+    static constexpr int kTransnetH      = 27;   // 模型输入帧高
+    static constexpr int kTransnetW      = 48;   // 模型输入帧宽
+    static constexpr int kTransnetC      = 3;    // 模型输入通道数（RGB）
+    static constexpr int kTransnetBatch  = 100;  // 每次最多处理帧数
 
     float                                   m_threshold = 0.3f;
     int                                     m_downscaleSize = 64;

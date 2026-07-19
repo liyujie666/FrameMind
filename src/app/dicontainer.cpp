@@ -41,25 +41,74 @@
 #include "viewmodel/playerviewmodel.h"
 #include "viewmodel/chatviewmodel.h"
 #include "viewmodel/filelistviewmodel.h"
+#include "viewmodel/videoanalysisviewmodel.h"
+#include "viewmodel/knowledgeviewmodel.h"
 
 #include <QStandardPaths>
+#include <QCoreApplication>
+#include <QDir>
+#include <QFileInfo>
+
+namespace {
+
+/**
+ * 解析模型权重目录，按优先级查找：
+ *   1. 环境变量 FRAMEMIND_MODELS_DIR（最高优先级，便于测试/CI 覆盖）
+ *   2. 可执行文件同级 ./models/    （发布版部署形态）
+ *   3. 项目根 ./models/            （开发期：exe 在 build/Debug/，项目根在 ../../）
+ *
+ * 任何一级命中且目录存在即返回；找不到时返回兜底路径并创建。
+ */
+QString resolveModelsDir()
+{
+    const QStringList candidates = []() {
+        QStringList list;
+        // 1. 环境变量
+        if (qEnvironmentVariableIsSet("FRAMEMIND_MODELS_DIR")) {
+            list << QString::fromUtf8(qgetenv("FRAMEMIND_MODELS_DIR"));
+        }
+        // 2. 可执行文件同级 ./models/
+        const QString exeDir = QCoreApplication::applicationDirPath();
+        list << (exeDir + QStringLiteral("/models"));
+        // 3. 项目根 ./models/（开发期：build/Debug/../../models）
+        list << (exeDir + QStringLiteral("/../../models"));
+        return list;
+    }();
+
+    for (const QString& path : candidates) {
+        if (path.isEmpty()) continue;
+        if (QDir(path).exists()) {
+            return QDir(path).absolutePath();
+        }
+    }
+
+    // 全部不存在 → 创建兜底目录并返回
+    const QString fallback = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+                             + QStringLiteral("/models");
+    QDir().mkpath(fallback);
+    return QDir(fallback).absolutePath();
+}
+
+} // namespace
 #include <QDir>
 
 DIContainer::DIContainer() = default;
 DIContainer::~DIContainer() = default;
 
 // Video Agent 组件 getter（延后定义以确保完整类型可见）
-VideoRAGStore*        DIContainer::ragStore() const              { return m_ragStore.get(); }
-QACacheManager*       DIContainer::qaCache() const               { return m_qaCache.get(); }
-VideoRAGRetriever*    DIContainer::ragRetriever() const          { return m_ragRetriever.get(); }
-EntityTracker*        DIContainer::entityTracker() const         { return m_entityTracker.get(); }
-VideoIndexer*         DIContainer::videoIndexer() const          { return m_videoIndexer.get(); }
-VideoAnalysisService* DIContainer::videoAnalysisService() const  { return m_videoAnalysis.get(); }
-PerceptionStrategy*   DIContainer::perceptionStrategy() const    { return m_perception.get(); }
-ReflectionEngine*     DIContainer::reflectionEngine() const      { return m_reflection.get(); }
-ToolRegistry*         DIContainer::toolRegistry() const          { return m_toolRegistry.get(); }
-ToolOrchestrator*     DIContainer::toolOrchestrator() const      { return m_toolOrchestrator.get(); }
-VideoAgent*           DIContainer::videoAgent() const            { return m_videoAgent.get(); }
+VideoRAGStore*          DIContainer::ragStore() const              { return m_ragStore.get(); }
+QACacheManager*         DIContainer::qaCache() const               { return m_qaCache.get(); }
+VideoRAGRetriever*      DIContainer::ragRetriever() const          { return m_ragRetriever.get(); }
+EntityTracker*          DIContainer::entityTracker() const         { return m_entityTracker.get(); }
+VideoIndexer*           DIContainer::videoIndexer() const          { return m_videoIndexer.get(); }
+VideoAnalysisService*   DIContainer::videoAnalysisService() const  { return m_videoAnalysis.get(); }
+PerceptionStrategy*     DIContainer::perceptionStrategy() const    { return m_perception.get(); }
+ReflectionEngine*       DIContainer::reflectionEngine() const      { return m_reflection.get(); }
+ToolRegistry*           DIContainer::toolRegistry() const          { return m_toolRegistry.get(); }
+ToolOrchestrator*       DIContainer::toolOrchestrator() const      { return m_toolOrchestrator.get(); }
+VideoAgent*             DIContainer::videoAgent() const            { return m_videoAgent.get(); }
+VideoAnalysisViewModel* DIContainer::videoAnalysisVM() const       { return m_videoAnalysisVM.get(); }
+KnowledgeViewModel*     DIContainer::knowledgeVM() const           { return m_knowledgeVM.get(); }
 
 void DIContainer::initialize()
 {
@@ -87,10 +136,16 @@ void DIContainer::initialize()
     m_fileService    = std::make_unique<FileManagerService>(m_db);
 
     // ---- Video RAG 小模型服务 ----
-    const QString modelsDir = appData + QStringLiteral("/models");
+    // 模型目录优先级：环境变量 > exe 同级 ./models/ > 项目根 ./models/ > <AppData>/models/
+    // 详见匿名命名空间里的 resolveModelsDir()
+    const QString modelsDir = resolveModelsDir();
     QDir().mkpath(modelsDir);
+    qDebug() << "[DIContainer] modelsDir =" << modelsDir;
 
     m_sceneDetector = std::make_unique<SceneDetector>();
+#ifdef FRAMEMIND_HAS_ONNXRUNTIME
+    m_sceneDetector->loadTransNetV2(modelsDir + QStringLiteral("/transnetv2.onnx"));
+#endif
 
 #ifdef FRAMEMIND_HAS_ONNXRUNTIME
     m_clipService = std::make_unique<ClipService>();
@@ -106,7 +161,7 @@ void DIContainer::initialize()
 #ifdef FRAMEMIND_HAS_WHISPER
     m_whisperService = std::make_unique<WhisperService>();
     m_whisperService->initialize(
-        modelsDir + QStringLiteral("/ggml-small.bin"));
+        modelsDir + QStringLiteral("/ggml-medium.bin"));
 #endif
 
     // ---- Video Agent 装配（M4）----
@@ -199,7 +254,18 @@ void DIContainer::initialize()
                                                 m_convService.get(),
                                                 m_eventBus);
     m_chatVM->setPlayerViewModel(m_playerVM.get());
+    m_chatVM->setVideoAgent(m_videoAgent.get());
+    m_chatVM->setVideoAnalysisService(m_videoAnalysis.get());
     m_fileListVM = std::make_unique<FileListViewModel>(m_fileService.get(),
                                                       m_eventBus,
                                                       m_playerService.get());
+
+    m_videoAnalysisVM = std::make_unique<VideoAnalysisViewModel>(
+        m_videoAnalysis.get(), m_videoIndexer.get());
+
+    m_knowledgeVM = std::make_unique<KnowledgeViewModel>(
+        m_ragStore.get(), m_ragRetriever.get(), m_db);
+#ifdef FRAMEMIND_HAS_ONNXRUNTIME
+    m_knowledgeVM->setEmbeddingService(m_embeddingService.get());
+#endif
 }

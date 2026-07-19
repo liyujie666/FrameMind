@@ -8,20 +8,28 @@ void ToolRegistry::registerTool(std::unique_ptr<ITool> tool)
     if (!tool) return;
     const QString name = tool->name();
     if (name.isEmpty()) return;
-    m_tools[name] = std::move(tool);
+    // Replace existing tool with the same name
+    if (m_tools.contains(name)) {
+        auto it = std::find_if(m_toolOwner.begin(), m_toolOwner.end(),
+                               [&](const std::unique_ptr<ITool>& t) {
+                                   return t->name() == name;
+                               });
+        if (it != m_toolOwner.end()) m_toolOwner.erase(it);
+    }
+    m_tools[name] = tool.get();
+    m_toolOwner.push_back(std::move(tool));
 }
 
 ITool* ToolRegistry::getTool(const QString& name) const
 {
-    const auto it = m_tools.constFind(name);
-    return (it == m_tools.constEnd()) ? nullptr : it.value().get();
+    return m_tools.value(name, nullptr);
 }
 
 QJsonArray ToolRegistry::allDefinitions() const
 {
     QJsonArray arr;
-    for (auto it = m_tools.constBegin(); it != m_tools.constEnd(); ++it) {
-        arr.append(it.value()->asToolDefinition());
+    for (const auto& tool : m_toolOwner) {
+        arr.append(tool->asToolDefinition());
     }
     return arr;
 }
@@ -29,4 +37,5 @@ QJsonArray ToolRegistry::allDefinitions() const
 void ToolRegistry::clear()
 {
     m_tools.clear();
+    m_toolOwner.clear();
 }

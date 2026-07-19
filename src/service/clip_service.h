@@ -8,7 +8,10 @@
 #include <vector>
 #include <memory>
 
+#ifdef FRAMEMIND_HAS_ONNXRUNTIME
 class OnnxRuntimeEngine;
+class ClipTokenizer;
+#endif
 
 /**
  * CLIP ViT-B/32 视觉 & 文本 Embedding 服务。
@@ -21,7 +24,7 @@ class OnnxRuntimeEngine;
  *   - clip_visual.onnx  (ViT 视觉编码器, ~350MB)
  *   - clip_text.onnx    (Transformer 文本编码器)
  *
- * 模型下载：HuggingFace openai/clip-vit-base-patch32 社区 ONNX 导出
+ * 注意：实际功能仅在 FRAMEMIND_HAS_ONNXRUNTIME 宏定义时可用。
  */
 class ClipService : public QObject {
     Q_OBJECT
@@ -31,6 +34,8 @@ public:
 
     ClipService(const ClipService&) = delete;
     ClipService& operator=(const ClipService&) = delete;
+
+#ifdef FRAMEMIND_HAS_ONNXRUNTIME
 
     /// 初始化：加载视觉和文本两个 ONNX 模型
     /// @param visualModelPath clip_visual.onnx 路径
@@ -64,15 +69,14 @@ public:
 
     // ---- 常量 ----
     static constexpr int EMBEDDING_DIM = 512;
-    static constexpr int IMAGE_SIZE    = 224;   // CLIP 输入分辨率
-    static constexpr int TEXT_MAX_LEN  = 77;    // CLIP 最大 token 长度
+    static constexpr int IMAGE_SIZE    = 224;
+    static constexpr int TEXT_MAX_LEN  = 77;
 
 private:
     /// 图像预处理：resize 224x224 → RGB → normalize → CHW 排布
     std::vector<float> preprocessImage(const QImage& image);
 
-    /// CLIP BPE 文本 tokenize（简化实现，返回 token IDs）
-    /// TODO: 接入完整的 CLIP BPE tokenizer（可移植 Python 版 clip/simple_tokenizer.py）
+    /// CLIP BPE 文本 tokenize
     std::vector<int64_t> tokenizeText(const QString& text);
 
     /// L2 归一化
@@ -80,6 +84,8 @@ private:
 
     std::unique_ptr<OnnxRuntimeEngine> m_visualEngine;
     std::unique_ptr<OnnxRuntimeEngine> m_textEngine;
+    std::unique_ptr<ClipTokenizer>     m_tokenizer;
+#endif // FRAMEMIND_HAS_ONNXRUNTIME
 };
 
 #endif // FRAMEMIND_CLIP_SERVICE_H

@@ -1,5 +1,12 @@
 #include "service/whisper_service.h"
 
+#ifndef FRAMEMIND_HAS_WHISPER
+
+WhisperService::WhisperService(QObject* parent) : QObject(parent) {}
+WhisperService::~WhisperService() = default;
+
+#else
+
 #include <whisper.h>
 #include <QDebug>
 #include <QtConcurrent/QtConcurrent>
@@ -86,14 +93,17 @@ QVector<SpeechSegment> WhisperService::transcribe(
     whisper_full_params params = whisper_full_default_params(
         m_greedy ? WHISPER_SAMPLING_GREEDY : WHISPER_SAMPLING_BEAM_SEARCH);
 
+    // 必须在 whisper_full 调用期间保持有效，不能用临时 QByteArray
+    const QByteArray langBytes = m_language.toUtf8();
+
     params.print_realtime       = false;
     params.print_progress       = false;
     params.print_timestamps     = false;
-    params.print_special_tokens = false;
+    params.print_special        = false;
     params.translate            = false;
-    params.language             = m_language.toUtf8().constData();
+    params.language             = langBytes.constData();
     params.n_threads            = m_nThreads;
-    params.no_context           = true;   // 不使用上一次的上下文
+    params.no_context           = true;
     params.single_segment       = false;
 
     // 执行推理
@@ -135,3 +145,5 @@ QFuture<QVector<SpeechSegment>> WhisperService::transcribeAsync(
         return this->transcribe(pcmSamples, sampleRate);
     });
 }
+
+#endif // FRAMEMIND_HAS_WHISPER

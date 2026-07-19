@@ -2,6 +2,7 @@
 
 #include "service/agent/video_analysis_service.h"
 
+#include <QJsonArray>
 #include <QJsonObject>
 
 AnalyzeTimeRangeTool::AnalyzeTimeRangeTool(VideoAnalysisService* analysis)

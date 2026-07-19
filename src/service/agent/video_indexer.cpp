@@ -10,6 +10,7 @@
 #endif
 #ifdef FRAMEMIND_HAS_WHISPER
 #  include "service/whisper_service.h"
+#  include "util/audio_decoder.h"
 #endif
 
 #include <QCryptographicHash>
@@ -21,8 +22,24 @@
 #include <QDebug>
 
 namespace {
-constexpr int kInitialSampleCount = 20;   // Level 0 场景分割用的采样帧数上限
-constexpr int kHashPrefixBytes    = 1024 * 1024;  // 头 1MB
+// TransNetV2 模式：每秒 1 帧密集采样；回退模式（无模型）：每 10s 一帧
+constexpr int kDenseFps           = 1;     // TransNetV2 需要的采样率
+constexpr int kSparseSamplePerSec = 10;    // 回退模式每 N 秒一帧
+constexpr int kMinSampleCount     = 20;
+constexpr int kMaxDenseSample     = 600;   // 密集采样上限（10min 视频）
+constexpr int kMaxSparseSample    = 200;
+constexpr int kHashPrefixBytes    = 1024 * 1024;
+
+int computeSampleCount(int64_t durationMs, bool dense)
+{
+    if (durationMs <= 0) return kMinSampleCount;
+    if (dense) {
+        const int count = static_cast<int>(durationMs / 1000 * kDenseFps);
+        return std::clamp(count, kMinSampleCount, kMaxDenseSample);
+    }
+    const int count = static_cast<int>(durationMs / 1000 / kSparseSamplePerSec);
+    return std::clamp(count, kMinSampleCount, kMaxSparseSample);
+}
 } // namespace
 
 VideoIndexer::VideoIndexer(PlayerService* player,
@@ -70,6 +87,24 @@ QString VideoIndexer::computeVideoId(const QString& videoPath)
 void VideoIndexer::startIndex(const QString& videoPath)
 {
     if (m_running && m_currentPath == videoPath) return;
+
+    // 内存缓存命中：repr 已完成 Level1 索引，直接复用，无需重跑流水线
+    {
+        QMutexLocker l(&m_reprMutex);
+        auto it = m_repr.find(videoPath);
+        if (it != m_repr.end() && it.value()
+                && it.value()->level >= VideoRepresentation::Level1) {
+            auto cached = it.value();
+            l.unlock();
+            m_currentPath = videoPath;
+            emit progress(100, StageDone, tr("索引完成 (缓存命中)"));
+            emit levelReady(0, cached);
+            emit levelReady(1, cached);
+            emit indexCompleted(cached);
+            return;
+        }
+    }
+
     cancel();
 
     m_running = true;
@@ -142,15 +177,19 @@ void VideoIndexer::buildLevel0(QSharedPointer<VideoRepresentation> repr,
     emit progress(10, StageSceneSplit, tr("场景分割"));
     if (m_cancelRequested) return;
 
-    // 均匀采样 → 场景分割
+    // 根据是否有 TransNetV2 决定采样密度
+    const bool useTransNet = m_sceneDet && m_sceneDet->isUsingTransNet();
+    const int sampleCount = computeSampleCount(repr->metadata.durationMs, useTransNet);
+    qDebug() << "[VideoIndexer] 采样帧数:" << sampleCount
+             << "| 时长(s):" << repr->metadata.durationMs / 1000
+             << "| 模式:" << (useTransNet ? "TransNetV2 (1fps)" : "直方图 (稀疏)");
     QVector<int64_t> timestamps;
     QVector<QImage> frames = sampleFrames(
-        videoPath, repr->metadata.durationMs, kInitialSampleCount, &timestamps);
+        videoPath, repr->metadata.durationMs, sampleCount, &timestamps);
 
     if (m_sceneDet && !frames.isEmpty()) {
         repr->scenes = m_sceneDet->detectScenes(frames, timestamps);
     } else {
-        // 兜底：整个视频作为一个场景
         Scene single;
         single.id = 0;
         single.startMs = 0;
@@ -172,8 +211,17 @@ void VideoIndexer::buildLevel0(QSharedPointer<VideoRepresentation> repr,
 void VideoIndexer::buildLevel1(QSharedPointer<VideoRepresentation> repr,
                                const QString& videoPath)
 {
+    qDebug() << "[VideoIndexer] buildLevel1 开始 | scenes:"
+             << repr->scenes.size();
+
 #ifdef FRAMEMIND_HAS_ONNXRUNTIME
-    if (m_clip && m_clip->isReady() && !repr->scenes.isEmpty()) {
+    if (!m_clip) {
+        qDebug() << "[VideoIndexer] ClipService 未注入，跳过 CLIP embedding";
+    } else if (!m_clip->isReady()) {
+        qDebug() << "[VideoIndexer] ClipService 未就绪（模型未加载），跳过 CLIP embedding";
+    } else if (repr->scenes.isEmpty()) {
+        qDebug() << "[VideoIndexer] 无场景，跳过 CLIP embedding";
+    } else {
         emit progress(40, StageKeyframeEncode, tr("编码关键帧 CLIP 向量"));
 
         std::vector<QImage> keyframes;
@@ -199,25 +247,67 @@ void VideoIndexer::buildLevel1(QSharedPointer<VideoRepresentation> repr,
                 c.frameEmbedding = embeddings[i];
                 c.keyframePath = s.keyframePath;
                 c.metadata.insert(QStringLiteral("scene_id"), s.id);
+                c.metadata.insert(QStringLiteral("file_path"), repr->metadata.filePath);
 
                 if (m_ragStore) {
                     m_ragStore->insertChunk(VideoRAGStore::VisualFrames, c);
                 }
             }
         }
+        qDebug() << "[VideoIndexer] CLIP embedding 完成 | keyframes:"
+                 << keyframes.size();
     }
 #endif
 
 #ifdef FRAMEMIND_HAS_WHISPER
-    if (m_whisper && m_whisper->isReady()) {
+    if (!m_whisper) {
+        qDebug() << "[VideoIndexer] WhisperService 未注入，跳过语音转写";
+    } else if (!m_whisper->isReady()) {
+        qDebug() << "[VideoIndexer] WhisperService 未就绪（模型未加载），跳过语音转写";
+    } else {
         emit progress(70, StageTranscribe, tr("语音转写"));
-        // 注意：真正的 PCM 数据抽取需从 PlayerService 或独立解码器提取
-        // 此处保留 TODO，等 M4-T4 完整接入
-        // repr->speechSegments = m_whisper->transcribe(pcmData);
+
+        AudioDecoder decoder;
+        decoder.setProgressCallback([this](int percent) {
+            emit progress(70 + percent / 5, StageTranscribe,
+                          tr("音频解码 %1%").arg(percent));
+        });
+
+        auto pcmData = decoder.decodeToFloat32(videoPath);
+        if (!pcmData.empty() && !m_cancelRequested) {
+            emit progress(85, StageTranscribe, tr("Whisper 转写中..."));
+            repr->speechSegments = m_whisper->transcribe(pcmData);
+
+            if (m_ragStore) {
+                for (const auto& seg : repr->speechSegments) {
+                    VideoChunk c;
+                    c.chunkId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+                    c.videoId = repr->videoId;
+                    c.startMs = seg.startMs;
+                    c.endMs   = seg.endMs;
+                    c.chunkType = VideoChunk::SpeechSegment;
+                    c.textContent = seg.text;
+                    c.metadata.insert(QStringLiteral("file_path"), repr->metadata.filePath);
+
+#ifdef FRAMEMIND_HAS_ONNXRUNTIME
+                    if (m_embedder && m_embedder->isReady() && !seg.text.isEmpty()) {
+                        c.textEmbedding = m_embedder->embed(seg.text);
+                    }
+#endif
+                    m_ragStore->insertChunk(VideoRAGStore::TextSegments, c);
+                }
+            }
+
+            qDebug() << "[VideoIndexer] 转写完成, 共"
+                     << repr->speechSegments.size() << "段";
+        } else if (pcmData.empty()) {
+            qDebug() << "[VideoIndexer] 音频解码结果为空，跳过转写";
+        }
     }
 #endif
 
     repr->level = VideoRepresentation::Level1;
+    qDebug() << "[VideoIndexer] buildLevel1 完成";
     emit progress(90, StageKeyframeEncode, tr("索引 Level 1 完成"));
 }
 

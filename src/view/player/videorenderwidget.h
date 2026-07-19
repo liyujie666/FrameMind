@@ -8,20 +8,16 @@
 #include <QOpenGLVertexArrayObject>
 #include <QImage>
 
-class QOpenGLTexture;
+#include "model/videoframe.h"
 
 /**
- * 视频渲染 widget —— 使用 QOpenGLWidget + 着色器把每帧 QImage 上传到 GPU 绘制。
- *
- * 行为与旧 QWidget 版本保持一致：
- *   - 30fps 节流，避免高帧率下过度重绘
- *   - 等比缩放、居中、剩余区域填充 m_bgColor（默认黑）
+ * 视频渲染 widget —— 使用 OpenGL shader 直接渲染 YUV420P/NV12/RGBA 原始帧数据。
  *
  * 渲染策略：
- *   - 1 个 [-1,1]×[-1,1] 的 NDC 四边形，固定顶点 / 纹理坐标
- *   - 用 glViewport 把实际绘制区域限制到"等比居中"后的子矩形
- *     （黑边由 glClearColor 填充，无需在片段着色器中处理）
- *   - 每帧仅在 cacheKey 变化时把 QImage 转 RGBA8 + 上下翻转后 setData 到纹理
+ *   - YUV420P: 3 个单通道纹理 (Y/U/V)，fragment shader 做 BT.601 矩阵转换
+ *   - NV12:    2 个纹理 (Y + UV interleaved)，fragment shader 转换
+ *   - RGBA/BGRA: 单个 RGBA 纹理直接采样
+ *   - 等比缩放、居中、剩余区域填充黑色
  */
 class VideoRenderWidget : public QOpenGLWidget, protected QOpenGLFunctions {
     Q_OBJECT
@@ -33,41 +29,68 @@ public:
     void setContainerBgColor(const QColor& color);
 
 public slots:
+    void updateFrame(const VideoFrame& frame);
     void updateFrame(const QImage& frame);
     void clear();
 
 protected:
-    // QOpenGLWidget
     void initializeGL() override;
     void resizeGL(int w, int h) override;
     void paintGL() override;
 
 private:
-    void uploadFrame(const QImage& frame);
-    void computeDrawRectNdc(QRectF& outTexRectNdc) const;
+    enum class FrameFormat { None, YUV420P, NV12, RGBA };
 
-    // GL 资源（生命周期受 QOpenGLWidget 控制，destroyed 时随 context 释放）
-    QOpenGLShaderProgram m_program;
-    QOpenGLBuffer        m_vbo = QOpenGLBuffer(QOpenGLBuffer::VertexBuffer);
+    void initShaders();
+    void destroyTextures();
+    void uploadYUV420P(const VideoFrame& frame);
+    void uploadNV12(const VideoFrame& frame);
+    void uploadRGBA(const VideoFrame& frame);
+    void uploadQImage(const QImage& frame);
+    void createTexture(GLuint& tex, int w, int h, GLenum internalFmt, GLenum fmt, const void* data);
+    void updateTexture(GLuint tex, int w, int h, GLenum fmt, GLenum type, const void* data);
+
+    // Shader programs for different formats
+    QOpenGLShaderProgram m_yuvProgram;
+    QOpenGLShaderProgram m_nv12Program;
+    QOpenGLShaderProgram m_rgbaProgram;
+
+    QOpenGLBuffer m_vbo{QOpenGLBuffer::VertexBuffer};
     QOpenGLVertexArrayObject m_vao;
-    QOpenGLTexture*      m_tex = nullptr;   // 延迟到 initializeGL 创建
 
-    // 帧缓冲
-    QImage        m_currentFrame;          // 最近一帧（QImage 隐式共享）
-    qint64        m_uploadedCacheKey = 0;  // 上一次上传帧的 cacheKey()，0 = 未上传
+    // YUV420P textures
+    GLuint m_texY = 0;
+    GLuint m_texU = 0;
+    GLuint m_texV = 0;
 
-    QColor        m_bgColor = Qt::black;
-    int           m_radius  = 8;           // 仅占位，OpenGL 不直接画圆角；由 RoundedVideoContainer 处理
+    // NV12 textures
+    GLuint m_texNV12_Y = 0;
+    GLuint m_texNV12_UV = 0;
+
+    // RGBA texture
+    GLuint m_texRGBA = 0;
+
+    // Current frame state
+    VideoFrame m_currentVideoFrame;
+    QImage m_currentQImage;
+    FrameFormat m_currentFormat = FrameFormat::None;
+    int m_frameWidth = 0;
+    int m_frameHeight = 0;
+    bool m_needUpload = false;
+
+    QColor m_bgColor = Qt::black;
+    int m_radius = 8;
+    bool m_glInitialized = false;
+    bool m_pendingClear = false;
 };
 
 /**
- * 带圆角的视频容器 widget（保持原实现，负责把 OpenGL widget 套在圆角蒙版里）
+ * 带圆角的视频容器 widget
  */
 class RoundedVideoContainer : public QWidget {
     Q_OBJECT
 public:
     explicit RoundedVideoContainer(QWidget* parent = nullptr);
-
     void setRadius(int radius);
 
 protected:

@@ -8,6 +8,7 @@
 
 #include "model/video_representation.h"
 #include "model/agent_types.h"
+#include "model/videocontext.h"
 
 class AgentService;
 class VideoIndexer;
@@ -98,6 +99,13 @@ signals:
 private:
     /// SCENE_DESCRIPTION_PROMPT 组装 & 调用 VLM
     void doDescribeScene(int sceneId, QSharedPointer<VideoRepresentation> repr);
+
+    /**
+     * 启动预热阶段：描述前 N 个场景，全部完成后自动触发 summarizeVideo。
+     * @param repr      视频表示
+     * @param prewarm   预热场景数量（通常 3，视频场景少时取实际场景数）
+     */
+    void startPrewarmAndSummarize(QSharedPointer<VideoRepresentation> repr, int prewarm);
 
     /// 借助 AgentService 走一次一次性（非流式）VLM 调用
     /// 通过临时 conversation + 简单 aggregator 实现

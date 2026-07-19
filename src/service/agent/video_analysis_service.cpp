@@ -74,11 +74,19 @@ VideoAnalysisService::VideoAnalysisService(AgentService*    agent,
             emit analysisProgress(30 + level * 20,
                                   tr("Level %1 索引完成").arg(level));
             if (level == 1) {
-                // Level 1 完成 → 后台生成 Level 2 摘要
-                // 场景描述采用"按需 + 首批 3 个预生成"策略
+                // 缓存命中：repr 已有场景描述和摘要，直接重放信号，不重复调 VLM
+                if (!repr->videoSummary.isEmpty()) {
+                    for (auto it = repr->sceneDescriptions.constBegin();
+                         it != repr->sceneDescriptions.constEnd(); ++it) {
+                        emit sceneDescribed(it.key(), it.value());
+                    }
+                    emit summaryReady(repr->videoSummary);
+                    return;
+                }
+
                 const int prewarm = qMin(3, repr->scenes.size());
-                for (int i = 0; i < prewarm; ++i) {
-                    describeScene(repr->scenes[i].id, repr);
+                if (prewarm > 0) {
+                    startPrewarmAndSummarize(repr, prewarm);
                 }
             }
         });
@@ -111,6 +119,53 @@ QSharedPointer<VideoRepresentation> VideoAnalysisService::representation(
     const QString& videoPath) const
 {
     return m_indexer ? m_indexer->representation(videoPath) : nullptr;
+}
+
+// ============================================================
+// 预热 + 自动摘要（串行队列）
+// ============================================================
+
+void VideoAnalysisService::startPrewarmAndSummarize(
+    QSharedPointer<VideoRepresentation> repr, int prewarm)
+{
+    if (prewarm <= 0) return;
+
+    auto sceneIds = QSharedPointer<QVector<int>>::create();
+    sceneIds->reserve(prewarm);
+    for (int i = 0; i < prewarm; ++i) {
+        sceneIds->append(repr->scenes[i].id);
+    }
+
+    QPointer<VideoAnalysisService> guard(this);
+
+    // 将 std::function 本身放进 QSharedPointer，让内外层 lambda 都通过强引用
+    // 持有它，避免按引用捕获栈变量导致的悬垂 UB。
+    auto describeNext = QSharedPointer<std::function<void(int)>>::create();
+
+    *describeNext = [guard, repr, sceneIds, describeNext](int idx) mutable {
+        if (!guard) return;
+
+        if (idx >= sceneIds->size()) {
+            qDebug() << "[VideoAnalysisService] 预热完成，触发 summarizeVideo:"
+                     << repr->metadata.fileName;
+            guard->summarizeVideo(repr);
+            return;
+        }
+
+        const int sceneId = (*sceneIds)[idx];
+        auto nextConn = QSharedPointer<QMetaObject::Connection>::create();
+        *nextConn = connect(guard, &VideoAnalysisService::sceneDescribed,
+            guard, [guard, repr, sceneIds, describeNext, nextConn,
+                    sceneId, idx](int doneId, const QString&) mutable {
+                if (doneId != sceneId) return;
+                QObject::disconnect(*nextConn);
+                (*describeNext)(idx + 1);
+            });
+
+        guard->describeScene(sceneId, repr);
+    };
+
+    (*describeNext)(0);
 }
 
 // ============================================================

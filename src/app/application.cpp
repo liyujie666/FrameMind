@@ -19,7 +19,9 @@ void Application::start()
                                                 m_container->agentService(),
                                                 m_container->fileManagerService(),
                                                 m_container->themeService(),
-                                                m_container->llmProviderService());
+                                                m_container->llmProviderService(),
+                                                m_container->videoAnalysisVM(),
+                                                m_container->knowledgeVM());
     m_mainWindow->show();
 
     // Apply initial theme (会通过 ThemeService::themeChanged 触发各 View 刷新)

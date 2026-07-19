@@ -225,11 +225,14 @@ void PlayerControlBar::updatePlayPauseIcon(PlayerState state)
 {
     m_lastPlayState = state;
     if (state == PlayerState::Playing) {
-        QIcon pauseIcon(":/icons/pause_light.png");
-        m_playButton->setIcon(pauseIcon);
+        m_playButton->setIcon(QIcon(QStringLiteral(":/icons/pause_light.png")));
+        m_playButton->setToolTip(tr("暂停"));
+    } else if (state == PlayerState::Ended) {
+        m_playButton->setIcon(QIcon(QStringLiteral(":/icons/replay_light.png")));
+        m_playButton->setToolTip(tr("重播"));
     } else {
-        QIcon playIcon(":/icons/play_light.png");
-        m_playButton->setIcon(playIcon);
+        m_playButton->setIcon(QIcon(QStringLiteral(":/icons/play_light.png")));
+        m_playButton->setToolTip(tr("播放"));
     }
 }
 

@@ -102,6 +102,7 @@ private:
     int          m_totalToolCalls = 0;
     QString      m_streamingText;      // 最新一轮 LLM 文本增量累积
     QVector<ToolResult> m_toolTrace;
+    QJsonArray   m_lastAssistantToolCalls;  // 上一轮 LLM 返回的 tool_calls，回填下一轮用
 
     // 回调
     std::function<void(const QString&)> m_onProgress;

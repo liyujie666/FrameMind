@@ -9,6 +9,7 @@
 #include <QPointer>
 
 #include "model/agent_types.h"
+#include "model/tool_types.h"
 #include "model/videocontext.h"
 
 class AgentService;

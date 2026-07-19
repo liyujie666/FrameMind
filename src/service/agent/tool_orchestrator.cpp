@@ -134,6 +134,9 @@ void ToolOrchestrator::onAgentFinished(const QString& convId,
 
     // 情况 2: 请求工具调用（tool_calls）
     if (finishReason == QLatin1String("tool_calls") || !toolCalls.isEmpty()) {
+        // 缓存本轮 assistant tool_calls 消息，供回填下一轮 continueWithToolResults
+        m_lastAssistantToolCalls = toolCalls;
+
         // 解析 ToolCall
         QVector<ToolCall> calls;
         for (const auto& v : toolCalls) {
@@ -236,23 +239,28 @@ void ToolOrchestrator::executeToolsThenContinue(
                 ++(*executed);
 
                 if (*executed >= total) {
-                    // 全部工具已完成 → 检查轮次上限并回填
                     if (round + 1 >= MAX_ROUNDS) {
                         finishWithAnswer(
                             QStringLiteral("[已达最大工具轮次] ") + m_streamingText);
                         return;
                     }
-                    // 组装 assistant tool_call 消息（每轮独立）
-                    // 由 AgentService::continueWithToolResults 内部处理 history
-                    QJsonArray assistantToolCallArr;
-                    // 我们需要之前收到的完整 toolCalls；简化：不额外发送 assistant 消息，
-                    // 直接把 tool 消息作为下一轮增量（部分 API 允许省略 assistant tool_call 记录）
-                    // 若 API 严格要求，可扩展 AgentService 缓存最后一次 pendingToolCalls
+                    // OpenAI API 要求 tool 消息之前必须有对应的 assistant tool_calls 消息，
+                    // 否则会返回 400。使用缓存的 m_lastAssistantToolCalls 回填。
+                    QJsonArray assistantMsg;
+                    if (!m_lastAssistantToolCalls.isEmpty()) {
+                        QJsonObject assistantEntry;
+                        assistantEntry.insert(QStringLiteral("role"),
+                                              QStringLiteral("assistant"));
+                        assistantEntry.insert(QStringLiteral("content"), QJsonValue::Null);
+                        assistantEntry.insert(QStringLiteral("tool_calls"),
+                                              m_lastAssistantToolCalls);
+                        assistantMsg.append(assistantEntry);
+                    }
                     m_currentRound = round + 1;
                     emit roundStarted(m_currentRound);
                     m_streamingText.clear();
                     m_agent->continueWithToolResults(
-                        m_convId, assistantToolCallArr, *pendingResults,
+                        m_convId, assistantMsg, *pendingResults,
                         m_registry->allDefinitions());
                 }
             });

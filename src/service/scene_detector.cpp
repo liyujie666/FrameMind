@@ -40,20 +40,15 @@ SceneDetector::~SceneDetector() = default;
 bool SceneDetector::loadTransNetV2(const QString& modelPath)
 {
 #ifdef FRAMEMIND_HAS_ONNXRUNTIME
-    // TransNetV2 ONNX 模型加载
-    // 模型输入: [1, 27, 3, 224, 224] (27 帧滑动窗口)
-    // 模型输出: [1, 27, 1] (每帧的场景切换概率)
-    //
-    // 模型导出：参考 https://github.com/soCzech/TransNetV2
-    // TODO: 实现 TransNetV2 推理逻辑
     m_transnetEngine = std::make_unique<OnnxRuntimeEngine>(false);
     if (m_transnetEngine->loadModel(modelPath)) {
         m_useTransNet = true;
-        qDebug() << "[SceneDetector] TransNetV2 模型加载成功，切换到深度学习模式";
+        qDebug() << "[SceneDetector] TransNetV2 加载成功，切换到深度学习模式"
+                 << "| input: [1,100,27,48,3]";
         return true;
     }
     m_transnetEngine.reset();
-    qWarning() << "[SceneDetector] TransNetV2 模型加载失败，保持直方图模式";
+    qWarning() << "[SceneDetector] TransNetV2 加载失败，保持直方图模式";
     return false;
 #else
     Q_UNUSED(modelPath)
@@ -70,13 +65,8 @@ float SceneDetector::computeDifference(const QImage& current,
                                         const QImage& previous)
 {
     if (current.isNull() || previous.isNull()) {
-        return 1.0f;  // 缺帧视为最大差异
+        return 1.0f;
     }
-
-    if (m_useTransNet && m_transnetEngine && m_transnetEngine->isLoaded()) {
-        return transnetPredict(current, previous);
-    }
-
     return histogramDifference(current, previous);
 }
 
@@ -106,47 +96,62 @@ QVector<Scene> SceneDetector::detectScenes(
 
     if (frames.size() == 1) {
         Scene s;
-        s.sceneId = 0;
+        s.id = 0;
         s.startMs = timestampsMs[0];
         s.endMs = timestampsMs[0] + 1000;
         s.keyframe = frames[0];
-        s.changeScore = 0.0f;
         scenes.append(s);
         return scenes;
     }
 
-    // 1. 逐帧检测边界
+    // 判断采样密度：帧间隔 > 2s 视为稀疏，始终用直方图
+    const int64_t avgIntervalMs = (timestampsMs.last() - timestampsMs.first())
+                                  / (timestampsMs.size() - 1);
+    const bool isSparse = avgIntervalMs > 2000;
+
+    qDebug() << "[SceneDetector] detectScenes | frames:" << frames.size()
+             << "| avgInterval:" << avgIntervalMs << "ms"
+             << "| mode:" << (isSparse ? "histogram" : "TransNetV2");
+
+    std::vector<float> probs;
+
+#ifdef FRAMEMIND_HAS_ONNXRUNTIME
+    if (!isSparse && m_useTransNet && m_transnetEngine && m_transnetEngine->isLoaded()) {
+        probs = transnetBatchPredict(frames);
+    }
+#endif
+
     int currentSceneId = 0;
-    int sceneStartIdx = 0;
+    int sceneStartIdx  = 0;
 
-    for (int i = 1; i < frames.size(); ++i) {
-        float diff = computeDifference(frames[i], frames[i - 1]);
+    for (int i = 0; i + 1 < frames.size(); ++i) {
+        float score = 0.0f;
+        if (!probs.empty() && i < static_cast<int>(probs.size())) {
+            score = probs[i];
+        } else {
+            score = histogramDifference(frames[i + 1], frames[i]);
+        }
 
-        if (diff > m_threshold) {
-            // 场景切换：闭合当前场景
+        if (score > m_threshold) {
             Scene s;
-            s.sceneId = currentSceneId;
-            s.startMs = timestampsMs[sceneStartIdx];
-            s.endMs = timestampsMs[i];
+            s.id       = currentSceneId++;
+            s.startMs  = timestampsMs[sceneStartIdx];
+            s.endMs    = timestampsMs[i + 1];
             s.keyframe = frames[sceneStartIdx];
-            s.changeScore = diff;
             scenes.append(s);
 
-            emit sceneBoundaryDetected(timestampsMs[i], diff);
-
-            currentSceneId++;
-            sceneStartIdx = i;
+            emit sceneBoundaryDetected(timestampsMs[i + 1], score);
+            sceneStartIdx = i + 1;
         }
     }
 
-    // 2. 闭合最后一个场景
-    if (sceneStartIdx < frames.size()) {
+    // 闭合最后一个场景
+    {
         Scene s;
-        s.sceneId = currentSceneId;
-        s.startMs = timestampsMs[sceneStartIdx];
-        s.endMs = timestampsMs.last() + 1000;
+        s.id       = currentSceneId;
+        s.startMs  = timestampsMs[sceneStartIdx];
+        s.endMs    = timestampsMs.last() + 1000;
         s.keyframe = frames[sceneStartIdx];
-        s.changeScore = 0.0f;
         scenes.append(s);
     }
 
@@ -161,6 +166,66 @@ QFuture<QVector<Scene>> SceneDetector::detectScenesAsync(
     return QtConcurrent::run([this, frames, timestampsMs]() {
         return this->detectScenes(frames, timestampsMs);
     });
+}
+
+// =========================================================================
+// 阶段 1：直方图粗分割 — 返回候选边界
+// =========================================================================
+
+QVector<QPair<int64_t, float>> SceneDetector::detectCandidateBoundaries(
+    const QVector<QImage>& frames,
+    const QVector<int64_t>& timestampsMs)
+{
+    QVector<QPair<int64_t, float>> candidates;
+    if (frames.size() < 2 || frames.size() != timestampsMs.size()) return candidates;
+
+    for (int i = 0; i + 1 < frames.size(); ++i) {
+        float score = histogramDifference(frames[i + 1], frames[i]);
+        if (score > m_threshold) {
+            candidates.append({timestampsMs[i + 1], score});
+        }
+    }
+
+    qDebug() << "[SceneDetector] 粗分割候选边界:" << candidates.size() << "个";
+    return candidates;
+}
+
+// =========================================================================
+// 阶段 2：TransNetV2 精确确认
+// =========================================================================
+
+QVector<int64_t> SceneDetector::refineBoundariesWithTransNet(
+    const QVector<QImage>& denseFrames,
+    const QVector<int64_t>& denseTimestampsMs)
+{
+    QVector<int64_t> confirmed;
+
+#ifdef FRAMEMIND_HAS_ONNXRUNTIME
+    if (!m_useTransNet || !m_transnetEngine || !m_transnetEngine->isLoaded()) {
+        qDebug() << "[SceneDetector] TransNetV2 不可用，跳过精确确认";
+        return confirmed;
+    }
+    if (denseFrames.size() < 2 || denseFrames.size() != denseTimestampsMs.size()) {
+        return confirmed;
+    }
+
+    std::vector<float> probs = transnetBatchPredict(denseFrames);
+
+    // TransNetV2 输出的阈值通常用 0.5 判定（sigmoid 输出）
+    constexpr float kTransnetThreshold = 0.3f;
+    for (int i = 0; i < static_cast<int>(probs.size()) - 1; ++i) {
+        if (probs[i] > kTransnetThreshold) {
+            confirmed.append(denseTimestampsMs[i]);
+        }
+    }
+
+    qDebug() << "[SceneDetector] TransNetV2 精确确认:" << confirmed.size()
+             << "个边界 (输入帧:" << denseFrames.size() << ")";
+#else
+    Q_UNUSED(denseFrames)
+    Q_UNUSED(denseTimestampsMs)
+#endif
+    return confirmed;
 }
 
 // =========================================================================
@@ -214,18 +279,108 @@ float SceneDetector::histogramDifference(const QImage& a, const QImage& b)
 }
 
 // =========================================================================
-// TransNetV2 推理（可选，暂为占位）
+// TransNetV2 批量推理
 // =========================================================================
 
-float SceneDetector::transnetPredict(const QImage& current,
-                                      const QImage& previous)
+// TransNetV2 模型规格（从 ONNX 文件读取确认）：
+//   input  "input" : float32 [1, 100, 27, 48, 3]
+//     - 1    = batch size（固定）
+//     - 100  = 每次处理的帧数（固定维度，不足则 zero-pad）
+//     - 27   = 帧高度
+//     - 48   = 帧宽度
+//     - 3    = RGB 通道
+//   output "534"   : float32 [1, 100, 1] — single-frame 切换概率
+//   output "535"   : float32 [1, 100, 1] — many-transition 概率（不使用）
+//
+// 推理策略：
+//   每次最多送 kTransnetBatch(100) 帧，循环直到全部处理完。
+//   每帧 resize 到 27x48 RGB，归一化到 [0,1]。
+//   输出的 probs[i] 代表第 i 帧与 i+1 帧之间发生场景切换的概率。
+
+void SceneDetector::preprocessTransnetFrame(const QImage& img, float* dst) const
 {
-    // TODO: 实现 TransNetV2 推理
-    // TransNetV2 需要 27 帧滑动窗口输入，不能只用 2 帧比较
-    // 完整实现需要维护帧缓冲区，收集 27 帧后批量推理
-    //
-    // 临时回退到直方图差异
-    return histogramDifference(current, previous);
+    QImage scaled = img.scaled(kTransnetW, kTransnetH,
+                               Qt::IgnoreAspectRatio,
+                               Qt::SmoothTransformation);
+    if (scaled.format() != QImage::Format_RGB888) {
+        scaled = scaled.convertToFormat(QImage::Format_RGB888);
+    }
+    for (int y = 0; y < kTransnetH; ++y) {
+        const uint8_t* line = scaled.constScanLine(y);
+        for (int x = 0; x < kTransnetW; ++x) {
+            const uint8_t* px = line + x * 3;
+            const int idx = (y * kTransnetW + x) * kTransnetC;
+            dst[idx + 0] = static_cast<float>(px[0]);  // R in [0, 255]
+            dst[idx + 1] = static_cast<float>(px[1]);  // G
+            dst[idx + 2] = static_cast<float>(px[2]);  // B
+        }
+    }
+}
+
+std::vector<float> SceneDetector::transnetBatchPredict(const QVector<QImage>& frames)
+{
+#ifndef FRAMEMIND_HAS_ONNXRUNTIME
+    Q_UNUSED(frames)
+    return {};
+#else
+    const int N           = frames.size();
+    const int framePixels = kTransnetH * kTransnetW * kTransnetC;   // 27*48*3 = 3888
+
+    std::vector<std::vector<float>> frameBufs(N, std::vector<float>(framePixels));
+    for (int i = 0; i < N; ++i) {
+        preprocessTransnetFrame(frames[i], frameBufs[i].data());
+    }
+
+    std::vector<float> probs(N, 0.0f);
+
+    int frameIdx = 0;
+    while (frameIdx < N) {
+        int actualBatch = std::min(kTransnetBatch, N - frameIdx);
+
+        // dim[1] 固定为 kTransnetBatch，不足时 zero-pad
+        std::vector<float> inputBuf(kTransnetBatch * framePixels, 0.0f);
+
+        for (int b = 0; b < actualBatch; ++b) {
+            float* dst = inputBuf.data() + b * framePixels;
+            std::copy(frameBufs[frameIdx + b].begin(),
+                      frameBufs[frameIdx + b].end(),
+                      dst);
+        }
+
+        // shape: [1, 100, 27, 48, 3] = [batch, n_frames, H, W, C]
+        std::vector<int64_t> shape = {1, kTransnetBatch, kTransnetH,
+                                      kTransnetW, kTransnetC};
+        auto inputTensor = m_transnetEngine->createTensor(inputBuf.data(), shape);
+
+        std::vector<Ort::Value> inputs;
+        inputs.push_back(std::move(inputTensor));
+        std::vector<Ort::Value> outputs;
+        m_transnetEngine->run(inputs, outputs);
+
+        if (outputs.empty()) {
+            qWarning() << "[SceneDetector] TransNetV2 推理无输出，跳过此批";
+            frameIdx += actualBatch;
+            continue;
+        }
+
+        const float* outData = outputs[0].GetTensorData<float>();
+        float maxProb = 0.0f;
+        for (int b = 0; b < actualBatch; ++b) {
+            float prob = outData[b];  // already sigmoid, expects uint8-range input
+            probs[frameIdx + b] = prob;
+            if (prob > maxProb) maxProb = prob;
+        }
+
+        qDebug() << "[SceneDetector] TransNetV2 batch"
+                 << frameIdx << "-" << (frameIdx + actualBatch - 1)
+                 << "| maxProb:" << maxProb;
+
+        frameIdx += actualBatch;
+    }
+
+    qDebug() << "[SceneDetector] TransNetV2 推理完成 | frames:" << N;
+    return probs;
+#endif
 }
 
 // =========================================================================

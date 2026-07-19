@@ -2,6 +2,7 @@
 
 #include "infrastructure/eventbus.h"
 
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QMetaObject>
 

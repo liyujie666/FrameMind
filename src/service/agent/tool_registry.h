@@ -6,6 +6,7 @@
 #include <QHash>
 #include <QJsonArray>
 #include <memory>
+#include <vector>
 
 #include "service/agent/tool_base.h"
 
@@ -38,7 +39,8 @@ public:
     void clear();
 
 private:
-    QHash<QString, std::unique_ptr<ITool>> m_tools;
+    std::vector<std::unique_ptr<ITool>> m_toolOwner;   // owns the tools
+    QHash<QString, ITool*>              m_tools;        // name → non-owning lookup
 };
 
 #endif // FRAMEMIND_TOOL_REGISTRY_H

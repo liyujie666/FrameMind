@@ -1,7 +1,17 @@
 #include "service/embedding_service.h"
+
+#ifndef FRAMEMIND_HAS_ONNXRUNTIME
+
+EmbeddingService::EmbeddingService(QObject* parent) : QObject(parent) {}
+EmbeddingService::~EmbeddingService() = default;
+
+#else
+
 #include "infrastructure/onnx_runtime_engine.h"
+#include "infrastructure/bert_tokenizer.h"
 
 #include <QtConcurrent/QtConcurrent>
+#include <QFileInfo>
 #include <QDebug>
 #include <cmath>
 
@@ -25,6 +35,7 @@
 EmbeddingService::EmbeddingService(QObject* parent)
     : QObject(parent)
     , m_engine(std::make_unique<OnnxRuntimeEngine>(false))
+    , m_tokenizer(std::make_unique<BertTokenizer>())
 {
 }
 
@@ -33,10 +44,19 @@ EmbeddingService::~EmbeddingService() = default;
 bool EmbeddingService::initialize(const QString& modelPath)
 {
     bool ok = m_engine->loadModel(modelPath);
-    if (ok) {
-        qDebug() << "[EmbeddingService] 初始化成功:" << modelPath;
+
+    // 词表文件与模型同目录
+    QString vocabPath = QFileInfo(modelPath).absolutePath()
+                        + QStringLiteral("/vocab.txt");
+    bool ok2 = m_tokenizer->load(vocabPath);
+
+    if (ok && ok2) {
+        qDebug() << "[EmbeddingService] 初始化成功:" << modelPath
+                 << "| vocab:" << vocabPath;
     } else {
-        qWarning() << "[EmbeddingService] 初始化失败:" << modelPath;
+        qWarning() << "[EmbeddingService] 初始化失败:"
+                   << "| model:" << (ok ? "OK" : "FAIL")
+                   << "| vocab:" << (ok2 ? "OK" : "FAIL");
     }
     return ok;
 }
@@ -129,45 +149,28 @@ QFuture<std::vector<std::vector<float>>> EmbeddingService::embedBatchAsync(
 
 std::vector<int64_t> EmbeddingService::tokenize(const QString& text)
 {
-    // -----------------------------------------------------------------------
-    // BGE (BERT) WordPiece Tokenizer（简化版）
-    //
-    // 完整实现需要 vocab.txt（约 21 万 token），做 WordPiece 分词。
-    // 这里先用 char-level tokenize 保证流程可跑通。
-    //
-    // TODO: 加载 vocab.txt，实现 WordPiece：
-    //   1. BasicTokenizer: 文本清洗 + 空白分词 + CJK 逐字符切分
-    //   2. WordpieceTokenizer: 对每个子词做 ## 前缀匹配
-    //   3. 添加 [CLS] / [SEP]，padding 到 MAX_SEQ_LEN
-    // -----------------------------------------------------------------------
-    std::vector<int64_t> tokens(MAX_SEQ_LEN, 0);  // padding token = 0
+    if (m_tokenizer && m_tokenizer->isLoaded()) {
+        return m_tokenizer->encode(text, MAX_SEQ_LEN);
+    }
 
-    // BERT 特殊 token ID（标准值）
-    constexpr int64_t CLS_TOKEN = 101;   // [CLS]
-    constexpr int64_t SEP_TOKEN = 102;   // [SEP]
-    constexpr int64_t PAD_TOKEN = 0;     // [PAD]
+    // 降级：tokenizer 未加载时用字符级编码（质量差，但不崩溃）
+    qWarning() << "[EmbeddingService] tokenizer 未加载，使用降级编码";
+    std::vector<int64_t> tokens(MAX_SEQ_LEN, 0);
+    constexpr int64_t CLS_TOKEN = 101;
+    constexpr int64_t SEP_TOKEN = 102;
 
     tokens[0] = CLS_TOKEN;
-
-    // 简化：逐字符编码（对中文适用，英文不精确但可验证流程）
-    // 实际 WordPiece 会将英文拆成子词
     int pos = 1;
     for (const QChar& ch : text) {
         if (pos >= MAX_SEQ_LEN - 1) break;
-
-        // 简化映射：unicode code point → token ID
-        // 真实实现应查 vocab.txt 表
         uint32_t cp = ch.unicode();
         if (cp < 0x4E00) {
-            // ASCII / 拉丁字符区域
             tokens[pos] = static_cast<int64_t>(cp);
         } else {
-            // CJK 统一汉字区域：偏移到 vocab 高位
             tokens[pos] = static_cast<int64_t>(cp - 0x4E00 + 1000);
         }
         ++pos;
     }
-
     tokens[pos] = SEP_TOKEN;
     return tokens;
 }
@@ -175,12 +178,12 @@ std::vector<int64_t> EmbeddingService::tokenize(const QString& text)
 std::vector<int64_t> EmbeddingService::buildAttentionMask(
     const std::vector<int64_t>& inputIds)
 {
+    if (m_tokenizer && m_tokenizer->isLoaded()) {
+        return m_tokenizer->attentionMask(inputIds);
+    }
     std::vector<int64_t> mask(inputIds.size(), 0);
     for (size_t i = 0; i < inputIds.size(); ++i) {
-        // 非 padding 的位置 = 1
-        if (inputIds[i] != 0) {
-            mask[i] = 1;
-        }
+        if (inputIds[i] != 0) mask[i] = 1;
     }
     return mask;
 }
@@ -194,3 +197,5 @@ void EmbeddingService::l2Normalize(std::vector<float>& vec)
         for (auto& v : vec) v /= norm;
     }
 }
+
+#endif // FRAMEMIND_HAS_ONNXRUNTIME

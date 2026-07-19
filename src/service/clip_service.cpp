@@ -1,7 +1,18 @@
 #include "service/clip_service.h"
+
+#ifndef FRAMEMIND_HAS_ONNXRUNTIME
+
+ClipService::ClipService(QObject* parent) : QObject(parent) {}
+ClipService::~ClipService() = default;
+
+#else
+
 #include "infrastructure/onnx_runtime_engine.h"
+#include "infrastructure/clip_tokenizer.h"
 
 #include <QtConcurrent/QtConcurrent>
+#include <QCoreApplication>
+#include <QFileInfo>
 #include <QDebug>
 #include <cmath>
 #include <cstring>
@@ -25,6 +36,7 @@ ClipService::ClipService(QObject* parent)
     : QObject(parent)
     , m_visualEngine(std::make_unique<OnnxRuntimeEngine>(false))
     , m_textEngine(std::make_unique<OnnxRuntimeEngine>(false))
+    , m_tokenizer(std::make_unique<ClipTokenizer>())
 {
 }
 
@@ -36,14 +48,22 @@ bool ClipService::initialize(const QString& visualModelPath,
     bool ok1 = m_visualEngine->loadModel(visualModelPath);
     bool ok2 = m_textEngine->loadModel(textModelPath);
 
-    if (ok1 && ok2) {
+    // 词表文件与模型同目录
+    QString modelsDir = QFileInfo(textModelPath).absolutePath();
+    QString mergesPath  = modelsDir + QStringLiteral("/clip_merges.txt");
+    QString vocabJsonPath = modelsDir + QStringLiteral("/clip_vocab.json");
+    bool ok3 = m_tokenizer->load(mergesPath, vocabJsonPath);
+
+    if (ok1 && ok2 && ok3) {
         qDebug() << "[ClipService] 初始化成功"
                     << "| visual:" << visualModelPath
-                    << "| text:" << textModelPath;
+                    << "| text:" << textModelPath
+                    << "| merges:" << mergesPath;
     } else {
         qWarning() << "[ClipService] 初始化失败"
                     << "| visual:" << (ok1 ? "OK" : "FAIL")
-                    << "| text:" << (ok2 ? "OK" : "FAIL");
+                    << "| text:" << (ok2 ? "OK" : "FAIL")
+                    << "| vocab:" << (ok3 ? "OK" : "FAIL");
     }
     return ok1 && ok2;
 }
@@ -200,41 +220,24 @@ std::vector<float> ClipService::preprocessImage(const QImage& image)
 
 std::vector<int64_t> ClipService::tokenizeText(const QString& text)
 {
-    // -----------------------------------------------------------------------
-    // CLIP BPE Tokenizer（简化版）
-    //
-    // 完整实现需要 CLIP 的 vocab.json + merges.txt，做 BPE 编码。
-    // 这里先返回固定长度的 placeholder token 序列，保证模型能跑通。
-    //
-    // TODO: 移植 CLIP 官方 simple_tokenizer.py（约 200 行 C++）
-    //   1. 加载 vocab.json（CLIP 特殊 token 表）
-    //   2. 文本 → byte-level BPE 编码
-    //   3. 添加 [SOS] [EOS] token，padding 到 77
-    //
-    // 临时方案：对中文文本做 char-level token（非最优但可验证流程）
-    // -----------------------------------------------------------------------
-    std::vector<int64_t> tokens(TEXT_MAX_LEN, 0);  // 全 0 padding
+    if (m_tokenizer && m_tokenizer->isLoaded()) {
+        return m_tokenizer->encode(text, TEXT_MAX_LEN);
+    }
 
-    // CLIP 特殊 token ID（标准值）
-    constexpr int64_t SOS_TOKEN = 49406;  // <|startoftext|>
-    constexpr int64_t EOS_TOKEN = 49407;  // <|endoftext|>
-    constexpr int64_t PAD_TOKEN = 0;
+    // 降级：tokenizer 未加载时用字节级编码（质量差，但不崩溃）
+    qWarning() << "[ClipService] tokenizer 未加载，使用降级编码";
+    std::vector<int64_t> tokens(TEXT_MAX_LEN, 0);
+    constexpr int64_t SOS_TOKEN = 49406;
+    constexpr int64_t EOS_TOKEN = 49407;
 
     tokens[0] = SOS_TOKEN;
-
-    // 简化：将文本的 UTF-8 字节直接作为 token ID（仅用于验证流程）
-    // 实际使用 BPE tokenizer 后此处替换
-    QByteArray utf8 = text.toUtf8();
+    QByteArray utf8 = text.toLower().toUtf8();
     int pos = 1;
     for (int i = 0; i < utf8.size() && pos < TEXT_MAX_LEN - 1; ++i) {
-        // 加偏移避免与特殊 token 冲突
         tokens[pos] = static_cast<int64_t>(static_cast<uint8_t>(utf8[i])) + 100;
         ++pos;
     }
-
     tokens[pos] = EOS_TOKEN;
-    // 剩余位置保持 PAD_TOKEN (0)
-
     return tokens;
 }
 
@@ -247,3 +250,5 @@ void ClipService::l2Normalize(std::vector<float>& vec)
         for (auto& v : vec) v /= norm;
     }
 }
+
+#endif // FRAMEMIND_HAS_ONNXRUNTIME
