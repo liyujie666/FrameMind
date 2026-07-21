@@ -5,6 +5,8 @@
 #include <QString>
 #include <QSharedPointer>
 #include <QImage>
+#include <QQueue>
+#include <QTimer>
 
 #include "model/video_representation.h"
 #include "model/agent_types.h"
@@ -25,7 +27,11 @@ class EmbeddingService;
  *   3. 分析单帧 / 时间区间的内容（供 Tool 层复用）
  *   4. 将分析结果写入 VideoRAGStore（形成新的可检索 chunks）
  *
- * 是 Agent 与"感知/表示"能力之间的桥梁。
+ * 优化策略：
+ *   - 全量场景描述：所有场景都会被描述，而非仅前N个
+ *   - 上下文关联：描述每个场景时注入前后场景上下文，确保叙事连贯
+ *   - 渐进式并行：通过队列控制并发数，防止 VLM 请求过载
+ *   - 二阶段摘要：全部场景描述完成后自动生成连贯的全视频摘要
  */
 class VideoAnalysisService : public QObject {
     Q_OBJECT
@@ -37,6 +43,10 @@ public:
                                   QObject*         parent = nullptr);
 
     void setEmbeddingService(EmbeddingService* e) { m_embedder = e; }
+
+    /// 设置并发描述数。默认1（串行），确保上下文连贯。
+    /// 若追求速度可设为 2~3，但场景描述的关联性会略有下降。
+    void setConcurrency(int n) { m_maxConcurrent = qBound(1, n, 5); }
 
     // ---- 统筹入口 ----
 
@@ -52,11 +62,19 @@ public:
     // ---- Level 2: VLM 描述 & 摘要 ----
 
     /**
-     * 为单个场景生成结构化描述（agent-core-design.md §3.2 SCENE_DESCRIPTION_PROMPT）。
+     * 为单个场景生成结构化描述。
+     * 会自动注入前后场景上下文以维持叙事连贯性。
      * 结果写入 repr->sceneDescriptions[sceneId] 并同步到 RAG store。
      */
     void describeScene(int sceneId,
                        QSharedPointer<VideoRepresentation> repr);
+
+    /**
+     * 批量描述所有未描述的场景（全量覆盖策略）。
+     * 内部通过队列控制并发，每完成一个场景 emit sceneDescribed。
+     * 全部完成后自动触发 summarizeVideo。
+     */
+    void describeAllScenes(QSharedPointer<VideoRepresentation> repr);
 
     /**
      * 汇总所有场景描述生成全视频摘要。
@@ -93,12 +111,22 @@ public:
 signals:
     void analysisProgress(int percent, const QString& stage);
     void sceneDescribed(int sceneId, const QString& description);
+    void allScenesDescribed();
     void summaryReady(const QString& summary);
     void analysisError(const QString& message);
 
 private:
-    /// SCENE_DESCRIPTION_PROMPT 组装 & 调用 VLM
-    void doDescribeScene(int sceneId, QSharedPointer<VideoRepresentation> repr);
+    /// 带上下文的场景描述核心实现
+    void doDescribeSceneWithContext(int sceneId, QSharedPointer<VideoRepresentation> repr);
+
+    /// 构建场景描述时的上下文信息（前后场景摘要 + 全局位置）
+    QString buildSceneContext(int sceneId, QSharedPointer<VideoRepresentation> repr) const;
+
+    /// 从场景描述队列中推进下一批任务
+    void drainDescribeQueue();
+
+    /// 场景描述完成回调（检查队列 & 检查是否全部完成）
+    void onSceneDescribeFinished(int sceneId, QSharedPointer<VideoRepresentation> repr);
 
     /**
      * 启动预热阶段：描述前 N 个场景，全部完成后自动触发 summarizeVideo。
@@ -108,7 +136,6 @@ private:
     void startPrewarmAndSummarize(QSharedPointer<VideoRepresentation> repr, int prewarm);
 
     /// 借助 AgentService 走一次一次性（非流式）VLM 调用
-    /// 通过临时 conversation + 简单 aggregator 实现
     void oneShotVLM(const QString& sysPrompt,
                     const QString& userText,
                     const QList<QImage>& frames,
@@ -119,6 +146,20 @@ private:
     VideoRAGStore*   m_ragStore = nullptr;
     PlayerService*   m_player   = nullptr;
     EmbeddingService* m_embedder = nullptr;
+
+    // ---- 批量描述队列管理 ----
+    // 采用顺序串行模式：确保场景 N 描述完成后才开始场景 N+1，
+    // 这样后续场景能获得前面场景的完整描述作为上下文，保证叙事连贯性。
+    struct DescribeTask {
+        int sceneId;
+        QSharedPointer<VideoRepresentation> repr;
+    };
+    QQueue<DescribeTask>  m_describeQueue;
+    int  m_activeTasks     = 0;
+    int  m_maxConcurrent   = 1;      // 默认串行（保证上下文完整性）
+    int  m_totalToDescribe = 0;      // 本轮待描述总数
+    int  m_describedCount  = 0;      // 已完成数
+    bool m_batchMode       = false;  // 是否正在批量描述中
 };
 
 #endif // FRAMEMIND_VIDEO_ANALYSIS_SERVICE_H
