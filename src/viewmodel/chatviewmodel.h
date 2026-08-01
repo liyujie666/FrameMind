@@ -48,11 +48,16 @@ public:
     QString currentConversationId() const { return m_currentConversationId; }
 
     QList<Conversation> conversations() const;
+    
+    /// 获取指定视频路径对应的会话（如果存在）
+    QString findConversationForVideo(const QString& videoPath) const;
 
 public slots:
     void sendMessage(const QString& text);
     void sendMessageWithFrame(const QString& text, const QImage& frame);
     void sendMessageWithCurrentFrame(const QString& text);  // 📷：经 EventBus 取当前帧
+    void sendMessageWithCachedFrame(const QString& text);   // 使用已缓存的帧发送
+    void requestCurrentFrame();  // 请求获取当前帧（用于预览）
     void stopGeneration();
     void regenerateLastResponse();
     void setCollapsed(bool collapsed);
@@ -74,12 +79,16 @@ signals:
     void messageAppended(int index);
     void messageUpdated(int index);
     void errorOccurred(const QString& msg);
+    void currentFrameReady(const QImage& frame, int64_t timestampMs);
 
 private:
     void connectAgent();
     void ensureConversation();
     void doSend(const QString& text, const QList<QImage>& frames);
     void onScreenshotForAI(const QImage& frame, int64_t ts);
+    
+    /// 切换或创建与指定视频绑定的会话
+    void switchToVideoConversation(const QString& videoPath);
 
     AgentService*         m_agentService = nullptr;
     ConversationService*  m_convService = nullptr;
@@ -107,6 +116,10 @@ private:
     // 📷 当前帧待发
     bool    m_awaitingFrame = false;
     QString m_pendingFrameText;
+    
+    // 📷 多帧预览和缓存
+    bool    m_awaitingFrameForPreview = false;
+    QList<QImage> m_cachedFrames;
 };
 
 #endif // FRAMEMIND_CHATVIEWMODEL_H

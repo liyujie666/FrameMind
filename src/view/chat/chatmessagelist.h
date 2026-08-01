@@ -35,6 +35,7 @@ private:
     void updateRow(int row);
     bool isAtBottom() const;
     void scrollToBottom();
+    void applyBackgroundColor();
 
     ChatMessageListModel*     m_model = nullptr;
     ThemeService*             m_theme = nullptr;

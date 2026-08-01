@@ -191,6 +191,36 @@ void VideoRAGStore::loadVideo(const QString& videoId)
     emit videoIndexLoaded(videoId, count);
 }
 
+bool VideoRAGStore::hasVideoIndex(const QString& videoId) const
+{
+    if (videoId.isEmpty() || !d->db) return false;
+
+    QMutexLocker lock(&d->mtx);
+    if (d->loadedVideos.contains(videoId)) {
+        for (auto it = d->inMemory.constBegin(); it != d->inMemory.constEnd(); ++it) {
+            for (const auto& c : it.value()) {
+                if (c.videoId == videoId) return true;
+            }
+        }
+    }
+
+    const auto rows = d->db->query(
+        QStringLiteral("SELECT COUNT(*) as cnt FROM rag_chunks WHERE video_id = ?"),
+        { videoId });
+    
+    if (!rows.isEmpty()) {
+        const int count = rows.first().value(QStringLiteral("cnt")).toInt();
+        return count > 0;
+    }
+    return false;
+}
+
+bool VideoRAGStore::isVideoLoaded(const QString& videoId) const
+{
+    QMutexLocker lock(&d->mtx);
+    return d->loadedVideos.contains(videoId);
+}
+
 void VideoRAGStore::invalidateVideo(const QString& videoId)
 {
     {

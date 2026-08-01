@@ -117,6 +117,202 @@ void VideoIndexer::startIndex(const QString& videoPath)
     cancel();
 
     const QString videoId = computeVideoId(videoPath);
+    
+    // 检查数据库中是否已有该视频的 RAG 索引
+    if (m_ragStore && m_ragStore->hasVideoIndex(videoId)) {
+        qDebug() << "[VideoIndexer] 知识库中已存在该视频索引 | videoId:" << videoId
+                 << "| 跳过重建，直接加载";
+        
+        // 加载已有的知识库到内存
+        if (!m_ragStore->isVideoLoaded(videoId)) {
+            m_ragStore->loadVideo(videoId);
+        }
+        
+        const quint64 taskId = m_taskGeneration.fetch_add(1) + 1;
+        m_cancelRequested.store(false);
+        m_running.store(true);
+        {
+            QMutexLocker l(&m_reprMutex);
+            m_currentPath = videoPath;
+            m_currentVideoId = videoId;
+        }
+
+        VideoInfo initialInfo;
+        if (m_player) {
+            const VideoInfo activeInfo = m_player->videoInfo();
+            const QString requested = QFileInfo(videoPath).canonicalFilePath();
+            const QString active = QFileInfo(activeInfo.filePath).canonicalFilePath();
+            if (!requested.isEmpty() && requested == active) initialInfo = activeInfo;
+        }
+
+        m_pool.start([this, videoPath, videoId, taskId, initialInfo]() {
+            auto repr = QSharedPointer<VideoRepresentation>::create();
+            repr->videoId = videoId;
+            repr->metadata = initialInfo;
+            repr->metadata.filePath = videoPath;
+            repr->metadata.fileName = QFileInfo(videoPath).fileName();
+
+            emit progress(20, StageSceneSplit, tr("加载已有知识库"));
+
+            // 从数据库 chunk 恢复场景信息和描述
+            if (m_ragStore) {
+                // 1. 从 visual_frames 恢复场景基本信息
+                const auto visualChunks = m_ragStore->listChunks(VideoRAGStore::VisualFrames, videoId);
+                QMap<int, Scene> sceneMap;
+                for (const auto& chunk : visualChunks) {
+                    if (chunk.chunkType == VideoChunk::FrameDesc) {
+                        const int sceneId = chunk.metadata.value(QStringLiteral("scene_id"), -1).toInt();
+                        if (sceneId < 0) continue;
+                        
+                        Scene& scene = sceneMap[sceneId];
+                        scene.id = sceneId;
+                        scene.startMs = chunk.startMs;
+                        scene.endMs = chunk.endMs;
+                        scene.keyframeMs = chunk.metadata.value(QStringLiteral("keyframe_ms"), chunk.startMs).toLongLong();
+                        scene.keyframePath = chunk.keyframePath;
+                    }
+                }
+                
+                // 2. 从 text_segments 恢复场景描述（三类证据）和语音段
+                const auto textChunks = m_ragStore->listChunks(VideoRAGStore::TextSegments, videoId);
+                for (const auto& chunk : textChunks) {
+                    // 恢复语音转写段（字幕）
+                    if (chunk.chunkType == VideoChunk::SpeechSegment) {
+                        SpeechSegment seg;
+                        seg.startMs = chunk.startMs;
+                        seg.endMs = chunk.endMs;
+                        seg.text = chunk.textContent;
+                        repr->speechSegments.append(seg);
+                        continue;
+                    }
+                    
+                    const int sceneId = chunk.metadata.value(QStringLiteral("scene_id"), -1).toInt();
+                    if (sceneId < 0) continue;
+                    
+                    const QString evidenceType = chunk.metadata.value(
+                        QStringLiteral("evidence_type")).toString();
+                    
+                    if (chunk.chunkType == VideoChunk::SceneSummary && 
+                        evidenceType == QLatin1String("visual")) {
+                        // 纯视觉描述
+                        repr->sceneVisualDescriptions[sceneId] = chunk.textContent;
+                        if (sceneMap.contains(sceneId)) {
+                            sceneMap[sceneId].visualDescription = chunk.textContent;
+                        }
+                    } else if (chunk.chunkType == VideoChunk::SceneAudio) {
+                        // 音频摘要
+                        if (sceneMap.contains(sceneId)) {
+                            sceneMap[sceneId].audioSummary = chunk.textContent;
+                        }
+                    } else if (chunk.chunkType == VideoChunk::SceneFused) {
+                        // 融合描述
+                        repr->sceneDescriptions[sceneId] = chunk.textContent;
+                        if (sceneMap.contains(sceneId)) {
+                            sceneMap[sceneId].fusedDescription = chunk.textContent;
+                            sceneMap[sceneId].description = chunk.textContent;
+                            
+                            // 恢复音视频关系元数据
+                            const QString relationStr = chunk.metadata.value(
+                                QStringLiteral("audio_relation")).toString();
+                            if (relationStr == QLatin1String("strong")) {
+                                sceneMap[sceneId].audioRelation = AudioVisualRelation::Strong;
+                            } else if (relationStr == QLatin1String("contextual")) {
+                                sceneMap[sceneId].audioRelation = AudioVisualRelation::Contextual;
+                            } else if (relationStr == QLatin1String("independent")) {
+                                sceneMap[sceneId].audioRelation = AudioVisualRelation::Independent;
+                            }
+                            
+                            sceneMap[sceneId].audioRelationConfidence = 
+                                chunk.metadata.value(QStringLiteral("audio_confidence"), 0.0).toFloat();
+                            
+                            const QString audioTypeStr = chunk.metadata.value(
+                                QStringLiteral("audio_type")).toString();
+                            if (audioTypeStr == QLatin1String("dialogue")) {
+                                sceneMap[sceneId].audioType = SceneAudioType::Dialogue;
+                            } else if (audioTypeStr == QLatin1String("narration")) {
+                                sceneMap[sceneId].audioType = SceneAudioType::Narration;
+                            } else if (audioTypeStr == QLatin1String("background_media")) {
+                                sceneMap[sceneId].audioType = SceneAudioType::BackgroundMedia;
+                            } else if (audioTypeStr == QLatin1String("ambient")) {
+                                sceneMap[sceneId].audioType = SceneAudioType::Ambient;
+                            }
+                        }
+                    }
+                }
+                
+                // 对于只有视觉描述的场景，将视觉描述作为最终描述
+                for (auto it = sceneMap.begin(); it != sceneMap.end(); ++it) {
+                    if (it->description.isEmpty() && !it->visualDescription.isEmpty()) {
+                        it->description = it->visualDescription;
+                        repr->sceneDescriptions[it->id] = it->visualDescription;
+                    }
+                }
+                
+                for (const Scene& s : sceneMap.values()) {
+                    repr->scenes.append(s);
+                }
+                std::sort(repr->scenes.begin(), repr->scenes.end(),
+                          [](const Scene& a, const Scene& b) { return a.id < b.id; });
+                
+                // 对语音段按时间排序
+                std::sort(repr->speechSegments.begin(), repr->speechSegments.end(),
+                          [](const SpeechSegment& a, const SpeechSegment& b) {
+                    return a.startMs < b.startMs;
+                });
+                
+                qDebug() << "[VideoIndexer] 恢复场景描述 | videoId:" << videoId
+                         << "| 视觉描述:" << repr->sceneVisualDescriptions.size()
+                         << "| 融合描述:" << repr->sceneDescriptions.size()
+                         << "| 语音段:" << repr->speechSegments.size();
+            }
+
+            if (!isTaskCurrent(taskId, videoId)) {
+                if (isTaskCurrent(taskId, videoId)) m_running.store(false);
+                return;
+            }
+
+            // 如果场景描述已完整，标记为 Level2，否则为 Level1
+            const bool hasDescriptions = !repr->sceneDescriptions.isEmpty() || 
+                                        !repr->sceneVisualDescriptions.isEmpty();
+            repr->level = VideoRepresentation::Level1;
+            
+            {
+                QMutexLocker l(&m_reprMutex);
+                if (m_cancelRequested.load() || m_taskGeneration.load() != taskId 
+                        || m_currentVideoId != videoId) {
+                    return;
+                }
+                m_repr[videoPath] = repr;
+            }
+
+            emit progress(60, StageSceneSplit, tr("场景信息已恢复"));
+            emit levelReady(0, repr);
+            emit levelReady(1, repr);
+            
+            // 如果有完整的场景描述，标记为 Level2 并发出信号
+            if (hasDescriptions) {
+                repr->level = VideoRepresentation::Level2;
+            }
+
+            const int visualCount = m_ragStore
+                ? m_ragStore->listChunks(VideoRAGStore::VisualFrames, videoId).size() : 0;
+            const int textCount = m_ragStore
+                ? m_ragStore->listChunks(VideoRAGStore::TextSegments, videoId).size() : 0;
+            
+            qDebug() << "[VideoIndexer] 知识库加载完成 | videoId:" << videoId
+                     << "| scenes:" << repr->scenes.size()
+                     << "| visual:" << visualCount << "| text:" << textCount;
+
+            emit progress(100, StageDone,
+                          tr("知识库加载完成 (视觉 %1 / 文本 %2)")
+                              .arg(visualCount).arg(textCount));
+            emit indexCompleted(repr);
+            if (isTaskCurrent(taskId, videoId)) m_running.store(false);
+        });
+        
+        return;
+    }
+
     const quint64 taskId = m_taskGeneration.fetch_add(1) + 1;
     m_cancelRequested.store(false);
     m_running.store(true);

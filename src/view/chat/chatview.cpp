@@ -87,6 +87,13 @@ ChatView::ChatView(QWidget* parent)
     applyThemeColors();
 }
 
+void ChatView::addFramePreview(const QImage& frame, int64_t timestampMs)
+{
+    if (m_inputWidget) {
+        m_inputWidget->addFrame(frame, timestampMs);
+    }
+}
+
 void ChatView::setThemeService(ThemeService* theme)
 {
     if (m_theme == theme) return;
@@ -218,11 +225,19 @@ void ChatView::setViewModel(ChatViewModel* vm)
 
     connect(m_inputWidget, &ChatInputWidget::sendRequested, this,
             [this](const QString& text, bool withFrame) {
-                if (withFrame) m_vm->sendMessageWithCurrentFrame(text);
-                else           m_vm->sendMessage(text);
+                if (withFrame) {
+                    // 使用缓存的帧发送
+                    m_vm->sendMessageWithCachedFrame(text);
+                } else {
+                    m_vm->sendMessage(text);
+                }
             });
     connect(m_inputWidget, &ChatInputWidget::stopRequested,
             m_vm, &ChatViewModel::stopGeneration);
+    
+    // 连接帧按钮点击到请求当前帧
+    connect(m_inputWidget, &ChatInputWidget::currentFrameRequested,
+            m_vm, &ChatViewModel::requestCurrentFrame);
 
     connect(m_vm, &ChatViewModel::streamingChanged,
             m_inputWidget, &ChatInputWidget::setStreaming);
@@ -233,6 +248,10 @@ void ChatView::setViewModel(ChatViewModel* vm)
 
     connect(m_newButton, &QToolButton::clicked,
             m_vm, &ChatViewModel::createNewConversation);
+    
+    // 连接帧预览信号
+    connect(m_vm, &ChatViewModel::currentFrameReady,
+            this, &ChatView::addFramePreview);
 
     refreshHeader();
 }

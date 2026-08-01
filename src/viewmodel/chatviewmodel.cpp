@@ -13,7 +13,7 @@
 #include <QTimer>
 #include <QUuid>
 #include <QDateTime>
-
+#include <QFileInfo>
 namespace {
 constexpr int kFlushIntervalMs = 40;  // ~25fps 流式刷新节流
 QString newId() { return QUuid::createUuid().toString(QUuid::WithoutBraces); }
@@ -121,19 +121,35 @@ void ChatViewModel::setPlayerViewModel(PlayerViewModel* playerVM)
     // 等播放器 SDK 真正打开成功后再启动索引（此时 filePath 已填好）
     connect(m_playerVM, &PlayerViewModel::videoOpened,
             this, [this](const QString& filePath) {
-        if (filePath.isEmpty() || filePath == m_indexingPath) return;
-        m_activeVideoPath = filePath;
-        m_indexingPath = filePath;
-
-        if (m_videoAgent) {
-            const QString videoId = VideoIndexer::computeVideoId(filePath);
-            m_videoAgent->setActiveVideo(filePath, videoId);
+        if (filePath.isEmpty()) return;
+        
+        // 视频切换时，触发对话切换和索引
+        const bool isNewVideo = (filePath != m_activeVideoPath);
+        
+        if (isNewVideo) {
+            m_activeVideoPath = filePath;
+            m_indexingPath.clear();  // 清空索引路径，允许新视频触发索引
+            
+            // 切换到该视频对应的对话
+            switchToVideoConversation(filePath);
         }
-        if (m_videoAnalysis) {
-            m_videoAnalysis->onVideoOpened(filePath);
-        }
+        
+        // 只有在尚未索引过这个视频时才启动索引
+        if (filePath != m_indexingPath) {
+            m_indexingPath = filePath;
+            
+            if (m_videoAgent) {
+                const QString videoId = VideoIndexer::computeVideoId(filePath);
+                m_videoAgent->setActiveVideo(filePath, videoId);
+            }
+            if (m_videoAnalysis) {
+                m_videoAnalysis->onVideoOpened(filePath);
+            }
 
-        qDebug() << "[ChatViewModel] 视频就绪，启动 RAG 索引:" << filePath;
+            qDebug() << "[ChatViewModel] 视频就绪，启动 RAG 索引:" << filePath;
+        } else {
+            qDebug() << "[ChatViewModel] 视频已索引，跳过重复索引:" << filePath;
+        }
     });
 }
 
@@ -150,12 +166,53 @@ void ChatViewModel::setVideoAnalysisService(VideoAnalysisService* vas)
 void ChatViewModel::onVideoOpened(const QString& videoPath)
 {
     if (videoPath.isEmpty()) return;
-    // 仅路径变化时才清空 m_indexingPath，允许新视频触发一次索引。
-    // 同一路径（重播场景）不清空，保留去重守卫，避免重复构建 RAG。
+    
+    // 视频切换时，自动切换到该视频对应的会话
     if (videoPath != m_activeVideoPath) {
         m_indexingPath.clear();
+        m_activeVideoPath = videoPath;
+        
+        // 查找或创建该视频对应的会话
+        switchToVideoConversation(videoPath);
     }
-    m_activeVideoPath = videoPath;
+}
+
+QString ChatViewModel::findConversationForVideo(const QString& videoPath) const
+{
+    if (!m_convService || videoPath.isEmpty()) return {};
+    
+    const auto convs = m_convService->getAllConversations();
+    for (const auto& conv : convs) {
+        if (QFileInfo(conv.videoFilePath).canonicalFilePath() == 
+            QFileInfo(videoPath).canonicalFilePath()) {
+            return conv.id;
+        }
+    }
+    return {};
+}
+
+void ChatViewModel::switchToVideoConversation(const QString& videoPath)
+{
+    if (!m_convService) return;
+    
+    // 查找该视频已有的会话
+    QString convId = findConversationForVideo(videoPath);
+    
+    if (convId.isEmpty()) {
+        // 没有找到，创建新会话并绑定视频
+        const Conversation c = m_convService->createConversation(videoPath);
+        convId = c.id;
+        qDebug() << "[ChatViewModel] 为视频创建新会话 | videoPath:" << videoPath 
+                 << "| convId:" << convId;
+    } else {
+        qDebug() << "[ChatViewModel] 切换到视频已有会话 | videoPath:" << videoPath 
+                 << "| convId:" << convId;
+    }
+    
+    // 切换到该会话
+    if (convId != m_currentConversationId) {
+        switchConversation(convId);
+    }
 }
 
 VideoContext ChatViewModel::getVideoContext() const
@@ -183,7 +240,7 @@ void ChatViewModel::ensureConversation()
         m_currentConversationId = newId();
         return;
     }
-    const Conversation c = m_convService->createConversation();
+    const Conversation c = m_convService->createConversation(m_activeVideoPath);
     m_currentConversationId = c.id;
     if (m_agentService) m_agentService->clearHistory(c.id);
     emit conversationChanged(m_currentConversationId);
@@ -317,18 +374,57 @@ void ChatViewModel::sendMessageWithCurrentFrame(const QString& text)
     }
 }
 
-void ChatViewModel::onScreenshotForAI(const QImage& frame, int64_t /*ts*/)
+void ChatViewModel::requestCurrentFrame()
 {
-    if (!m_awaitingFrame) return;
-    m_awaitingFrame = false;
-    const QString text = m_pendingFrameText;
-    m_pendingFrameText.clear();
-    if (frame.isNull()) {
-        qWarning() << "[ChatViewModel] Frame is null, sending text only";
-        emit errorOccurred(tr("未获取到当前帧，已仅按文字提问"));
+    // 请求当前帧用于预览
+    m_awaitingFrameForPreview = true;
+    if (m_eventBus) {
+        m_eventBus->requestFrameForAI(-1);  // -1：使用当前帧
+    }
+}
+
+void ChatViewModel::sendMessageWithCachedFrame(const QString& text)
+{
+    if (m_streaming) return;
+    if (m_cachedFrames.isEmpty()) {
+        // 如果没有缓存帧，只发送文本
         doSend(text, {});
     } else {
-        doSend(text, { frame });
+        // 使用缓存的所有帧发送
+        doSend(text, m_cachedFrames);
+        // 清除缓存
+        m_cachedFrames.clear();
+    }
+}
+
+void ChatViewModel::onScreenshotForAI(const QImage& frame, int64_t ts)
+{
+    // 处理帧预览请求
+    if (m_awaitingFrameForPreview) {
+        m_awaitingFrameForPreview = false;
+        if (frame.isNull()) {
+            qWarning() << "[ChatViewModel] Frame is null for preview";
+            emit errorOccurred(tr("未获取到当前帧"));
+        } else {
+            // 添加到缓存帧列表并通知UI显示预览
+            m_cachedFrames.append(frame);
+            emit currentFrameReady(frame, ts);
+        }
+        return;
+    }
+    
+    // 处理直接发送请求
+    if (m_awaitingFrame) {
+        m_awaitingFrame = false;
+        const QString text = m_pendingFrameText;
+        m_pendingFrameText.clear();
+        if (frame.isNull()) {
+            qWarning() << "[ChatViewModel] Frame is null, sending text only";
+            emit errorOccurred(tr("未获取到当前帧，已仅按文字提问"));
+            doSend(text, {});
+        } else {
+            doSend(text, { frame });
+        }
     }
 }
 
@@ -383,7 +479,7 @@ void ChatViewModel::setCollapsed(bool collapsed)
 void ChatViewModel::createNewConversation()
 {
     if (!m_convService) return;
-    const Conversation c = m_convService->createConversation();
+    const Conversation c = m_convService->createConversation(m_activeVideoPath);
     m_currentConversationId = c.id;
     m_assistantRow = -1;
     if (m_agentService) m_agentService->clearHistory(c.id);

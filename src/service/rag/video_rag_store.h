@@ -63,6 +63,12 @@ public:
     /// 视频索引加载：从 DB 读入某 videoId 的所有 chunks 到内存
     void loadVideo(const QString& videoId);
 
+    /// 检查视频是否已有索引（数据库中是否存在该视频的 chunks）
+    bool hasVideoIndex(const QString& videoId) const;
+
+    /// 检查视频是否已加载到内存
+    bool isVideoLoaded(const QString& videoId) const;
+
     /// 清空 / 失效某视频的所有索引（视频文件变化 or 用户手动清除）
     void invalidateVideo(const QString& videoId);
 

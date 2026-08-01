@@ -483,7 +483,7 @@ void MainWindow::onOpenVideoPath(const QString& path)
 {
     if (path.isEmpty()) return;
     if (m_playerVM) m_playerVM->openFile(path);
-    if (m_chatVM)   m_chatVM->onVideoOpened(path);
+    // ChatViewModel 的对话切换由 PlayerViewModel::videoOpened 信号自动触发
     if (m_fileService) m_fileService->addToRecent(path);
     if (m_analysisVM) m_analysisVM->onVideoOpened(path);
     setWindowTitle(QStringLiteral("Frame Mind - ") + QFileInfo(path).fileName());

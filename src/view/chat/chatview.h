@@ -23,10 +23,13 @@ public:
 
     void setViewModel(ChatViewModel* vm);
     void setThemeService(ThemeService* theme);
+    void addFramePreview(const QImage& frame, int64_t timestampMs);
 
 signals:
     /// 用户点击 × 关闭 / 折叠对话面板
     void collapseRequested();
+    /// 用户请求添加当前帧
+    void currentFrameRequested();
 
 protected:
     void paintEvent(QPaintEvent* event) override;

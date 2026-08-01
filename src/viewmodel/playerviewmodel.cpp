@@ -5,6 +5,7 @@
 #include "model/videoinfo.h"
 
 #include <QDebug>
+#include <QFutureWatcher>
 
 PlayerViewModel::PlayerViewModel(PlayerService* playerService,
                                  EventBus* eventBus,
@@ -116,9 +117,21 @@ void PlayerViewModel::connectService()
 void PlayerViewModel::captureFrameForAI(int64_t /*posMs*/)
 {
     if (!m_playerService || !m_eventBus) return;
-    // M2 仅支持「当前帧」：直接取最近解码帧（captureFrameAt 在 M3 实现）
-    const QImage frame = m_playerService->lastDecodedFrame();
-    m_eventBus->provideScreenshotForAI(frame, m_position);
+    
+    // 使用 captureFrameAt 异步获取当前位置的精确帧
+    // 这比 lastDecodedFrame() 更可靠，特别是在暂停状态
+    QFuture<QImage> future = m_playerService->captureFrameAt(m_position, 2000);
+    
+    // 监听异步结果
+    auto* watcher = new QFutureWatcher<QImage>(this);
+    connect(watcher, &QFutureWatcher<QImage>::finished, this, [this, watcher]() {
+        QImage frame = watcher->result();
+        if (m_eventBus) {
+            m_eventBus->provideScreenshotForAI(frame, m_position);
+        }
+        watcher->deleteLater();
+    });
+    watcher->setFuture(future);
 }
 
 void PlayerViewModel::openFile(const QString& filePath)

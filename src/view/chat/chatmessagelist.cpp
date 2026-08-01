@@ -17,10 +17,6 @@ ChatMessageList::ChatMessageList(QWidget* parent)
     setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     setFrameShape(QFrame::NoFrame);
     setBackgroundRole(QPalette::NoRole);
-    // 背景透明：由外层 ChatView 圆角卡片提供底色
-    setStyleSheet(QStringLiteral(
-        "QScrollArea { background:transparent; border:none; }"
-        "QWidget#chatMessageContainer { background:transparent; }"));
 
     m_container = new QWidget(this);
     m_container->setObjectName(QStringLiteral("chatMessageContainer"));
@@ -31,11 +27,59 @@ ChatMessageList::ChatMessageList(QWidget* parent)
     m_layout->setSpacing(12);
     m_layout->addStretch(1);   // 末尾弹簧，气泡插入其前
     setWidget(m_container);
+    
+    // 初始应用默认背景色
+    applyBackgroundColor();
 }
 
 void ChatMessageList::setThemeService(ThemeService* theme)
 {
     m_theme = theme;
+    applyBackgroundColor();
+}
+
+void ChatMessageList::applyBackgroundColor()
+{
+    // 根据主题设置不同的背景色
+    QString bgColor;
+    if (m_theme) {
+        if (m_theme->isDark()) {
+            bgColor = "#0d1117";  // 暗色模式
+        } else {
+            bgColor = "#f5f5f5";  // 亮色模式
+        }
+    } else {
+        bgColor = "#0d1117";  // 默认暗色
+    }
+    
+    // 获取滚动条样式（从 ThemeService）
+    const QColor scrollThumb = m_theme
+        ? m_theme->color(QStringLiteral("scrollThumb"))
+        : QColor("#3A3A4A");
+    const QString thumbHover = scrollThumb.lighter(130).name();
+    const QString thumbPressed = scrollThumb.lighter(160).name();
+    
+    // 设置背景色的同时保留滚动条样式
+    setStyleSheet(QString(
+        "QScrollArea { background:%1; border:none; }"
+        "QWidget#chatMessageContainer { background:%1; }"
+        "QScrollBar:vertical {"
+        "    background:transparent;"
+        "    width:10px;"
+        "    margin:4px 2px 4px 2px;"
+        "    border:none;"
+        "}"
+        "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height:0; }"
+        "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background:transparent; }"
+        "QScrollBar::handle:vertical {"
+        "    background:%2;"
+        "    border-radius:5px;"
+        "    min-height:40px;"
+        "    margin:0 2px;"
+        "}"
+        "QScrollBar::handle:vertical:hover { background:%3; }"
+        "QScrollBar::handle:vertical:pressed { background:%4; }")
+        .arg(bgColor, scrollThumb.name(), thumbHover, thumbPressed));
 }
 
 void ChatMessageList::refreshBubbleColors()
@@ -48,6 +92,9 @@ void ChatMessageList::refreshBubbleColors()
     }
     m_container->setUpdatesEnabled(true);
     m_container->update();
+    
+    // 刷新背景色
+    applyBackgroundColor();
 }
 
 void ChatMessageList::setModel(ChatMessageListModel* model)

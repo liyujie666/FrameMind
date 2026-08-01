@@ -136,17 +136,41 @@ VideoAnalysisService::VideoAnalysisService(AgentService*    agent,
             emit analysisProgress(30 + level * 20,
                                   tr("Level %1 索引完成").arg(level));
             if (level == 1) {
-                // 缓存命中：repr 已有场景描述和摘要，直接重放信号，不重复调 VLM
-                if (!repr->videoSummary.isEmpty()) {
+                // 检查是否已有场景描述（从数据库加载）
+                const bool hasSceneDescriptions = !repr->sceneDescriptions.isEmpty() || 
+                                                 !repr->sceneVisualDescriptions.isEmpty();
+                
+                if (hasSceneDescriptions) {
+                    qDebug() << "[VideoAnalysisService] 检测到已有场景描述，跳过大模型调用 | 场景数:" 
+                             << repr->scenes.size()
+                             << "| 已有描述:" << repr->sceneDescriptions.size()
+                             << "| 视觉描述:" << repr->sceneVisualDescriptions.size();
+                    
+                    // 重放已有的场景描述信号
                     for (auto it = repr->sceneDescriptions.constBegin();
                          it != repr->sceneDescriptions.constEnd(); ++it) {
                         emit sceneDescribed(it.key(), it.value());
                     }
-                    emit summaryReady(repr->videoSummary);
+                    
+                    // 发出融合信号
+                    for (auto it = repr->sceneFusions.constBegin();
+                         it != repr->sceneFusions.constEnd(); ++it) {
+                        emit sceneFused(it.key(), it.value());
+                    }
+                    
+                    // 如果有视频摘要也发出
+                    if (!repr->videoSummary.isEmpty()) {
+                        emit summaryReady(repr->videoSummary);
+                    } else {
+                        // 没有视频摘要，但有场景描述，触发摘要生成
+                        summarizeVideo(repr);
+                    }
                     return;
                 }
 
+                // 没有场景描述，需要调用大模型
                 if (!repr->scenes.isEmpty()) {
+                    qDebug() << "[VideoAnalysisService] 未找到场景描述，开始调用大模型分析";
                     startDescribeAllScenes(repr);
                 }
             }
