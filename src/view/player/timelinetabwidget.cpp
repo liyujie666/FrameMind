@@ -1,4 +1,4 @@
-#include "view/player/timelinetabwidget.h"
+﻿#include "view/player/timelinetabwidget.h"
 
 #include "viewmodel/videoanalysisviewmodel.h"
 #include "service/themeservice.h"
@@ -13,6 +13,7 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
+#include <QTimer>
 
 // ---- 可点击场景卡片 ----
 // 继承 QWidget 而非 QFrame，完全自绘，避免 QSS 系统绘制覆盖自定义背景色
@@ -88,6 +89,24 @@ TimelineTabWidget::TimelineTabWidget(QWidget* parent)
     m_scroll->setFrameShape(QFrame::NoFrame);
     m_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+
+    // 监听滚动条的用户交互
+    connect(m_scroll->verticalScrollBar(), &QScrollBar::sliderPressed,
+            this, [this]() {
+                m_userScrolling = true;
+                if (m_scrollResetTimer) m_scrollResetTimer->stop();
+            });
+    connect(m_scroll->verticalScrollBar(), &QScrollBar::sliderReleased,
+            this, [this]() {
+                if (!m_scrollResetTimer) {
+                    m_scrollResetTimer = new QTimer(this);
+                    m_scrollResetTimer->setSingleShot(true);
+                    connect(m_scrollResetTimer, &QTimer::timeout, this, [this]() {
+                        m_userScrolling = false;
+                    });
+                }
+                m_scrollResetTimer->start(3000);
+            });
 
     m_container = new QWidget(m_scroll);
     m_container->setAttribute(Qt::WA_StyledBackground, false);
@@ -259,6 +278,7 @@ void TimelineTabWidget::buildCards()
     clearCards();
 
     if (m_scenes.isEmpty()) {
+        m_cardLayout->addStretch(1);
         auto* empty = new QLabel(tr("暂无场景数据"), m_container);
         empty->setAlignment(Qt::AlignCenter);
         empty->setStyleSheet(
@@ -382,8 +402,7 @@ void TimelineTabWidget::updateHighlight(int64_t posMs)
         const bool active = m_scenes[i].contains(posMs);
         card->setHighlighted(active);
 
-        // 自动滚动到活跃卡片
-        if (active) {
+        // 智能自动滚动：仅在用户未手动滚动时才自动定位 if (active && !m_userScrolling) {
             m_scroll->ensureWidgetVisible(card, 0, 20);
         }
     }
@@ -400,3 +419,4 @@ QString TimelineTabWidget::formatMs(int64_t ms)
         return QString::asprintf("%02d:%02d:%02d", h, m, s);
     return QString::asprintf("%02d:%02d", m, s);
 }
+

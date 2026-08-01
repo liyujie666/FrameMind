@@ -1,4 +1,4 @@
-#include "view/player/subtitletabwidget.h"
+﻿#include "view/player/subtitletabwidget.h"
 
 #include "viewmodel/videoanalysisviewmodel.h"
 #include "service/themeservice.h"
@@ -79,6 +79,7 @@ SubtitleTabWidget::SubtitleTabWidget(QWidget* parent)
     m_rowLayout->setContentsMargins(0, 0, 0, 0);
     m_rowLayout->setSpacing(2);
 
+    m_rowLayout->addStretch(1);
     auto* empty = new QLabel(tr("暂无字幕，请先打开含音频的视频"), m_container);
     empty->setAlignment(Qt::AlignCenter);
     empty->setStyleSheet(
@@ -183,6 +184,7 @@ void SubtitleTabWidget::buildRows()
     clearRows();
 
     if (m_segments.isEmpty()) {
+        m_rowLayout->addStretch(1);
         auto* empty = new QLabel(tr("暂无字幕数据"), m_container);
         empty->setAlignment(Qt::AlignCenter);
         empty->setStyleSheet(
@@ -286,3 +288,5 @@ QString SubtitleTabWidget::formatMs(int64_t ms)
         return QString::asprintf("%02d:%02d:%02d", h, m, s);
     return QString::asprintf("%02d:%02d", m, s);
 }
+
+

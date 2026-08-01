@@ -12,6 +12,7 @@ class VideoAnalysisViewModel;
 class QScrollArea;
 class QVBoxLayout;
 class QLabel;
+class QTimer;
 
 /**
  * 时间线 Tab：以卡片列表展示各场景。
@@ -68,6 +69,10 @@ private:
     QVector<QWidget*>  m_cards;
     // 每张卡片的描述 label（用于动态更新 VLM 描述）
     QVector<QLabel*>   m_descLabels;
+    
+    // 智能滚动控制：用户手动滚动时暂停自动滚动，停止后恢复
+    bool m_userScrolling = false;
+    QTimer* m_scrollResetTimer = nullptr;
 };
 
 #endif // FRAMEMIND_TIMELINETABWIDGET_H

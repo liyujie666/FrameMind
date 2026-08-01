@@ -1,4 +1,4 @@
-#include "view/player/summarytabwidget.h"
+﻿#include "view/player/summarytabwidget.h"
 
 #include "viewmodel/videoanalysisviewmodel.h"
 #include "service/themeservice.h"
@@ -62,6 +62,7 @@ SummaryTabWidget::SummaryTabWidget(QWidget* parent)
     m_contentLayout->setSpacing(12);
 
     // 空状态
+    m_contentLayout->addStretch(1);
     m_emptyLabel = new QLabel(tr("暂无摘要，请先打开视频"), m_scrollContent);
     m_emptyLabel->setAlignment(Qt::AlignCenter);
     m_emptyLabel->setWordWrap(true);
@@ -370,3 +371,4 @@ void SummaryTabWidget::addSceneDescEntry(int sceneId, const QString& description
     m_scenesLayout->addWidget(entry);
     ++m_renderedSceneCount;
 }
+
