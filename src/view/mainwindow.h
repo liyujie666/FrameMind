@@ -9,6 +9,7 @@ class SidebarView;
 class PlayerView;
 class ChatView;
 class FileListView;
+class KnowledgeView;
 class ThemedPanel;
 class SegmentedControl;
 class CustomTitleBar;
@@ -16,15 +17,22 @@ class SettingsDialog;
 class PlayerViewModel;
 class ChatViewModel;
 class FileListViewModel;
+class VideoAnalysisViewModel;
+class KnowledgeViewModel;
 class SettingsService;
 class AgentService;
 class FileManagerService;
 class ThemeService;
 class LLMProviderService;
+class TimelineTabWidget;
+class SummaryTabWidget;
+class SubtitleTabWidget;
 class QStackedWidget;
 class QStackedLayout;
 class QSplitter;
 class QActionGroup;
+class QLabel;
+class QMovie;
 
 /**
  * 主窗口：顶部自定义标题栏 + 左侧导航栏 + 页面容器（QStackedWidget）。
@@ -47,6 +55,8 @@ public:
                FileManagerService* fileService,
                ThemeService* theme,
                LLMProviderService* providers,
+               VideoAnalysisViewModel* analysisVM = nullptr,
+               KnowledgeViewModel* knowledgeVM = nullptr,
                QWidget* parent = nullptr);
 
 private slots:
@@ -88,6 +98,7 @@ private:
     PlayerView*       m_playerView = nullptr;
     ChatView*         m_chatView = nullptr;
     FileListView*     m_fileListView = nullptr;
+    KnowledgeView*    m_knowledgeView = nullptr;
 
     // 对话页容器
     QSplitter*        m_mainSplitter = nullptr;
@@ -99,20 +110,35 @@ private:
     QWidget*          m_leftContainer = nullptr;
     QSplitter*        m_leftSplitter = nullptr;
 
+    // 分析面板三个 Tab
+    TimelineTabWidget* m_timelineTab = nullptr;
+    SummaryTabWidget*  m_summaryTab  = nullptr;
+    SubtitleTabWidget* m_subtitleTab = nullptr;
+
+    // 分析面板标题栏
+    QLabel* m_analysisTitle      = nullptr;
+    QLabel* m_analysisSpinner    = nullptr;
+    QMovie* m_spinnerMovie       = nullptr;
+    QLabel* m_analysisStatusText = nullptr;
+
+    void updateSpinnerTheme();
+
     // Edge resize state
     bool        m_resizing = false;
     ResizeEdge  m_resizeEdge = None;
     QPoint      m_resizeStartGlobal;
     QRect       m_resizeStartGeometry;
 
-    PlayerViewModel*    m_playerVM = nullptr;
-    ChatViewModel*      m_chatVM = nullptr;
-    FileListViewModel*  m_fileListVM = nullptr;
-    SettingsService*    m_settings = nullptr;
-    AgentService*       m_agent = nullptr;
-    FileManagerService* m_fileService = nullptr;
-    ThemeService*       m_theme = nullptr;
-    LLMProviderService* m_providers = nullptr;
+    PlayerViewModel*        m_playerVM    = nullptr;
+    ChatViewModel*          m_chatVM      = nullptr;
+    FileListViewModel*      m_fileListVM  = nullptr;
+    VideoAnalysisViewModel* m_analysisVM  = nullptr;
+    KnowledgeViewModel*     m_knowledgeVM = nullptr;
+    SettingsService*        m_settings    = nullptr;
+    AgentService*           m_agent       = nullptr;
+    FileManagerService*     m_fileService = nullptr;
+    ThemeService*           m_theme       = nullptr;
+    LLMProviderService*     m_providers   = nullptr;
 };
 
 #endif // FRAMEMIND_MAINWINDOW_H

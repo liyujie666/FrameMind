@@ -4,9 +4,11 @@
 #include <QObject>
 #include <QImage>
 #include <QString>
+#include <QElapsedTimer>
 #include <cstdint>
 
 #include "model/playertypes.h"
+#include "model/videoframe.h"
 
 class PlayerService;
 class EventBus;
@@ -48,6 +50,7 @@ public slots:
     void setSpeed(float speed);
     void setMute(bool mute);
     void seekToTimestamp(int64_t posMs);   // AI 回复点击时间戳跳转
+    void seekAndPlay(int64_t posMs);       // 时间线/字幕点击：seek 并自动播放
     void captureFrameForAI(int64_t posMs); // 📷：截当前帧回包给 AI（M2 仅当前帧）
 
 signals:
@@ -59,7 +62,12 @@ signals:
     void mutedChanged(bool muted);
     void mediaTitleChanged(const QString& title);
     void frameReady(const QImage& frame);
+    void rawFrameReady(const VideoFrame& frame);
     void errorOccurred(const QString& msg);
+    /// SDK 成功打开视频后发出（此时 duration 已填好）
+    void videoOpened(const QString& filePath);
+    /// 即将打开新文件（在 SDK open 调用之前），用于 UI 立即清空上一帧画面
+    void videoFileChanging();
 
 private:
     void connectService();
@@ -74,6 +82,21 @@ private:
     float m_speed = 1.0f;
     bool  m_muted = false;
     QString m_mediaTitle;
+
+    bool    m_seeking = false;
+    int64_t m_seekTarget = 0;
+    QElapsedTimer m_seekTimer;
+    static constexpr int kSeekCooldownMs = 150;
+
+    // 每次 openFile 递增：rawFrameReady 转发时比对代次，丢弃旧视频的延迟帧
+    uint32_t m_openGeneration = 0;
+    // openResult 成功后与 m_openGeneration 同步，用于开放新视频帧的接收
+    uint32_t m_acceptGeneration = 0;
+
+    // seekAndPlay：seek 落地后自动 play()（Stopped 状态用）
+    bool m_pendingPlay = false;
+    // 普通 seek in Paused：seek 落地后恢复 pause()
+    bool m_pauseAfterSeek = false;
 };
 
 #endif // FRAMEMIND_PLAYERVIEWMODEL_H

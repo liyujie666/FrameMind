@@ -311,8 +311,12 @@ void PlayerView::bindViewModel()
             m_controlBar, &PlayerControlBar::setPlayState);
     connect(m_vm, &PlayerViewModel::volumeChanged,
             m_controlBar, &PlayerControlBar::setVolumeDisplay);
-    connect(m_vm, &PlayerViewModel::frameReady,
-            m_renderWidget, &VideoRenderWidget::updateFrame);
+    connect(m_vm, &PlayerViewModel::rawFrameReady,
+            m_renderWidget, qOverload<const VideoFrame&>(&VideoRenderWidget::updateFrame));
+
+    // 切换新文件时立即清空渲染器，防止旧帧画面在新视频首帧到来前残留
+    connect(m_vm, &PlayerViewModel::videoFileChanging,
+            m_renderWidget, &VideoRenderWidget::clear);
 
     connect(m_controlBar, &PlayerControlBar::seekRequested,
             m_vm, &PlayerViewModel::seek);

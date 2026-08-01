@@ -31,11 +31,20 @@ public:
     QNetworkReply* post(const QUrl& url, const QJsonObject& body,
                         const QMap<QString, QString>& headers = {});
 
-    /// SSE 流式 POST
+    /// SSE 流式 POST（仅解析 delta.content，兼容旧调用方）
     void streamPost(const QUrl& url, const QJsonObject& body,
                     std::function<void(const QString& chunk)> onChunk,
                     std::function<void()> onDone,
                     std::function<void(const QString& error)> onError);
+
+    /**
+     * SSE 流式 POST，回传完整 delta JSON 对象。
+     * 供 Tool Calling 场景使用（M4 起），可访问 delta.tool_calls / finish_reason。
+     */
+    void streamPostRaw(const QUrl& url, const QJsonObject& body,
+                        std::function<void(const QJsonObject& choice)> onChoice,
+                        std::function<void()> onDone,
+                        std::function<void(const QString& error)> onError);
 
     /// 简单 GET 请求用于连通性检测（同步）
     bool testConnection(const QUrl& url, QString* errorString = nullptr);
@@ -55,9 +64,10 @@ private:
     QString                m_authToken;
     bool                   m_done = false;
 
-    std::function<void(const QString&)> m_onChunk;
-    std::function<void()>               m_onDone;
-    std::function<void(const QString&)> m_onError;
+    std::function<void(const QString&)>       m_onChunk;   // 兼容路径
+    std::function<void(const QJsonObject&)>   m_onChoice;  // 完整 delta 路径
+    std::function<void()>                     m_onDone;
+    std::function<void(const QString&)>       m_onError;
 };
 
 #endif // FRAMEMIND_NETWORKCLIENT_H

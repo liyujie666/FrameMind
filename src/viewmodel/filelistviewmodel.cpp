@@ -47,14 +47,12 @@ FileListViewModel::FileListViewModel(FileManagerService* fileService,
 
 FileListViewModel::~FileListViewModel()
 {
-    // QPointer watcher's auto-delete 由 QObject parent 控制；显式清空一次保证析构顺序
     const auto watchers = m_probeWatchers.values();
     m_probeWatchers.clear();
     for (const auto& w : watchers) {
         if (!w) continue;
         w->disconnect();
         w->cancel();
-        // Qt6 的 QFutureWatcher::waitForFinished() 无超时参数；析构期短轮询避免长 probe 阻塞进程退出
         QElapsedTimer t; t.start();
         while (w->isRunning() && t.elapsed() < 5000) {
             QThread::msleep(10);
@@ -136,9 +134,13 @@ void FileListViewModel::addFromDirectory(const QString& dir)
 void FileListViewModel::refresh()
 {
     if (!m_fileService) return;
+    if (m_refreshing) return;   // 防止 probe watcher 回调内嵌套触发 refresh
+
+    m_refreshing = true;
     beginResetModel();
     m_items = m_fileService->recentFiles(120);
     endResetModel();
+    m_refreshing = false;
 
     enqueueMissingProbes();
 }
@@ -149,25 +151,19 @@ void FileListViewModel::removeAt(int row)
     const QString path = m_items.at(row).path;
     if (m_fileService) m_fileService->removeFromRecent(path);
 
-    // 取消该行以及后续所有按 row 索引的 watcher（它们的 row 在 removeAt 后会偏移）
-    QList<int> toRemove;
-    for (auto it = m_probeWatchers.begin(); it != m_probeWatchers.end(); ++it) {
-        if (it.key() >= row) toRemove.append(it.key());
-    }
-    for (int k : toRemove) {
-        auto it = m_probeWatchers.find(k);
-        if (it != m_probeWatchers.end()) {
-            if (*it) {
-                (*it)->disconnect();
-                (*it)->cancel();
-                QElapsedTimer t; t.start();
-                while ((*it)->isRunning() && t.elapsed() < 2000) {
-                    QThread::msleep(10);
-                }
-                (*it)->deleteLater();
+    // 取消该路径对应的 probe watcher（key 为 path，不受 row 偏移影响）
+    auto it = m_probeWatchers.find(path);
+    if (it != m_probeWatchers.end()) {
+        if (*it) {
+            (*it)->disconnect();
+            (*it)->cancel();
+            QElapsedTimer t; t.start();
+            while ((*it)->isRunning() && t.elapsed() < 2000) {
+                QThread::msleep(10);
             }
-            m_probeWatchers.erase(it);
+            (*it)->deleteLater();
         }
+        m_probeWatchers.erase(it);
     }
 
     beginRemoveRows({}, row, row);
@@ -198,14 +194,13 @@ void FileListViewModel::onPlayerFrameDecoded(const QImage& frame)
 
 void FileListViewModel::enqueueMissingProbes()
 {
-    // 跳过时长已知的条目；缩略图单独靠 saveThumbnail/open 流程补
     for (int i = 0; i < m_items.size(); ++i) {
         const auto& it = m_items.at(i);
         if (it.durationMs > 0) continue;
-        if (m_probeWatchers.contains(i)) continue;
 
         const QString p = it.path;
-        // 只处理本地存在文件；流/URL 跳过
+        if (m_probeWatchers.contains(p)) continue;
+
         const QFileInfo fi(p);
         if (!fi.exists()) continue;
 
@@ -215,43 +210,41 @@ void FileListViewModel::enqueueMissingProbes()
             lower.startsWith(QStringLiteral("http"))) continue;
 
         auto* watcher = new QFutureWatcher<MediaProbeResult>(this);
-        const QString mediaPath = p;
-        watcher->setFuture(MediaProbe().probeAsync(mediaPath, 480));
+        watcher->setFuture(MediaProbe().probeAsync(p, 480));
 
-        // row 必须按值捕获：watcher 完成时 m_items 可能已经重排
-        const int row = i;
+        // 按 path 捕获，不依赖 row，对 refresh/removeAt 引起的重排完全免疫
         connect(watcher, &QFutureWatcher<MediaProbeResult>::finished,
-                this, [this, watcher, row, mediaPath]() {
+                this, [this, watcher, p]() {
             if (!watcher) return;
             const auto r = watcher->result();
             watcher->deleteLater();
+            m_probeWatchers.remove(p);
 
-            // 越界（refresh 后）→ 丢弃
-            if (row < 0 || row >= m_items.size()) return;
-
-            VideoFileItem& it2 = m_items[row];
-            // 路径检查：若 refresh 后该行的 path 已经不同，丢弃本次结果
-            if (it2.path != mediaPath) return;
-
-            bool changed = false;
-            if (r.durationMs > 0 && it2.durationMs != r.durationMs) {
-                it2.durationMs = r.durationMs;
-                changed = true;
-                if (m_fileService) m_fileService->updateDurationMs(it2.path, r.durationMs);
+            // 找到当前 path 对应的行（可能因 refresh 已经变化）
+            int row = -1;
+            for (int j = 0; j < m_items.size(); ++j) {
+                if (m_items.at(j).path == p) { row = j; break; }
             }
-            if (!r.thumbnail.isEmpty() && it2.thumbnailPath != r.thumbnail) {
-                it2.thumbnailPath = r.thumbnail;
+            if (row < 0) return;
+
+            VideoFileItem& item = m_items[row];
+            bool changed = false;
+            if (r.durationMs > 0 && item.durationMs != r.durationMs) {
+                item.durationMs = r.durationMs;
+                changed = true;
+                if (m_fileService) m_fileService->updateDurationMs(p, r.durationMs);
+            }
+            if (!r.thumbnail.isEmpty() && item.thumbnailPath != r.thumbnail) {
+                item.thumbnailPath = r.thumbnail;
                 changed = true;
             }
             if (changed) {
                 const QModelIndex idx = index(row);
-                emit dataChanged(idx, idx,
-                                 { ThumbnailPathRole, DurationRole });
+                emit dataChanged(idx, idx, { ThumbnailPathRole, DurationRole });
             }
-            m_probeWatchers.remove(row);
         });
 
-        m_probeWatchers.insert(i, watcher);
+        m_probeWatchers.insert(p, watcher);
     }
 }
 

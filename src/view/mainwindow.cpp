@@ -4,13 +4,19 @@
 #include "view/common/settingsdialog.h"
 #include "view/sidebar/sidebarview.h"
 #include "view/player/playerview.h"
+#include "view/player/timelinetabwidget.h"
+#include "view/player/summarytabwidget.h"
+#include "view/player/subtitletabwidget.h"
 #include "view/chat/chatview.h"
 #include "view/filelist/filelistview.h"
+#include "view/knowledge/knowledgeview.h"
 #include "view/common/themedpanel.h"
 #include "view/common/segmentedcontrol.h"
 #include "viewmodel/playerviewmodel.h"
 #include "viewmodel/chatviewmodel.h"
 #include "viewmodel/filelistviewmodel.h"
+#include "viewmodel/videoanalysisviewmodel.h"
+#include "viewmodel/knowledgeviewmodel.h"
 #include "service/settingsservice.h"
 #include "service/agentservice.h"
 #include "service/filemanagerservice.h"
@@ -25,7 +31,9 @@
 #include <QGridLayout>
 #include <QWidget>
 #include <QLabel>
+#include <QMovie>
 #include <QLineEdit>
+
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QMenuBar>
@@ -42,110 +50,6 @@
 #include <QCursor>
 
 namespace {
-
-/// 一行分析结果占位（左侧列表用）
-QWidget* makeAnalysisRow(QWidget* parent, int widthPct,
-                         const QColor& dotColor, const QColor& barColor)
-{
-    auto* w = new QWidget(parent);
-    w->setAttribute(Qt::WA_StyledBackground, false);
-    auto* h = new QHBoxLayout(w);
-    h->setContentsMargins(0, 0, 0, 0);
-    h->setSpacing(8);
-
-    auto* dot = new QLabel(w);
-    dot->setFixedSize(10, 10);
-    dot->setStyleSheet(QString("background:%1; border-radius:2px;").arg(dotColor.name()));
-
-    auto* bar = new QLabel(w);
-    bar->setFixedHeight(8);
-    bar->setStyleSheet(QString("background:%1; border-radius:4px;").arg(barColor.name()));
-    bar->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-
-    h->addWidget(dot);
-    h->addWidget(bar, widthPct);
-    h->addStretch(100 - widthPct);
-    return w;
-}
-
-QWidget* makeTimelineBar(QWidget* parent, int marks,
-                         const QColor& bar, const QColor& mark)
-{
-    auto* w = new QWidget(parent);
-    w->setFixedHeight(28);
-    w->setStyleSheet(QString("background:%1; border-radius:14px;").arg(bar.name()));
-    auto* h = new QHBoxLayout(w);
-    h->setContentsMargins(12, 6, 12, 6);
-    h->setSpacing(0);
-    h->addStretch(1);
-    for (int i = 0; i < marks; ++i) {
-        auto* m = new QLabel(w);
-        m->setFixedSize(3, 16);
-        m->setStyleSheet(QString("background:%1; border-radius:1px;").arg(mark.name()));
-        h->addWidget(m);
-        h->addStretch(1);
-    }
-    return w;
-}
-
-/// 构造一个"分析 Tab"占位内容（供 SegmentedControl 切换用）
-QWidget* buildAnalysisTabContent(QWidget* parent, ThemeService* theme, int variant)
-{
-    const QColor barCol = theme
-        ? theme->color(QStringLiteral("surfaceVariant"))
-        : QColor("#2D2D3D");
-    const QColor markCol = theme
-        ? theme->color(QStringLiteral("textPrimary"))
-        : QColor("#E0E0E0");
-    const QColor dotCol = theme
-        ? theme->color(QStringLiteral("primary"))
-        : QColor("#2979FF");
-
-    auto* w = new QWidget(parent);
-    w->setAttribute(Qt::WA_StyledBackground, false);
-    auto* body = new QHBoxLayout(w);
-    body->setContentsMargins(0, 0, 0, 0);
-    body->setSpacing(20);
-
-    auto* leftCol = new QVBoxLayout();
-    leftCol->setSpacing(8);
-
-    // 按 variant 调整不同 Tab 的条目宽度模式，视觉上有差异
-    QVector<int> pcts;
-    switch (variant) {
-        case 0:  pcts = { 60, 55, 65, 45 }; break;   // 时间线
-        case 1:  pcts = { 70, 40, 55, 60 }; break;   // 检测
-        default: pcts = { 50, 65, 40, 55 }; break;   // 字幕
-    }
-    for (int pct : pcts) {
-        leftCol->addWidget(makeAnalysisRow(w, pct, dotCol, barCol));
-    }
-    leftCol->addStretch(1);
-    body->addLayout(leftCol, 1);
-
-    auto* rightCol = new QVBoxLayout();
-    rightCol->setSpacing(10);
-    rightCol->addWidget(makeTimelineBar(w, 3, barCol, markCol));
-
-    auto makeSub = [&](int leftPct, int widthPct) {
-        auto* bar = new QLabel(w);
-        bar->setFixedHeight(8);
-        bar->setStyleSheet(QString("background:%1; border-radius:4px;").arg(barCol.name()));
-        bar->setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::Fixed);
-        auto* row = new QHBoxLayout();
-        row->addStretch(leftPct);
-        row->addWidget(bar, widthPct);
-        row->addStretch(qMax(0, 100 - leftPct - widthPct));
-        rightCol->addLayout(row);
-    };
-    makeSub(0, 70);
-    makeSub(15, 55);
-
-    rightCol->addStretch(1);
-    body->addLayout(rightCol, 2);
-    return w;
-}
-
 } // namespace
 
 MainWindow::MainWindow(PlayerViewModel* playerVM,
@@ -156,11 +60,15 @@ MainWindow::MainWindow(PlayerViewModel* playerVM,
                        FileManagerService* fileService,
                        ThemeService* theme,
                        LLMProviderService* providers,
+                       VideoAnalysisViewModel* analysisVM,
+                       KnowledgeViewModel* knowledgeVM,
                        QWidget* parent)
     : QMainWindow(parent)
     , m_playerVM(playerVM)
     , m_chatVM(chatVM)
     , m_fileListVM(fileListVM)
+    , m_analysisVM(analysisVM)
+    , m_knowledgeVM(knowledgeVM)
     , m_settings(settings)
     , m_agent(agent)
     , m_fileService(fileService)
@@ -323,33 +231,68 @@ ThemedPanel* MainWindow::buildAnalysisPanel(QWidget* parent)
     v->setContentsMargins(20, 14, 20, 14);
     v->setSpacing(12);
 
-    // 顶部：标题 + 滑块 Tab
+    // 顶部：标题 + 状态 + 滑块 Tab
     auto* top = new QHBoxLayout();
-    top->setSpacing(16);
+    top->setSpacing(12);
 
-    auto* title = new QLabel(tr("Analysis Results"), panel);
-    title->setAttribute(Qt::WA_StyledBackground, false);
-    title->setStyleSheet(QStringLiteral(
-        "font-size:14px; font-weight:600; background:transparent; border:none;"));
-    top->addWidget(title);
+    m_analysisTitle = new QLabel(tr("智析 · 帧境"), panel);
+    m_analysisTitle->setAttribute(Qt::WA_StyledBackground, false);
+    m_analysisTitle->setStyleSheet(QStringLiteral(
+        "font-size:14px; font-weight:700; background:transparent; border:none;"));
+    top->addWidget(m_analysisTitle);
+
+    // 状态指示器：GIF 加载动画 + 文字（构建 RAG 期间可见）
+    m_analysisSpinner = new QLabel(panel);
+    m_analysisSpinner->setFixedSize(18, 18);
+    m_analysisSpinner->setAttribute(Qt::WA_StyledBackground, false);
+    m_analysisSpinner->hide();
+
+    m_spinnerMovie = new QMovie(this);
+    m_spinnerMovie->setCacheMode(QMovie::CacheAll);
+    m_spinnerMovie->setScaledSize(QSize(18, 18));
+    m_analysisSpinner->setMovie(m_spinnerMovie);
+
+    m_analysisStatusText = new QLabel(panel);
+    m_analysisStatusText->setAttribute(Qt::WA_StyledBackground, false);
+    m_analysisStatusText->setStyleSheet(QStringLiteral(
+        "font-size:11px; color:#8B8B8B; background:transparent; border:none;"));
+    m_analysisStatusText->hide();
+
+    top->addWidget(m_analysisSpinner);
+    top->addSpacing(4);
+    top->addWidget(m_analysisStatusText);
 
     top->addStretch(1);
 
     m_analysisTabs = new SegmentedControl(panel);
-    m_analysisTabs->setItems({ tr("时间线"), tr("检测"), tr("字幕") });
+    m_analysisTabs->setItems({ tr("时间线"), tr("总结"), tr("字幕") });
     m_analysisTabs->setFixedWidth(260);
     if (m_theme) m_analysisTabs->setThemeService(m_theme);
     top->addWidget(m_analysisTabs);
 
     v->addLayout(top);
 
-    // 中间：StackedLayout 承载三个 Tab 页
+    // 中间：StackedLayout 承载三个 Tab 页（真实内容）
     m_analysisStack = new QStackedLayout();
     m_analysisStack->setContentsMargins(0, 0, 0, 0);
-    // 三个占位内容
-    m_analysisStack->addWidget(buildAnalysisTabContent(panel, m_theme, 0));
-    m_analysisStack->addWidget(buildAnalysisTabContent(panel, m_theme, 1));
-    m_analysisStack->addWidget(buildAnalysisTabContent(panel, m_theme, 2));
+
+    // Tab 0：时间线
+    m_timelineTab = new TimelineTabWidget(panel);
+    if (m_theme) m_timelineTab->setThemeService(m_theme);
+    if (m_analysisVM) m_timelineTab->setViewModel(m_analysisVM);
+    m_analysisStack->addWidget(m_timelineTab);
+
+    // Tab 1：总结
+    m_summaryTab = new SummaryTabWidget(panel);
+    if (m_theme) m_summaryTab->setThemeService(m_theme);
+    if (m_analysisVM) m_summaryTab->setViewModel(m_analysisVM);
+    m_analysisStack->addWidget(m_summaryTab);
+
+    // Tab 2：字幕
+    m_subtitleTab = new SubtitleTabWidget(panel);
+    if (m_theme) m_subtitleTab->setThemeService(m_theme);
+    if (m_analysisVM) m_subtitleTab->setViewModel(m_analysisVM);
+    m_analysisStack->addWidget(m_subtitleTab);
 
     auto* stackHost = new QWidget(panel);
     stackHost->setAttribute(Qt::WA_StyledBackground, false);
@@ -360,6 +303,61 @@ ThemedPanel* MainWindow::buildAnalysisPanel(QWidget* parent)
             this, [this](int idx) {
                 if (m_analysisStack) m_analysisStack->setCurrentIndex(idx);
             });
+
+    // RAG 构建期间在标题旁显示用户友好状态
+    if (m_analysisVM) {
+        connect(m_analysisVM, &VideoAnalysisViewModel::progressChanged,
+                this, [this](int percent, const QString&) {
+            static const struct { int from; const char* text; } kStages[] = {
+                {  0, "正在读取视频..." },
+                { 10, "拆解场景结构..." },
+                { 30, "提取视觉特征..." },
+                { 50, "理解画面语义..." },
+                { 70, "转写音频内容..." },
+                { 85, "整理语音信息..." },
+                { 90, "构建知识索引..." },
+                { 99, "即将完成..."     },
+            };
+            const char* msg = kStages[0].text;
+            for (const auto& s : kStages) {
+                if (percent >= s.from) msg = s.text;
+            }
+            if (m_analysisStatusText) {
+                m_analysisStatusText->setText(tr(msg));
+                m_analysisStatusText->show();
+            }
+            if (m_analysisSpinner) {
+                m_analysisSpinner->show();
+                if (m_spinnerMovie && m_spinnerMovie->state() != QMovie::Running)
+                    m_spinnerMovie->start();
+            }
+        });
+
+        connect(m_analysisVM, &VideoAnalysisViewModel::indexingChanged,
+                this, [this](bool indexing) {
+            if (!indexing) {
+                if (m_analysisSpinner) {
+                    m_spinnerMovie->stop();
+                    m_analysisSpinner->hide();
+                }
+                if (m_analysisStatusText) m_analysisStatusText->hide();
+            }
+        });
+    }
+
+    // 播放位置变化 → 时间线 / 字幕高亮
+    if (m_playerVM) {
+        connect(m_playerVM, &PlayerViewModel::positionChanged,
+                m_timelineTab, &TimelineTabWidget::onPositionChanged);
+        connect(m_playerVM, &PlayerViewModel::positionChanged,
+                m_subtitleTab, &SubtitleTabWidget::onPositionChanged);
+    }
+
+    // 时间线 / 字幕点击 → 播放器跳转并自动播放
+    connect(m_timelineTab, &TimelineTabWidget::seekRequested,
+            this, [this](int64_t ms) { if (m_playerVM) m_playerVM->seekAndPlay(ms); });
+    connect(m_subtitleTab, &SubtitleTabWidget::seekRequested,
+            this, [this](int64_t ms) { if (m_playerVM) m_playerVM->seekAndPlay(ms); });
 
     return panel;
 }
@@ -374,29 +372,10 @@ QWidget* MainWindow::buildFilePage()
 
 QWidget* MainWindow::buildKnowledgePage()
 {
-    auto* page = new QWidget(this);
-    page->setAttribute(Qt::WA_StyledBackground, true);
-    auto* v = new QVBoxLayout(page);
-    v->setAlignment(Qt::AlignCenter);
-    v->setSpacing(12);
-
-    auto* icon = new QLabel(page);
-    icon->setPixmap(QIcon(QStringLiteral(":/icons/knowledge.svg")).pixmap(64, 64));
-    icon->setAlignment(Qt::AlignCenter);
-    icon->setStyleSheet(QStringLiteral("background:transparent;"));
-    auto* title = new QLabel(tr("知识库"), page);
-    title->setAlignment(Qt::AlignCenter);
-    title->setStyleSheet(QStringLiteral(
-        "font-size:16px; font-weight:600; background:transparent;"));
-    auto* hint = new QLabel(tr("知识库能力将在后续版本中开放"), page);
-    hint->setAlignment(Qt::AlignCenter);
-    hint->setStyleSheet(QStringLiteral(
-        "color:#8B8B8B; font-size:13px; background:transparent;"));
-
-    v->addWidget(icon);
-    v->addWidget(title);
-    v->addWidget(hint);
-    return page;
+    m_knowledgeView = new KnowledgeView(this);
+    if (m_knowledgeVM)  m_knowledgeView->setViewModel(m_knowledgeVM);
+    if (m_theme)        m_knowledgeView->setThemeService(m_theme);
+    return m_knowledgeView;
 }
 
 void MainWindow::onOpenSettings()
@@ -415,26 +394,25 @@ void MainWindow::onOpenSettings()
 
 void MainWindow::onThemeChanged(bool /*isDark*/)
 {
-    // 暂停整个主窗口更新，避免逐个 widget 刷新带来的闪烁和卡顿
     setUpdatesEnabled(false);
-
     applyPageBackground();
-
-    // 重建 Analysis Tab 内容（占位配色刷新）
-    if (m_analysisStack) {
-        const int prevIdx = m_analysisTabs ? m_analysisTabs->currentIndex() : 0;
-        while (m_analysisStack->count() > 0) {
-            QWidget* w = m_analysisStack->widget(0);
-            m_analysisStack->removeWidget(w);
-            delete w;  // 直接 delete，不用 deleteLater（已从布局移除）
-        }
-        m_analysisStack->addWidget(buildAnalysisTabContent(nullptr, m_theme, 0));
-        m_analysisStack->addWidget(buildAnalysisTabContent(nullptr, m_theme, 1));
-        m_analysisStack->addWidget(buildAnalysisTabContent(nullptr, m_theme, 2));
-        m_analysisStack->setCurrentIndex(prevIdx);
-    }
-
+    updateSpinnerTheme();
     setUpdatesEnabled(true);
+}
+
+void MainWindow::updateSpinnerTheme()
+{
+    if (!m_spinnerMovie || !m_analysisSpinner) return;
+    const bool dark = m_theme ? m_theme->isDark() : true;
+    const QString path = dark
+        ? QStringLiteral(":/icons/loading_light.gif")
+        : QStringLiteral(":/icons/loading_dark.gif");
+
+    const bool wasRunning = (m_spinnerMovie->state() == QMovie::Running);
+    m_spinnerMovie->stop();
+    m_spinnerMovie->setFileName(path);
+    m_spinnerMovie->setScaledSize(QSize(18, 18));
+    if (wasRunning) m_spinnerMovie->start();
 }
 
 void MainWindow::applyPageBackground()
@@ -483,6 +461,11 @@ void MainWindow::onNavRequested(int index)
     if (!m_pageStack) return;
     if (index < 0 || index >= m_pageStack->count()) return;
     m_pageStack->setCurrentIndex(index);
+
+    // Refresh knowledge view when navigating to it
+    if (index == 2 && m_knowledgeView) {
+        m_knowledgeView->refresh();
+    }
 }
 
 void MainWindow::onOpenVideo()
@@ -500,7 +483,9 @@ void MainWindow::onOpenVideoPath(const QString& path)
 {
     if (path.isEmpty()) return;
     if (m_playerVM) m_playerVM->openFile(path);
+    if (m_chatVM)   m_chatVM->onVideoOpened(path);
     if (m_fileService) m_fileService->addToRecent(path);
+    if (m_analysisVM) m_analysisVM->onVideoOpened(path);
     setWindowTitle(QStringLiteral("Frame Mind - ") + QFileInfo(path).fileName());
 
     if (m_pageStack && m_pageStack->currentIndex() != 0) {

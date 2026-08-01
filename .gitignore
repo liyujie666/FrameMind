@@ -11,15 +11,29 @@
 CMakeSettings.json
 CMakeUserPresets.json
 
-# 第三方运行时二进制（不入主分支，按团队规范走 LFS 或本地放置）
-# third_party/smartplayer_sdk/lib/
-# third_party/smartplayer_sdk/bin/
+# 第三方库（二进制、头文件、文档均不入库，本地自行获取）
+third_party/ffmpeg/
+third_party/onnxruntime/
+third_party/whisper.cpp/
+# SmartPlayer SDK：只跟踪 include/ 和 lib/，bin/ 不入库
+third_party/smartplayer_sdk/bin/
 
 # AI 模型文件（体积大，单独获取）
 /models/
 
+# Python 虚拟环境（项目内 .venv，仅用于 BGE ONNX 导出，不入库）
+.venv/
+.venv-cache/
+__pycache__/
+*.pyc
+
 # 临时日志
 /tmp_dtmf_log/
+log.txt
+
+# IDE 辅助工具目录
+.codebuddy/
+.workbuddy/
 
 # 系统文件
 Thumbs.db
