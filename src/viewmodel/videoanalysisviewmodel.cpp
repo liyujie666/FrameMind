@@ -53,10 +53,22 @@ void VideoAnalysisViewModel::connectServices()
     if (m_analysis) {
         connect(m_analysis, &VideoAnalysisService::sceneDescribed,
                 this, [this](int sceneId, const QString& description) {
-            if (m_repr) {
-                // 描述已写入 repr->sceneDescriptions，直接转发信号
-            }
             emit sceneDescribed(sceneId, description);
+        });
+
+        connect(m_analysis, &VideoAnalysisService::sceneFused,
+                this, [this](int sceneId, const SceneFusion& fusion) {
+            if (sceneId >= 0 && sceneId < m_scenes.size()) {
+                Scene& scene = m_scenes[sceneId];
+                scene.visualDescription = fusion.visualDescription;
+                scene.audioSummary = fusion.audioSummary;
+                scene.fusedDescription = fusion.fusedDescription;
+                scene.description = fusion.fusedDescription;
+                scene.audioRelation = fusion.relation;
+                scene.audioRelationConfidence = fusion.confidence;
+                scene.audioType = fusion.audioType;
+            }
+            emit sceneFused(sceneId, fusion);
         });
 
         connect(m_analysis, &VideoAnalysisService::summaryReady,
@@ -84,7 +96,6 @@ void VideoAnalysisViewModel::onVideoOpened(const QString& videoPath)
     if (m_currentPath == videoPath) return;
     m_currentPath = videoPath;
 
-    // 重置状态
     m_scenes.clear();
     m_speechSegments.clear();
     m_videoSummary.clear();
@@ -98,7 +109,6 @@ void VideoAnalysisViewModel::onVideoOpened(const QString& videoPath)
     emit progressChanged(0, m_indexStageLabel);
     emit indexingChanged(true);
 
-    // 若索引已经完成（同一视频缓存命中），立即拉取结果
     if (m_indexer) {
         auto repr = m_indexer->representation(videoPath);
         if (repr && repr->level >= VideoRepresentation::Level0) {
@@ -117,4 +127,10 @@ QString VideoAnalysisViewModel::sceneDescription(int sceneId) const
 {
     if (!m_repr) return {};
     return m_repr->sceneDescriptions.value(sceneId);
+}
+
+SceneFusion VideoAnalysisViewModel::sceneFusion(int sceneId) const
+{
+    if (!m_repr) return {};
+    return m_repr->sceneFusions.value(sceneId);
 }

@@ -134,6 +134,8 @@ void TimelineTabWidget::setViewModel(VideoAnalysisViewModel* vm)
                 this, &TimelineTabWidget::onScenesReady);
         connect(m_vm, &VideoAnalysisViewModel::sceneDescribed,
                 this, &TimelineTabWidget::onSceneDescribed);
+        connect(m_vm, &VideoAnalysisViewModel::sceneFused,
+                this, &TimelineTabWidget::onSceneFused);
         // 立即刷新（可能已有数据）
         if (!m_vm->scenes().isEmpty()) onScenesReady(m_vm->scenes());
     }
@@ -176,6 +178,33 @@ void TimelineTabWidget::onSceneDescribed(int sceneId, const QString& description
     }
     lbl->setText(displayText.left(100));
     lbl->setVisible(true);
+}
+
+void TimelineTabWidget::onSceneFused(int sceneId, const SceneFusion& fusion)
+{
+    if (sceneId < 0 || sceneId >= m_descLabels.size()) return;
+    QLabel* label = m_descLabels[sceneId];
+    if (!label) return;
+
+    QString displayText;
+    if (fusion.relation == AudioVisualRelation::Independent
+        && !fusion.audioSummary.isEmpty()) {
+        // 音画无关时在 UI 明确分述，避免用户把同期音频误认成画面事实
+        displayText = tr("视觉：%1\n同期音频：%2\n[%3 · %4]")
+                          .arg(fusion.visualDescription,
+                               fusion.audioSummary,
+                               SceneFusion::relationLabel(fusion.relation),
+                               QString::number(fusion.confidence, 'f', 2));
+    } else {
+        displayText = fusion.fusedDescription;
+        if (fusion.hasAudio()) {
+            displayText += tr("\n[%1 · %2]")
+                               .arg(SceneFusion::relationLabel(fusion.relation),
+                                    QString::number(fusion.confidence, 'f', 2));
+        }
+    }
+    label->setText(displayText.left(240));
+    label->setVisible(true);
 }
 
 void TimelineTabWidget::onThemeChanged()

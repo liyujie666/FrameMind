@@ -9,12 +9,14 @@
 #include "model/video_representation.h"
 #include "model/agent_types.h"
 #include "model/videocontext.h"
+#include "model/audio_visual_relation.h"
 
 class AgentService;
 class VideoIndexer;
 class VideoRAGStore;
 class PlayerService;
 class EmbeddingService;
+class AudioVisualAligner;
 
 /**
  * 视频分析主服务（架构 §3.3.2 / agent-core-design.md §3.2 REPRESENT）。
@@ -37,6 +39,9 @@ public:
                                   QObject*         parent = nullptr);
 
     void setEmbeddingService(EmbeddingService* e) { m_embedder = e; }
+
+    /// 注入音画对齐/门控器（未注入时融合阶段自动降级为纯视觉描述）
+    void setAudioVisualAligner(AudioVisualAligner* a) { m_aligner = a; }
 
     // ---- 统筹入口 ----
 
@@ -96,6 +101,9 @@ signals:
     void summaryReady(const QString& summary);
     void analysisError(const QString& message);
 
+    /// 场景的音视频融合结果就绪（含关系判定与三类证据）
+    void sceneFused(int sceneId, const SceneFusion& fusion);
+
 private:
     /**
      * 并发批次描述所有场景，全部完成后自动触发 summarizeVideo。
@@ -106,10 +114,35 @@ private:
     /**
      * 描述单个场景，完成后调用 onDone(sceneId)。
      * onDone 为 nullptr 时行为等同于原 doDescribeScene。
+     *
+     * 内部为两阶段：
+     *   阶段一 纯视觉描述（禁止音频参与）
+     *   阶段二 同期 ASR 对齐 + 语义门控 + 保守融合
      */
     void doDescribeSceneWithCallback(int sceneId,
                                      QSharedPointer<VideoRepresentation> repr,
                                      std::function<void(int sceneId)> onDone);
+
+    /**
+     * 阶段二：对已有纯视觉描述的场景做音视频融合。
+     * 无同期语音时直接以视觉描述收尾，不调用模型。
+     */
+    void fuseSceneAudio(int sceneId,
+                        const QString& visualDescription,
+                        QSharedPointer<VideoRepresentation> repr,
+                        std::function<void(int sceneId)> onDone);
+
+    /// 把融合结果落到 repr、写入 RAG、发出信号
+    void commitSceneFusion(const SceneFusion& fusion,
+                           QSharedPointer<VideoRepresentation> repr,
+                           std::function<void(int sceneId)> onDone);
+
+    /// 将一条场景级证据写入 RAG（自动补 embedding 与 metadata）
+    void writeSceneEvidence(const SceneFusion& fusion,
+                            QSharedPointer<VideoRepresentation> repr,
+                            VideoChunk::ChunkType chunkType,
+                            const QString& evidenceType,
+                            const QString& text);
 
     /// 借助 AgentService 走一次一次性（非流式）VLM 调用
     void oneShotVLM(const QString& sysPrompt,
@@ -117,11 +150,12 @@ private:
                     const QList<QImage>& frames,
                     std::function<void(const QString&)> onDone);
 
-    AgentService*     m_agent    = nullptr;
-    VideoIndexer*     m_indexer  = nullptr;
-    VideoRAGStore*    m_ragStore = nullptr;
-    PlayerService*    m_player   = nullptr;
-    EmbeddingService* m_embedder = nullptr;
+    AgentService*       m_agent    = nullptr;
+    VideoIndexer*       m_indexer  = nullptr;
+    VideoRAGStore*      m_ragStore = nullptr;
+    PlayerService*      m_player   = nullptr;
+    EmbeddingService*   m_embedder = nullptr;
+    AudioVisualAligner* m_aligner  = nullptr;
 };
 
 #endif // FRAMEMIND_VIDEO_ANALYSIS_SERVICE_H

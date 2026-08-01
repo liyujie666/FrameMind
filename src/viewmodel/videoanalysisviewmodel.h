@@ -9,6 +9,7 @@
 #include "model/scene.h"
 #include "model/speech_segment.h"
 #include "model/video_representation.h"
+#include "model/audio_visual_relation.h"
 
 class VideoAnalysisService;
 class VideoIndexer;
@@ -38,6 +39,7 @@ public:
 
     /// 获取场景的 VLM 描述（若已生成），否则返回空
     QString sceneDescription(int sceneId) const;
+    SceneFusion sceneFusion(int sceneId) const;
 
 public slots:
     /// 视频打开时由外部（MainWindow/ChatViewModel）驱动
@@ -49,6 +51,9 @@ signals:
 
     /// 某个场景的 VLM 描述就绪
     void sceneDescribed(int sceneId, const QString& description);
+
+    /// 某个场景的音视频融合证据就绪
+    void sceneFused(int sceneId, const SceneFusion& fusion);
 
     /// 语音转写段已更新（Level 1 完成）
     void speechSegmentsReady(const QVector<SpeechSegment>& segments);

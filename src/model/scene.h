@@ -6,6 +6,8 @@
 #include <QMetaType>
 #include <cstdint>
 
+#include "model/audio_visual_relation.h"
+
 /**
  * 视频场景（agent-core-design.md §2.2 结构层 SceneGraph）。
  *
@@ -23,8 +25,23 @@ struct Scene {
     QString  keyframePath;         // 磁盘路径（相对于 appData/keyframes/<videoId>/）
     QImage   keyframe;             // 可选：内存中的关键帧
 
-    /// 场景摘要（由 VLM 描述后填入；未描述时为空）
+    /// 场景摘要（融合后的最终描述；未描述时为空）
     QString  description;
+
+    // ===== 音视频融合三类证据（互不覆盖）=====
+
+    /// 纯视觉描述：仅由关键帧生成，禁止音频参与，作为不可污染的事实基线
+    QString  visualDescription;
+
+    /// 同期音频的独立摘要（对白/旁白/背景媒体说了什么）
+    QString  audioSummary;
+
+    /// 保守融合描述：视觉事实 + 同期音频，按 audioRelation 控制归因强度
+    QString  fusedDescription;
+
+    AudioVisualRelation audioRelation = AudioVisualRelation::Unknown;
+    float               audioRelationConfidence = 0.0f;
+    SceneAudioType      audioType = SceneAudioType::None;
 
     int64_t durationMs() const { return endMs - startMs; }
     bool contains(int64_t posMs) const { return posMs >= startMs && posMs < endMs; }

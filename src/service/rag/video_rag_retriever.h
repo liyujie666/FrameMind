@@ -48,6 +48,19 @@ public:
         double weightText     = 0.4;
         double weightVisual   = 0.4;
         double weightEntity   = 0.2;
+
+        /**
+         * 证据类型偏好（音视频融合后同一场景有视觉/音频/融合三份证据）。
+         *
+         * 画面类问题压低音频证据，台词类问题压低纯视觉证据，
+         * 叙事类问题（"这段发生了什么"）优先融合证据。
+         */
+        bool prefersVisualEvidence = false;
+        bool prefersAudioEvidence  = false;
+        bool prefersFusedEvidence  = true;
+
+        /// 按证据类型给出的相似度乘子
+        float evidenceWeight(VideoChunk::ChunkType t) const;
     };
 
     explicit VideoRAGRetriever(VideoRAGStore* store,
@@ -83,8 +96,13 @@ private:
         int k = 60);
 
     /// 结果去重（按时间重叠度）
+    /// 同一场景的视觉/音频/融合证据互补，不互相去重
     QVector<RetrievalResult> deduplicate(
         const QVector<RetrievalResult>& results) const;
+
+    /// 按查询意图对证据类型重新加权（在 RRF 之前作用于单路分数）
+    static void applyEvidencePreference(QVector<RetrievalResult>& results,
+                                        const QueryIntent& intent);
 
     static float timeOverlapRatio(const VideoChunk& a, const VideoChunk& b);
 

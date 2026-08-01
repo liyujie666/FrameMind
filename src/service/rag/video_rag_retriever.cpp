@@ -16,6 +16,43 @@ VideoRAGRetriever::VideoRAGRetriever(VideoRAGStore* store, QObject* parent)
 }
 
 // ============================================================
+// 证据类型偏好
+// ============================================================
+
+float VideoRAGRetriever::QueryIntent::evidenceWeight(
+    VideoChunk::ChunkType t) const
+{
+    switch (t) {
+    case VideoChunk::SceneSummary:   // 纯视觉证据
+        if (prefersVisualEvidence) return 1.15f;
+        if (prefersAudioEvidence)  return 0.75f;
+        return 1.0f;
+    case VideoChunk::SceneAudio:     // 场景音频摘要
+        if (prefersAudioEvidence)  return 1.15f;
+        if (prefersVisualEvidence) return 0.70f;
+        return 0.95f;
+    case VideoChunk::SpeechSegment:  // 原始台词，回答"谁说了什么"最直接
+        if (prefersAudioEvidence)  return 1.20f;
+        if (prefersVisualEvidence) return 0.70f;
+        return 1.0f;
+    case VideoChunk::SceneFused:     // 融合证据，叙事类问题的默认首选
+        if (prefersFusedEvidence)  return 1.10f;
+        return 1.0f;
+    default:
+        return 1.0f;
+    }
+}
+
+void VideoRAGRetriever::applyEvidencePreference(
+    QVector<RetrievalResult>& results, const QueryIntent& intent)
+{
+    for (RetrievalResult& r : results) {
+        r.score *= intent.evidenceWeight(r.chunk.chunkType);
+    }
+    std::sort(results.begin(), results.end());
+}
+
+// ============================================================
 // Query 意图分析（启发式）
 // ============================================================
 
@@ -52,6 +89,29 @@ VideoRAGRetriever::QueryIntent VideoRAGRetriever::analyzeQuery(const QString& qu
     } else {
         intent.weightVisual = 0.4; intent.weightText = 0.4; intent.weightEntity = 0.2;
     }
+
+    // 证据类型偏好：画面细节类问题只信纯视觉证据，台词类问题优先语音证据
+    static const QRegularExpression visualOnlyCues(
+        QStringLiteral(u"(穿|衣服|颜色|长什么样|画面里有|画面中有|左上|右上|"
+                       u"左下|右下|背景里|几个人|多少人|表情|手里拿)"));
+    static const QRegularExpression audioOnlyCues(
+        QStringLiteral(u"(说了什么|谁说|台词|对白|对话|字幕|提到|讲了|"
+                       u"原话|口播|旁白|解说|念)"));
+    static const QRegularExpression narrativeCues(
+        QStringLiteral(u"(发生了什么|讲了什么|剧情|为什么|怎么回事|经过|"
+                       u"起因|总结|概括|这一段|这段)"));
+
+    intent.prefersVisualEvidence = visualOnlyCues.match(query).hasMatch();
+    intent.prefersAudioEvidence  = audioOnlyCues.match(query).hasMatch();
+    // 两侧都命中时不做压制，交给融合证据裁决
+    if (intent.prefersVisualEvidence && intent.prefersAudioEvidence) {
+        intent.prefersVisualEvidence = false;
+        intent.prefersAudioEvidence  = false;
+    }
+    intent.prefersFusedEvidence =
+        narrativeCues.match(query).hasMatch()
+        || (!intent.prefersVisualEvidence && !intent.prefersAudioEvidence);
+
     return intent;
 }
 
@@ -70,7 +130,11 @@ QVector<RetrievalResult> VideoRAGRetriever::retrieve(const QString& query,
     QMap<QString, double> weights;
 
     if (intent.needsTextSearch) {
-        perPath.insert(QStringLiteral("text"), textPathSearch(query, c, topK * 2));
+        // 场景级三类证据都在 text_segments 里，按查询意图重新加权后再进 RRF，
+        // 让排名本身体现"画面问题少看音频、台词问题少看视觉"的偏好
+        auto textHits = textPathSearch(query, c, topK * 2);
+        applyEvidencePreference(textHits, intent);
+        perPath.insert(QStringLiteral("text"), textHits);
         weights.insert(QStringLiteral("text"), intent.weightText);
     }
     if (intent.needsVisualSearch) {
@@ -229,10 +293,13 @@ QVector<RetrievalResult> VideoRAGRetriever::reciprocalRankFusion(
 QVector<RetrievalResult> VideoRAGRetriever::deduplicate(
     const QVector<RetrievalResult>& results) const
 {
+    // 同一场景的视觉 / 音频 / 融合证据时间范围完全相同但内容互补，
+    // 只在"同一时间段 + 同一证据类型"时才认为重复
     QVector<RetrievalResult> out;
     for (const auto& r : results) {
         bool overlap = false;
         for (const auto& kept : out) {
+            if (r.chunk.chunkType != kept.chunk.chunkType) continue;
             if (timeOverlapRatio(r.chunk, kept.chunk) > 0.7f) {
                 overlap = true;
                 break;

@@ -71,6 +71,18 @@ void SearchVideoContentTool::executeAsync(const QString& callId,
         o.insert(QStringLiteral("score"),        h.score);
         o.insert(QStringLiteral("hit_path"),     h.hitPath);
         o.insert(QStringLiteral("description"),  h.chunk.textContent);
+        const QString evidenceType = h.chunk.metadata
+            .value(QStringLiteral("evidence_type")).toString();
+        if (!evidenceType.isEmpty())
+            o.insert(QStringLiteral("evidence_type"), evidenceType);
+        const QString relation = h.chunk.metadata
+            .value(QStringLiteral("audio_relation")).toString();
+        if (!relation.isEmpty()) {
+            o.insert(QStringLiteral("audio_relation"), relation);
+            o.insert(QStringLiteral("relation_confidence"),
+                     h.chunk.metadata.value(
+                         QStringLiteral("relation_confidence")).toDouble());
+        }
         results.append(o);
     }
     QJsonObject data;

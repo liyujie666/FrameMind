@@ -17,12 +17,19 @@
  */
 struct VideoChunk {
     /// 检索单元的类型
+    ///
+    /// 音视频融合后场景级证据分三类保存，互不覆盖：
+    ///   SceneSummary 纯视觉描述（视觉事实基线）
+    ///   SceneAudio   同期音频摘要
+    ///   SceneFused   保守融合描述
     enum ChunkType {
-        SceneSummary,    // 场景语义描述
+        SceneSummary,    // 场景纯视觉描述
         SpeechSegment,   // 语音转写段
         Event,           // 事件描述
         FrameDesc,       // 关键帧描述
-        QAcache          // 历史问答缓存
+        QAcache,         // 历史问答缓存
+        SceneAudio,      // 场景同期音频摘要
+        SceneFused       // 场景音视频融合描述
     };
 
     QString chunkId;

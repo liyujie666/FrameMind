@@ -30,6 +30,7 @@ class VideoRAGStore;
 class QACacheManager;
 class VideoRAGRetriever;
 class EntityTracker;
+class AudioVisualAligner;
 class VideoIndexer;
 class VideoAnalysisService;
 class PerceptionStrategy;
@@ -82,6 +83,7 @@ public:
     QACacheManager*       qaCache() const;
     VideoRAGRetriever*    ragRetriever() const;
     EntityTracker*        entityTracker() const;
+    AudioVisualAligner*   audioVisualAligner() const;
     VideoIndexer*         videoIndexer() const;
     VideoAnalysisService* videoAnalysisService() const;
     PerceptionStrategy*   perceptionStrategy() const;
@@ -120,6 +122,7 @@ private:
     std::unique_ptr<QACacheManager>       m_qaCache;
     std::unique_ptr<VideoRAGRetriever>    m_ragRetriever;
     std::unique_ptr<EntityTracker>        m_entityTracker;
+    std::unique_ptr<AudioVisualAligner>   m_avAligner;
     std::unique_ptr<VideoIndexer>         m_videoIndexer;
     std::unique_ptr<VideoAnalysisService> m_videoAnalysis;
     std::unique_ptr<PerceptionStrategy>   m_perception;

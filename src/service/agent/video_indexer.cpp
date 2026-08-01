@@ -373,6 +373,10 @@ void VideoIndexer::buildLevel1(QSharedPointer<VideoRepresentation> repr,
                     c.endMs   = seg.endMs;
                     c.chunkType = VideoChunk::SpeechSegment;
                     c.textContent = seg.text;
+                    c.metadata.insert(QStringLiteral("evidence_type"),
+                                      QStringLiteral("speech_segment"));
+                    c.metadata.insert(QStringLiteral("source"),
+                                      QStringLiteral("whisper"));
                     c.metadata.insert(QStringLiteral("file_path"), repr->metadata.filePath);
 
 #ifdef FRAMEMIND_HAS_ONNXRUNTIME
@@ -496,11 +500,13 @@ QString VideoIndexer::makeChunkId(const QString& videoId,
 void VideoIndexer::writeChunksToStore(const VideoRepresentation& repr)
 {
     if (!m_ragStore) return;
-    // 场景描述作为 text_segments 写入（Level 2 生成后调用）
+    // 场景视觉描述作为 text_segments 写入（Level 2 生成后调用）。
+    // 新流水线由 VideoAnalysisService 分别写入 visual/audio/fused；这里保留兼容路径，
+    // 但只写纯视觉证据，避免把融合描述误标成 SceneSummary。
     for (auto it = repr.sceneDescriptions.constBegin();
          it != repr.sceneDescriptions.constEnd(); ++it) {
         const int sceneId = it.key();
-        const QString desc = it.value();
+        const QString desc = repr.sceneVisualDescriptions.value(sceneId, it.value());
         const Scene& s = repr.scenes.value(sceneId);
         if (!s.isValid() || desc.isEmpty()) continue;
 
@@ -514,6 +520,8 @@ void VideoIndexer::writeChunksToStore(const VideoRepresentation& repr)
         c.chunkType = VideoChunk::SceneSummary;
         c.textContent = desc;
         c.metadata.insert(QStringLiteral("scene_id"), sceneId);
+        c.metadata.insert(QStringLiteral("evidence_type"), QStringLiteral("visual"));
+        c.metadata.insert(QStringLiteral("file_path"), repr.metadata.filePath);
         m_ragStore->insertChunk(VideoRAGStore::TextSegments, c);
     }
 
@@ -529,6 +537,10 @@ void VideoIndexer::writeChunksToStore(const VideoRepresentation& repr)
         c.endMs   = seg.endMs;
         c.chunkType = VideoChunk::SpeechSegment;
         c.textContent = seg.text;
+        c.metadata.insert(QStringLiteral("evidence_type"),
+                          QStringLiteral("speech_segment"));
+        c.metadata.insert(QStringLiteral("source"), QStringLiteral("whisper"));
+        c.metadata.insert(QStringLiteral("file_path"), repr.metadata.filePath);
         m_ragStore->insertChunk(VideoRAGStore::TextSegments, c);
     }
 }

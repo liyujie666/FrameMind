@@ -67,6 +67,19 @@ QString formatRetrievalEvidence(const QVector<RetrievalResult>& evidence)
         if (sceneVar.isValid()) {
             out += QString::fromUtf8("场景 ID：%1\n").arg(sceneVar.toInt());
         }
+        const QString evidenceType =
+            c.metadata.value(QStringLiteral("evidence_type")).toString();
+        if (!evidenceType.isEmpty()) {
+            out += QString::fromUtf8("证据类型：%1\n").arg(evidenceType);
+        }
+        const QString relation =
+            c.metadata.value(QStringLiteral("audio_relation")).toString();
+        if (!relation.isEmpty()) {
+            out += QString::fromUtf8("音画关系：%1（置信度 %2）\n")
+                       .arg(relation)
+                       .arg(c.metadata.value(QStringLiteral("relation_confidence"))
+                                .toFloat(), 0, 'f', 2);
+        }
         if (!c.textContent.isEmpty())
             out += QString::fromUtf8("相关内容：%1\n\n").arg(c.textContent.left(200));
         ++idx;

@@ -11,6 +11,7 @@
 #include "model/scene.h"
 #include "model/speech_segment.h"
 #include "model/entity_profile.h"
+#include "model/audio_visual_relation.h"
 
 /**
  * 视频三层表示（agent-core-design.md §2.1）：感知层 / 结构层 / 语义层。
@@ -30,7 +31,18 @@ struct VideoRepresentation {
 
     // ===== 语义层 =====
     QString  videoSummary;                        // 全视频摘要
-    QMap<int, QString> sceneDescriptions;         // sceneId → 结构化描述(JSON字符串)
+
+    /**
+     * sceneId → 场景最终描述（音视频融合后）。
+     * 无同期音频时等于纯视觉描述，供摘要 / UI / RAG 复用。
+     */
+    QMap<int, QString> sceneDescriptions;
+
+    /// sceneId → 纯视觉描述（第一阶段产物，永不被音频覆盖）
+    QMap<int, QString> sceneVisualDescriptions;
+
+    /// sceneId → 音视频融合明细（关系、置信度、音频摘要、门控分数）
+    QMap<int, SceneFusion> sceneFusions;
 
     // ===== 索引进度 =====
     /**

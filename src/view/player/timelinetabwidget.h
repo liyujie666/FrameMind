@@ -5,6 +5,7 @@
 #include <QVector>
 
 #include "model/scene.h"
+#include "model/audio_visual_relation.h"
 
 class ThemeService;
 class VideoAnalysisViewModel;
@@ -41,6 +42,7 @@ signals:
 private slots:
     void onScenesReady(const QVector<Scene>& scenes);
     void onSceneDescribed(int sceneId, const QString& description);
+    void onSceneFused(int sceneId, const SceneFusion& fusion);
     void onThemeChanged();
 
 private:

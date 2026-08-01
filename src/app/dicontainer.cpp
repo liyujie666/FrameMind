@@ -24,6 +24,7 @@
 #include "service/rag/qa_cache_manager.h"
 #include "service/rag/video_rag_retriever.h"
 #include "service/rag/entity_tracker.h"
+#include "service/rag/audio_visual_aligner.h"
 #include "service/agent/video_indexer.h"
 #include "service/agent/video_analysis_service.h"
 #include "service/agent/perception_strategy.h"
@@ -100,6 +101,7 @@ VideoRAGStore*          DIContainer::ragStore() const              { return m_ra
 QACacheManager*         DIContainer::qaCache() const               { return m_qaCache.get(); }
 VideoRAGRetriever*      DIContainer::ragRetriever() const          { return m_ragRetriever.get(); }
 EntityTracker*          DIContainer::entityTracker() const         { return m_entityTracker.get(); }
+AudioVisualAligner*     DIContainer::audioVisualAligner() const    { return m_avAligner.get(); }
 VideoIndexer*           DIContainer::videoIndexer() const          { return m_videoIndexer.get(); }
 VideoAnalysisService*   DIContainer::videoAnalysisService() const  { return m_videoAnalysis.get(); }
 PerceptionStrategy*     DIContainer::perceptionStrategy() const    { return m_perception.get(); }
@@ -207,19 +209,26 @@ void DIContainer::initialize()
     m_videoIndexer->setWhisperService(m_whisperService.get());
 #endif
 
-    // 6. 分析服务
+    // 6. 音画对齐 + 语义门控（音视频融合第一期）
+    m_avAligner = std::make_unique<AudioVisualAligner>();
+#ifdef FRAMEMIND_HAS_ONNXRUNTIME
+    m_avAligner->setEmbeddingService(m_embeddingService.get());
+#endif
+
+    // 7. 分析服务
     m_videoAnalysis = std::make_unique<VideoAnalysisService>(
         m_agentService.get(), m_videoIndexer.get(),
         m_ragStore.get(), m_playerService.get());
+    m_videoAnalysis->setAudioVisualAligner(m_avAligner.get());
 #ifdef FRAMEMIND_HAS_ONNXRUNTIME
     m_videoAnalysis->setEmbeddingService(m_embeddingService.get());
 #endif
 
-    // 7. 决策组件
+    // 8. 决策组件
     m_perception = std::make_unique<PerceptionStrategy>(m_ragRetriever.get());
     m_reflection = std::make_unique<ReflectionEngine>();
 
-    // 8. Tool 层
+    // 9. Tool 层
     m_toolRegistry = std::make_unique<ToolRegistry>();
     m_toolRegistry->registerTool(std::make_unique<SeekAndAnalyzeTool>(
         m_playerService.get(), m_videoAnalysis.get()));
@@ -236,7 +245,7 @@ void DIContainer::initialize()
     m_toolOrchestrator = std::make_unique<ToolOrchestrator>(
         m_agentService.get(), m_toolRegistry.get());
 
-    // 9. 顶层协调器
+    // 10. 顶层协调器
     m_videoAgent = std::make_unique<VideoAgent>(
         m_agentService.get(),
         m_videoAnalysis.get(),

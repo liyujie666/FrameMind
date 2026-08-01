@@ -140,16 +140,15 @@ option(FRAMEMIND_ENABLE_ONNX    "Enable ONNX Runtime (CLIP/BGE/TransNetV2)" ON)
 option(FRAMEMIND_ENABLE_WHISPER "Enable whisper.cpp speech-to-text"          ON)
 option(FRAMEMIND_ENABLE_FAISS   "Enable FAISS in-process vector index"       OFF)
 
-# ONNX Runtime 未启用时，排除依赖它的源文件
+# ONNX Runtime 未启用时，相关服务 .cpp 仍参与编译：它们在宏关闭分支中提供
+# 轻量 stub 构造/析构，Qt MOC 生成的元对象代码需要这些符号才能链接。
+# 只有直接包含 ONNX Runtime API、没有 stub 分支的底层引擎需要排除。
 if(NOT FRAMEMIND_ENABLE_ONNX)
-    list(FILTER FRAMEMIND_SOURCES EXCLUDE REGEX
-        "onnx_runtime_engine\\.cpp|clip_service\\.cpp|embedding_service\\.cpp")
+    list(FILTER FRAMEMIND_SOURCES EXCLUDE REGEX "onnx_runtime_engine\\.cpp")
 endif()
 
-# whisper.cpp 未启用时，排除依赖它的源文件
-if(NOT FRAMEMIND_ENABLE_WHISPER)
-    list(FILTER FRAMEMIND_SOURCES EXCLUDE REGEX "whisper_service\\.cpp")
-endif()
+# whisper.cpp 同理：WhisperService 在宏关闭分支提供 stub 生命周期实现，
+# 不能排除整个源文件，否则自动生成的 MOC 代码会出现未解析外部符号。
 
 # FAISS 未启用时，排除依赖它的源文件
 if(NOT FRAMEMIND_ENABLE_FAISS)

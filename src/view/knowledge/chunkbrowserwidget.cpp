@@ -134,6 +134,8 @@ QString ChunkBrowserWidget::chunkTypeName(VideoChunk::ChunkType t)
     case VideoChunk::Event:          return tr("事件");
     case VideoChunk::FrameDesc:      return tr("帧描述");
     case VideoChunk::QAcache:        return tr("QA缓存");
+    case VideoChunk::SceneAudio:     return tr("音频摘要");
+    case VideoChunk::SceneFused:     return tr("融合描述");
     }
     return tr("未知");
 }
@@ -146,6 +148,8 @@ QString ChunkBrowserWidget::chunkTypeColor(VideoChunk::ChunkType t)
     case VideoChunk::Event:         return QStringLiteral("#FF9800");
     case VideoChunk::FrameDesc:     return QStringLiteral("#AB47BC");
     case VideoChunk::QAcache:       return QStringLiteral("#26C6DA");
+    case VideoChunk::SceneAudio:    return QStringLiteral("#66BB6A");
+    case VideoChunk::SceneFused:    return QStringLiteral("#EC407A");
     }
     return QStringLiteral("#9E9E9E");
 }

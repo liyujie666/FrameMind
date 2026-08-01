@@ -48,6 +48,8 @@ QString chunkTypeToString(VideoChunk::ChunkType t)
     case VideoChunk::Event:          return QStringLiteral("event");
     case VideoChunk::FrameDesc:      return QStringLiteral("frame_desc");
     case VideoChunk::QAcache:        return QStringLiteral("qa_cache");
+    case VideoChunk::SceneAudio:     return QStringLiteral("scene_audio");
+    case VideoChunk::SceneFused:     return QStringLiteral("scene_fused");
     }
     return QStringLiteral("unknown");
 }
@@ -59,6 +61,8 @@ VideoChunk::ChunkType chunkTypeFromString(const QString& s)
     if (s == QLatin1String("event"))          return VideoChunk::Event;
     if (s == QLatin1String("frame_desc"))     return VideoChunk::FrameDesc;
     if (s == QLatin1String("qa_cache"))       return VideoChunk::QAcache;
+    if (s == QLatin1String("scene_audio"))    return VideoChunk::SceneAudio;
+    if (s == QLatin1String("scene_fused"))    return VideoChunk::SceneFused;
     return VideoChunk::SceneSummary;
 }
 } // namespace
