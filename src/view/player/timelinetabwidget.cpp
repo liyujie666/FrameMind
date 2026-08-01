@@ -402,7 +402,8 @@ void TimelineTabWidget::updateHighlight(int64_t posMs)
         const bool active = m_scenes[i].contains(posMs);
         card->setHighlighted(active);
 
-        // 智能自动滚动：仅在用户未手动滚动时才自动定位 if (active && !m_userScrolling) {
+        // 智能自动滚动：仅在用户未手动滚动时才自动定位
+        if (active && !m_userScrolling) {
             m_scroll->ensureWidgetVisible(card, 0, 20);
         }
     }
@@ -419,4 +420,5 @@ QString TimelineTabWidget::formatMs(int64_t ms)
         return QString::asprintf("%02d:%02d:%02d", h, m, s);
     return QString::asprintf("%02d:%02d", m, s);
 }
+
 
