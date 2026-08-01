@@ -318,7 +318,8 @@ void LLMProviderService::loadActiveProvider()
     }
 }
 
-void LLMProviderService::testProviderConnection(const QString& providerId)
+void LLMProviderService::testProviderConnection(const QString& providerId,
+                                                 const QString& overrideKey)
 {
     if (!m_network) {
         emit connectionTestResult(providerId, false, QStringLiteral("网络组件未初始化"));
@@ -327,36 +328,28 @@ void LLMProviderService::testProviderConnection(const QString& providerId)
 
     const LLMProvider provider = providerById(providerId);
     if (provider.id.isEmpty()) {
-        emit connectionTestResult(providerId, false, QStringLiteral("未找到提供商: %1").arg(providerId));
+        emit connectionTestResult(providerId, false,
+                                  QStringLiteral("未找到提供商: %1").arg(providerId));
         return;
     }
 
-    const QString apiKey = getApiKey(providerId);
+    const QString apiKey = overrideKey.isEmpty() ? getApiKey(providerId) : overrideKey;
     if (apiKey.isEmpty()) {
         emit connectionTestResult(providerId, false, QStringLiteral("请先填写 API Key"));
         return;
     }
 
-    // 构建测试 URL
     QString endpoint = getEndpoint(providerId);
-    while (endpoint.endsWith('/')) {
-        endpoint.chop(1);
-    }
+    while (endpoint.endsWith('/')) endpoint.chop(1);
 
-    QUrl url(endpoint + QStringLiteral("/models"));
-
-    // 设置 API Key
     m_network->setAuthToken(apiKey);
 
-    // 执行测试
     QString errorMsg;
-    bool success = m_network->testConnection(url, &errorMsg);
+    const bool success = m_network->testConnection(QUrl(endpoint), &errorMsg);
 
     if (success) {
         emit connectionTestResult(providerId, true, QStringLiteral("连接成功"));
     } else {
-        // 如果 /models 端点不支持，尝试其他方式检测
-        // 可能是 API Key 格式问题或端点不支持
         emit connectionTestResult(providerId, false, errorMsg);
     }
 }

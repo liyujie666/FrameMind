@@ -118,7 +118,9 @@ void FileManagerService::updateDurationMs(const QString& path, qint64 durationMs
     m_db->exec(QStringLiteral(
         "UPDATE recent_files SET duration_ms=? WHERE path=?"),
         { QVariant(durationMs), QVariant(path) });
-    emit recentFilesChanged();
+    // 不发 recentFilesChanged：调用方（probe watcher）已通过 dataChanged 更新 UI，
+    // 发 recentFilesChanged 会触发 refresh() → beginResetModel()，
+    // 而此时 probe lambda 仍在主线程运行，导致模型重入崩溃。
 }
 
 void FileManagerService::removeFromRecent(const QString& path)

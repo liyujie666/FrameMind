@@ -17,13 +17,15 @@ struct VideoContext {
     int     height = 0;
     double  fps = 0.0;
     bool    hasAudio = false;
-    QString sceneOverview;   // 场景概览
-    QString videoSummary;    // 视频摘要
+    QString sceneOverview;       // 场景概览（mm:ss 时间轴）
+    QString videoSummary;        // 视频摘要
+    QString retrievalEvidence;   // RAG 检索证据（格式化文本，注入 system prompt）
+    int64_t currentPositionMs = 0; // 当前播放位置
 
     bool isEmpty() const
     {
         return fileName.isEmpty() && sceneOverview.isEmpty()
-               && videoSummary.isEmpty();
+               && videoSummary.isEmpty() && retrievalEvidence.isEmpty();
     }
 };
 

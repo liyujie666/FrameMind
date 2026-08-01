@@ -12,7 +12,8 @@
 enum class PlayerState {
     Stopped = 0,
     Playing = 1,
-    Paused  = 2
+    Paused  = 2,
+    Ended   = 3   // 播放到末尾自然结束（区别于 Stopped / Paused）
 };
 
 Q_DECLARE_METATYPE(PlayerState)

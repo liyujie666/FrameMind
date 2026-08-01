@@ -15,6 +15,8 @@ class AgentService;
 class ConversationService;
 class EventBus;
 class PlayerViewModel;
+class VideoAgent;
+class VideoAnalysisService;
 class ChatMessageListModel;
 class QTimer;
 
@@ -38,8 +40,9 @@ public:
 
     ChatMessageListModel* messageModel() const { return m_messageModel; }
     void setPlayerViewModel(PlayerViewModel* playerVM);
+    void setVideoAgent(VideoAgent* agent);
+    void setVideoAnalysisService(VideoAnalysisService* vas);
     VideoContext getVideoContext() const;
-
     bool isStreaming() const { return m_streaming; }
     bool isCollapsed() const { return m_collapsed; }
     QString currentConversationId() const { return m_currentConversationId; }
@@ -57,6 +60,9 @@ public slots:
     void createNewConversation();
     void switchConversation(const QString& convId);
     void deleteConversation(const QString& convId);
+
+    /// 视频打开时由 MainWindow 或 PlayerViewModel 触发，启动 RAG 索引
+    void onVideoOpened(const QString& videoPath);
 
     void onTimestampClicked(int64_t posMs);
 
@@ -79,9 +85,15 @@ private:
     ConversationService*  m_convService = nullptr;
     EventBus*             m_eventBus = nullptr;
     PlayerViewModel*      m_playerVM = nullptr;
+    VideoAgent*           m_videoAgent = nullptr;
+    VideoAnalysisService* m_videoAnalysis = nullptr;
     ChatMessageListModel* m_messageModel = nullptr;
 
+    QString m_activeVideoPath;
+    QString m_indexingPath;    // 已触发索引的路径，避免 durationChanged 重复触发
+
     bool    m_streaming = false;
+    bool    m_videoAgentStreaming = false;  // 视频 Agent 路径：屏蔽裸 responseChunk 重复追加
     bool    m_collapsed = false;
     QString m_currentConversationId;
 

@@ -10,6 +10,7 @@
 
 #include "model/playertypes.h"
 #include "model/videoinfo.h"
+#include "model/videoframe.h"
 #include "smartplayerdefs.h"
 
 class SmartPlayer;
@@ -45,6 +46,11 @@ public:
      */
     QFuture<QImage> captureFrameAt(int64_t posMs, int timeoutMs = 2000);
 
+    /// 从指定视频文件截取帧，不依赖当前播放器打开的媒体。
+    QFuture<QImage> captureFrameAt(const QString& videoPath,
+                                   int64_t posMs,
+                                   int timeoutMs = 2000);
+
     /// 同步获取当前已缓存的最近一帧（不触发 seek），可能为空
     QImage lastDecodedFrame() const;
 
@@ -58,7 +64,8 @@ signals:
     void positionChanged(int64_t posMs);
     void durationChanged(int64_t durationMs);
     void stateChanged(PlayerState state);
-    void frameDecoded(const QImage& frame);          // 跨线程信号
+    void rawFrameReady(const VideoFrame& frame);     // 原始帧数据，GPU 渲染用
+    void frameDecoded(const QImage& frame);          // QImage 帧（缩略图等遗留消费者）
     void openResult(bool success, const QString& error);
     void mediaInfoReady(const VideoInfo& info);
     void playFinished();
@@ -88,7 +95,8 @@ private:
     std::unique_ptr<CallbackBridge> m_bridge;
 
     mutable std::mutex m_frameMutex;
-    QImage             m_lastFrame;        // 缓存最近一帧，受 m_frameMutex 保护
+    QImage             m_lastFrame;        // 缓存最近一帧（懒转换），受 m_frameMutex 保护
+    VideoFrame         m_lastRawFrame;     // 缓存最近一帧原始数据，受 m_frameMutex 保护
 
     mutable std::mutex m_infoMutex;
     VideoInfo          m_videoInfo;        // 受 m_infoMutex 保护

@@ -1,11 +1,16 @@
 #include "service/playerservice.h"
 
 #include "infrastructure/imageprocessor.h"
+#include "model/videoframe.h"
 #include "smartplayer.h"
 #include "smartplayercallback.h"
 
 #include <QFileInfo>
+#include <QFile>
+#include <QDateTime>
+#include <QStandardPaths>
 #include <QFutureInterface>
+#include <QtConcurrent/QtConcurrent>
 
 // ===================================================================
 // CallbackBridge —— 实现 SDK 回调接口，转发到 PlayerService（SDK 线程）
@@ -112,14 +117,54 @@ void PlayerService::takeScreenshot(const QString& savePath)
     if (m_player) m_player->takeScreenshot(savePath.toUtf8().constData());
 }
 
-QFuture<QImage> PlayerService::captureFrameAt(int64_t /*posMs*/, int /*timeoutMs*/)
+QFuture<QImage> PlayerService::captureFrameAt(int64_t posMs, int timeoutMs)
 {
-    // M1 占位：真正的异步按时间点截帧在 M3-T2 实现。
-    QFutureInterface<QImage> fi;
-    fi.reportStarted();
-    fi.reportCanceled();
-    fi.reportFinished();
-    return fi.future();
+    QString filePath;
+    {
+        std::lock_guard<std::mutex> lk(m_infoMutex);
+        filePath = m_videoInfo.filePath;
+    }
+    return captureFrameAt(filePath, posMs, timeoutMs);
+}
+
+QFuture<QImage> PlayerService::captureFrameAt(const QString& videoPath,
+                                               int64_t posMs,
+                                               int timeoutMs)
+{
+    Q_UNUSED(timeoutMs)
+
+    if (videoPath.isEmpty()) {
+        QFutureInterface<QImage> fi;
+        fi.reportStarted();
+        fi.reportResult(QImage());
+        fi.reportFinished();
+        return fi.future();
+    }
+
+    return QtConcurrent::run([videoPath, posMs]() -> QImage {
+        const QString tmpDir = QStandardPaths::writableLocation(
+            QStandardPaths::TempLocation);
+        const QString tmpFile = tmpDir + QStringLiteral("/framemind_cap_%1_%2.jpg")
+                                             .arg(posMs)
+                                             .arg(QDateTime::currentMSecsSinceEpoch());
+
+        SmartPlayer::ThumbnailOptions opts;
+        opts.positionMs  = posMs;
+        opts.targetWidth = 0;      // 原始尺寸
+        opts.jpegQuality = 2;
+
+        bool ok = SmartPlayer::extractThumbnail(
+            videoPath.toUtf8().constData(),
+            tmpFile.toUtf8().constData(),
+            opts);
+
+        QImage result;
+        if (ok) {
+            result.load(tmpFile);
+            QFile::remove(tmpFile);
+        }
+        return result;
+    });
 }
 
 QImage PlayerService::lastDecodedFrame() const
@@ -205,19 +250,32 @@ void PlayerService::onSdkScreenshot(const char* path, bool success)
 void PlayerService::onSdkVideoFrame(const uint8_t* data, int width, int height,
                                     SmartPixelFormat format)
 {
-    // 1. 转 QImage（独立数据）
-    QImage img = ImageProcessor::fromVideoFrame(data, width, height, format);
-    if (img.isNull()) {
-        qWarning() << "[PlayerService] Frame conversion failed";
+    // Calculate raw data size based on pixel format
+    size_t dataSize = 0;
+    switch (format) {
+    case SP_FMT_YUV420P:
+    case SP_FMT_NV12:
+        dataSize = static_cast<size_t>(width) * height * 3 / 2;
+        break;
+    case SP_FMT_RGBA:
+    case SP_FMT_BGRA:
+        dataSize = static_cast<size_t>(width) * height * 4;
+        break;
+    default:
+        qWarning() << "[PlayerService] Unknown pixel format:" << format;
         return;
     }
 
-    // 2. 缓存最近一帧
+    // Construct VideoFrame with a single memcpy (matches SDK sample's approach)
+    VideoFrame vf(data, dataSize, width, height, format);
+
+    // Cache last frame as QImage for AI screenshot (lazy conversion, only when needed)
     {
         std::lock_guard<std::mutex> lk(m_frameMutex);
-        m_lastFrame = img;
+        m_lastRawFrame = vf;
     }
-    // 3. 首帧回填宽高
+
+    // Fill width/height on first frame
     {
         std::lock_guard<std::mutex> lk(m_infoMutex);
         if (m_videoInfo.width == 0 || m_videoInfo.height == 0) {
@@ -225,6 +283,23 @@ void PlayerService::onSdkVideoFrame(const uint8_t* data, int width, int height,
             m_videoInfo.height = height;
         }
     }
-    // 4. 跨线程投递给渲染层
-    emit frameDecoded(img);
+
+    // Emit raw frame for GPU rendering (primary path, minimal latency)
+    emit rawFrameReady(vf);
+
+    // Emit QImage for legacy consumers (FileListViewModel thumbnail, etc.)
+    // Only convert on first frame or every N frames to avoid CPU overhead
+    bool needQImage = false;
+    {
+        std::lock_guard<std::mutex> lk(m_frameMutex);
+        if (m_lastFrame.isNull()) needQImage = true;
+    }
+    if (needQImage) {
+        QImage img = ImageProcessor::fromVideoFrame(data, width, height, format);
+        if (!img.isNull()) {
+            std::lock_guard<std::mutex> lk(m_frameMutex);
+            m_lastFrame = img;
+        }
+        emit frameDecoded(img);
+    }
 }

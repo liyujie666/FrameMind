@@ -80,8 +80,12 @@ private:
     // 首帧回填缩略图：记录当前"待截图"的视频路径
     QString m_pendingThumbForPath;
 
-    // 行 row → probe watcher：用于异步补全 durationMs/thumbnailPath
-    QHash<int, QPointer<QFutureWatcher<MediaProbeResult>>> m_probeWatchers;
+    // refresh() 重入守卫：probe watcher 回调期间禁止嵌套 refresh
+    bool m_refreshing = false;
+
+    // path → probe watcher：用于异步补全 durationMs/thumbnailPath
+    // 使用 path 而非 row 作为 key，避免 refresh()/removeAt() 重排后 row 失效
+    QHash<QString, QPointer<QFutureWatcher<MediaProbeResult>>> m_probeWatchers;
 };
 
 #endif // FRAMEMIND_FILELISTVIEWMODEL_H

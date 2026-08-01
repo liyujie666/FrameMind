@@ -55,5 +55,11 @@
         <file>icons/image_rtsp.png</file>
         <file>icons/fold_dark.png</file>
         <file>icons/fold_light.png</file>
+        <file>icons/app_dark.ico</file>
+        <file>icons/app_light.ico</file>
+        <file>icons/loading_light.gif</file>
+        <file>icons/loading_dark.gif</file>
+        <file>icons/replay_dark.png</file>
+        <file>icons/replay_light.png</file>
     </qresource>
 </RCC>
