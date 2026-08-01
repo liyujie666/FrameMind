@@ -77,6 +77,9 @@ public:
     /// 批量插入
     bool insertChunks(Collection col, const std::vector<VideoChunk>& chunks);
 
+    /// 删除某视频在指定集合的全部 chunk
+    bool removeVideoChunks(Collection col, const QString& videoId);
+
     /// 删除某 chunk
     bool removeChunk(Collection col, const QString& chunkId);
 

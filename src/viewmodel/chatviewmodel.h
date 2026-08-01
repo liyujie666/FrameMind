@@ -93,6 +93,7 @@ private:
     QString m_indexingPath;    // 已触发索引的路径，避免 durationChanged 重复触发
 
     bool    m_streaming = false;
+    bool    m_videoAgentStreaming = false;  // 视频 Agent 路径：屏蔽裸 responseChunk 重复追加
     bool    m_collapsed = false;
     QString m_currentConversationId;
 

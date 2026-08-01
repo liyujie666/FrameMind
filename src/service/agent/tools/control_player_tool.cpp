@@ -14,7 +14,11 @@ ControlPlayerTool::ControlPlayerTool(EventBus* eventBus)
 QString ControlPlayerTool::description() const
 {
     return QStringLiteral(
-        "控制播放器（seek/play/pause）。用于向用户展示特定片段，不会触发分析。");
+        "控制播放器执行 seek/play/pause 操作。"
+        "这是唯一能实际移动播放进度或控制播放状态的方式——"
+        "如果不调用此工具，播放器不会有任何响应。"
+        "用户要求跳转到某个时间点时必须调用此工具，"
+        "timestamp_ms 为目标时间的毫秒数（如第10秒 = 10000）。");
 }
 
 QJsonObject ControlPlayerTool::parameters() const

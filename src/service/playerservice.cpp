@@ -119,15 +119,21 @@ void PlayerService::takeScreenshot(const QString& savePath)
 
 QFuture<QImage> PlayerService::captureFrameAt(int64_t posMs, int timeoutMs)
 {
-    Q_UNUSED(timeoutMs)
-
     QString filePath;
     {
         std::lock_guard<std::mutex> lk(m_infoMutex);
         filePath = m_videoInfo.filePath;
     }
+    return captureFrameAt(filePath, posMs, timeoutMs);
+}
 
-    if (filePath.isEmpty()) {
+QFuture<QImage> PlayerService::captureFrameAt(const QString& videoPath,
+                                               int64_t posMs,
+                                               int timeoutMs)
+{
+    Q_UNUSED(timeoutMs)
+
+    if (videoPath.isEmpty()) {
         QFutureInterface<QImage> fi;
         fi.reportStarted();
         fi.reportResult(QImage());
@@ -135,7 +141,7 @@ QFuture<QImage> PlayerService::captureFrameAt(int64_t posMs, int timeoutMs)
         return fi.future();
     }
 
-    return QtConcurrent::run([filePath, posMs]() -> QImage {
+    return QtConcurrent::run([videoPath, posMs]() -> QImage {
         const QString tmpDir = QStandardPaths::writableLocation(
             QStandardPaths::TempLocation);
         const QString tmpFile = tmpDir + QStringLiteral("/framemind_cap_%1_%2.jpg")
@@ -148,7 +154,7 @@ QFuture<QImage> PlayerService::captureFrameAt(int64_t posMs, int timeoutMs)
         opts.jpegQuality = 2;
 
         bool ok = SmartPlayer::extractThumbnail(
-            filePath.toUtf8().constData(),
+            videoPath.toUtf8().constData(),
             tmpFile.toUtf8().constData(),
             opts);
 

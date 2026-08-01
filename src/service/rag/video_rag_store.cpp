@@ -260,6 +260,23 @@ bool VideoRAGStore::insertChunks(Collection col, const std::vector<VideoChunk>& 
     return ok;
 }
 
+bool VideoRAGStore::removeVideoChunks(Collection col, const QString& videoId)
+{
+    if (videoId.isEmpty()) return false;
+    {
+        QMutexLocker lock(&d->mtx);
+        auto& chunks = d->inMemory[col];
+        for (auto it = chunks.begin(); it != chunks.end();) {
+            if (it.value().videoId == videoId) it = chunks.erase(it);
+            else ++it;
+        }
+    }
+    if (!d->db) return true;
+    return d->db->exec(
+        QStringLiteral("DELETE FROM rag_chunks WHERE video_id = ? AND collection = ?"),
+        { videoId, colName(col) });
+}
+
 bool VideoRAGStore::removeChunk(Collection col, const QString& chunkId)
 {
     {

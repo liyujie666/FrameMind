@@ -157,7 +157,25 @@ void NetworkClient::streamPostRaw(const QUrl& url, const QJsonObject& body,
         if (!m_activeStream) return;
         const auto err = m_activeStream->error();
         if (err != QNetworkReply::NoError && err != QNetworkReply::OperationCanceledError) {
-            if (m_onError) m_onError(m_activeStream->errorString());
+            const QString msg = m_activeStream->errorString();
+            const int statusCode = m_activeStream->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+            const QByteArray rest = m_activeStream->readAll();
+            QString detail = statusCode > 0 ? QStringLiteral("HTTP %1: ").arg(statusCode) : msg;
+            if (!rest.isEmpty()) {
+                const QJsonDocument doc = QJsonDocument::fromJson(rest);
+                if (!doc.isNull() && doc.isObject()) {
+                    QString apiMsg = doc.object().value(QStringLiteral("error"))
+                                        .toObject().value(QStringLiteral("message")).toString();
+                    if (apiMsg.isEmpty())
+                        apiMsg = doc.object().value(QStringLiteral("message")).toString();
+                    detail += apiMsg.isEmpty() ? QString::fromUtf8(rest) : apiMsg;
+                } else {
+                    detail += QString::fromUtf8(rest);
+                }
+            } else {
+                detail += msg;
+            }
+            if (m_onError) m_onError(detail);
         } else if (!m_done) {
             finishStream();
         }
@@ -233,45 +251,68 @@ void NetworkClient::cancelStream()
 
 bool NetworkClient::testConnection(const QUrl& url, QString* errorString)
 {
-    QNetworkRequest req(url);
+    // 用最小 chat/completions 请求探测连通性，所有 OpenAI 兼容平台均支持此接口。
+    // 不使用 GET /models，因为部分平台（如阿里百炼）不支持该端点。
+    QString base = url.toString();
+    while (base.endsWith('/')) base.chop(1);
+    const QUrl chatUrl(base + QStringLiteral("/chat/completions"));
+
+    QNetworkRequest req(chatUrl);
     req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
     if (!m_authToken.isEmpty()) {
         req.setRawHeader("Authorization",
                          QStringLiteral("Bearer %1").arg(m_authToken).toUtf8());
     }
-    req.setTransferTimeout(15000);  // 15s 超时
+    req.setTransferTimeout(15000);
 
-    QNetworkReply* reply = m_nam->get(req);
+    // 最小合法请求体，max_tokens=1 让服务端尽快返回
+    const QByteArray payload =
+        R"({"model":"__probe__","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"stream":false})";
+
+    QNetworkReply* reply = m_nam->post(req, payload);
     if (!reply) {
         if (errorString) *errorString = QStringLiteral("无法创建网络请求");
         return false;
     }
 
-    // 同步等待完成（使用事件循环）
     QEventLoop loop;
     QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
     loop.exec();
 
-    const auto err = reply->error();
-    const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-    const QByteArray response = reply->readAll();
+    const auto netErr    = reply->error();
+    const int  statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    const QByteArray body = reply->readAll();
+    const QString replyErrStr = reply->errorString();
     reply->deleteLater();
 
-    if (err != QNetworkReply::NoError) {
-        if (errorString) {
-            *errorString = QStringLiteral("HTTP %1: %2").arg(statusCode).arg(reply->errorString());
-            if (!response.isEmpty()) {
-                *errorString += QStringLiteral(" | ") + QString::fromUtf8(response.left(500));
+    // 有 HTTP 状态码说明服务器收到了请求，先按状态码判断
+    if (statusCode > 0) {
+        if (statusCode == 401) {
+            if (errorString) {
+                QString detail = QStringLiteral("HTTP 401: API Key 无效，请检查密钥是否正确");
+                const QJsonDocument doc = QJsonDocument::fromJson(body);
+                if (!doc.isNull()) {
+                    const QString msg = doc.object()
+                        .value(QStringLiteral("error")).toObject()
+                        .value(QStringLiteral("message")).toString();
+                    if (!msg.isEmpty()) detail = QStringLiteral("HTTP 401: ") + msg;
+                }
+                *errorString = detail;
             }
+            return false;
         }
-        return false;
+        if (statusCode == 403) {
+            if (errorString)
+                *errorString = QStringLiteral("HTTP 403: 访问被拒绝，请检查账户余额或 IP 白名单");
+            return false;
+        }
+        // 其余任何状态码（200、400、404、5xx）都说明连通性正常
+        return true;
     }
 
-    // 检查是否返回 401/403（认证问题）
-    if (statusCode == 401 || statusCode == 403) {
-        if (errorString) {
-            *errorString = QStringLiteral("HTTP %1: 认证失败，请检查 API Key 是否正确").arg(statusCode);
-        }
+    // statusCode == 0：纯网络层错误（DNS 失败、连接被拒、超时等）
+    if (netErr != QNetworkReply::NoError) {
+        if (errorString) *errorString = replyErrStr;
         return false;
     }
 

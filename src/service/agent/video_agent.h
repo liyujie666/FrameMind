@@ -109,6 +109,7 @@ private:
     bool     m_busy = false;
     QString  m_currentConvId;
     QString  m_currentQuestion;
+    int64_t  m_currentPlayerPosMs = 0;
     QVector<RetrievalResult> m_retrievedEvidence;
 
     // 回调

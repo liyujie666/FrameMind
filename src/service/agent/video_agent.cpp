@@ -11,6 +11,70 @@
 #include "model/video_representation.h"
 
 #include <QDebug>
+#include <QJsonObject>
+#include <QRegularExpression>
+
+namespace {
+
+/// 判断问题是否属于播放器操作意图（seek/play/pause）
+/// 用于跳过 QA 缓存、强制 tool_choice
+bool isPlayerOp(const QString& question)
+{
+    static const QRegularExpression re(
+        QStringLiteral(
+            "\\b(seek|跳转|跳到|播放|暂停|play|pause|快进|快退|"
+            "定位|跳|go\\s*to|jump\\s*to)\\b"),
+        QRegularExpression::CaseInsensitiveOption);
+    return re.match(question).hasMatch();
+}
+
+QString formatMs(int64_t ms)
+{
+    const int h = static_cast<int>(ms / 3600000);
+    const int m = static_cast<int>((ms % 3600000) / 60000);
+    const int sec = static_cast<int>((ms % 60000) / 1000);
+    if (h > 0)
+        return QStringLiteral("%1:%2:%3")
+                   .arg(h)
+                   .arg(m, 2, 10, QChar('0'))
+                   .arg(sec, 2, 10, QChar('0'));
+    return QStringLiteral("%1:%2").arg(m).arg(sec, 2, 10, QChar('0'));
+}
+
+QString hitPathLabel(const QString& hitPath)
+{
+    if (hitPath == QLatin1String("visual")) return QStringLiteral("视觉检索");
+    if (hitPath == QLatin1String("text")) return QStringLiteral("文本/语音");
+    if (hitPath == QLatin1String("entity")) return QStringLiteral("实体");
+    if (hitPath == QLatin1String("qa_cache")) return QStringLiteral("历史问答");
+    return hitPath;
+}
+
+QString formatRetrievalEvidence(const QVector<RetrievalResult>& evidence)
+{
+    if (evidence.isEmpty()) return {};
+    QString out;
+    int idx = 1;
+    for (const RetrievalResult& r : evidence) {
+        const VideoChunk& c = r.chunk;
+        out += QString::fromUtf8("## 证据 %1\n").arg(idx);
+        out += QString::fromUtf8("时间范围：%1 - %2\n")
+                   .arg(formatMs(c.startMs), formatMs(c.endMs));
+        out += QString::fromUtf8("来源：%1（相似度 %2）\n")
+                   .arg(hitPathLabel(r.hitPath))
+                   .arg(r.score, 0, 'f', 2);
+        const QVariant sceneVar = c.metadata.value(QStringLiteral("scene_id"));
+        if (sceneVar.isValid()) {
+            out += QString::fromUtf8("场景 ID：%1\n").arg(sceneVar.toInt());
+        }
+        if (!c.textContent.isEmpty())
+            out += QString::fromUtf8("相关内容：%1\n\n").arg(c.textContent.left(200));
+        ++idx;
+    }
+    return out;
+}
+
+} // namespace
 
 VideoAgent::VideoAgent(AgentService*          agent,
                         VideoAnalysisService*  analysis,
@@ -65,6 +129,7 @@ void VideoAgent::ask(const QString& conversationId,
     m_busy = true;
     m_currentConvId = conversationId;
     m_currentQuestion = question;
+    m_currentPlayerPosMs = currentPlayerPosMs;
     m_retrievedEvidence.clear();
     m_onProgress = std::move(onProgress);
     m_onDone     = std::move(onDone);
@@ -73,7 +138,9 @@ void VideoAgent::ask(const QString& conversationId,
     emit stageChanged(QStringLiteral("PERCEIVE"));
 
     // === 快速路径：QA 缓存命中 ===
-    if (m_qaCache && !m_activeVideoId.isEmpty()) {
+    // 播放器操作（seek/play/pause）必须每次真正执行，不走缓存
+    const bool playerOp = isPlayerOp(question);
+    if (!playerOp && m_qaCache && !m_activeVideoId.isEmpty()) {
         auto cached = m_qaCache->tryAnswer(m_activeVideoId, question);
         if (cached) {
             AgentAnswer ans;
@@ -100,6 +167,9 @@ void VideoAgent::ask(const QString& conversationId,
         VideoRAGRetriever::Constraints c;
         c.videoId = m_activeVideoId;
         m_retrievedEvidence = m_retriever->retrieve(question, c, 5);
+        qDebug() << "[VideoAgent] RAG retrieve"
+                 << "videoId=" << m_activeVideoId
+                 << "hits=" << m_retrievedEvidence.size();
     }
 
     // === REASON + ACT: 通过 ToolOrchestrator 让 LLM 决定是否调工具 ===
@@ -142,15 +212,30 @@ void VideoAgent::phaseReasonAndAct(const QString& convId,
     }
     emit stageChanged(QStringLiteral("REASON+ACT"));
 
-    m_orchestrator->runQuery(convId, question, userFrames, ctx,
-        // onProgress: 增量文本
+    VideoContext enrichedCtx = ctx;
+    enrichedCtx.retrievalEvidence = formatRetrievalEvidence(m_retrievedEvidence);
+    enrichedCtx.currentPositionMs = m_currentPlayerPosMs;
+    qDebug() << "[VideoAgent] inject context"
+             << "evidenceChars=" << enrichedCtx.retrievalEvidence.size()
+             << "sceneOverviewChars=" << enrichedCtx.sceneOverview.size();
+
+    // 播放器操作强制指定 tool_choice，防止 LM 绕过工具直接输出文字
+    QJsonValue toolChoice = QJsonValue(QStringLiteral("auto"));
+    if (isPlayerOp(question)) {
+        toolChoice = QJsonObject{
+            { QStringLiteral("type"), QStringLiteral("function") },
+            { QStringLiteral("function"),
+              QJsonObject{{ QStringLiteral("name"),
+                            QStringLiteral("control_player") }} }
+        };
+    }
+
+    m_orchestrator->runQuery(convId, question, userFrames, enrichedCtx,
         [this](const QString& delta) {
             if (m_onProgress) m_onProgress(delta);
         },
-        // onDone: LLM 完整回答 + 工具调用踪迹
         [this](const QString& answer,
                 const QVector<ToolResult>& toolTrace, int rounds) {
-            // === REFLECT ===
             emit stageChanged(QStringLiteral("REFLECT"));
             phaseReflect(answer, toolTrace);
 
@@ -162,7 +247,6 @@ void VideoAgent::phaseReasonAndAct(const QString& convId,
             result.evidence       = m_retrievedEvidence;
             for (const auto& t : toolTrace) result.toolCallsTrace.append(t.toolName);
 
-            // 反思置信度
             if (m_reflection) {
                 auto repr = m_analysis ? m_analysis->representation(m_activeVideoPath)
                                           : QSharedPointer<VideoRepresentation>();
@@ -173,8 +257,10 @@ void VideoAgent::phaseReasonAndAct(const QString& convId,
                 result.confidence = 0.8f;
             }
 
-            // 缓存 QA
-            if (m_qaCache && !m_activeVideoId.isEmpty() && result.confidence >= 0.6f) {
+            // 缓存 QA（播放器操作不缓存，避免后续相似问题命中缓存而跳过工具执行）
+            if (!isPlayerOp(m_currentQuestion)
+                && m_qaCache && !m_activeVideoId.isEmpty()
+                && result.confidence >= 0.6f) {
                 m_qaCache->cache(m_activeVideoId,
                                   m_currentQuestion, answer,
                                   result.confidence);
@@ -182,8 +268,8 @@ void VideoAgent::phaseReasonAndAct(const QString& convId,
 
             finishAnswer(result);
         },
-        // onError
-        [this](const QString& err) { failWith(err); });
+        [this](const QString& err) { failWith(err); },
+        toolChoice);
 }
 
 void VideoAgent::phaseReflect(const QString& /*answer*/,

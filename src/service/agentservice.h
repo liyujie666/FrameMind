@@ -57,7 +57,8 @@ public:
                                 const QString& text,
                                 const QList<QImage>& frames,
                                 const VideoContext& videoCtx,
-                                const QJsonArray& tools);
+                                const QJsonArray& tools,
+                                const QJsonValue& toolChoice = QStringLiteral("auto"));
 
     /**
      * 把已有的 tool 结果作为 role=tool 消息回填并继续下一轮 LLM 请求

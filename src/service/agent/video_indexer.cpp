@@ -14,10 +14,10 @@
 #endif
 
 #include <QCryptographicHash>
+#include <QDir>
 #include <QFile>
 #include <QFileInfo>
-#include <QUuid>
-#include <QtConcurrent>
+#include <QStandardPaths>
 #include <QMutexLocker>
 #include <QDebug>
 
@@ -86,17 +86,26 @@ QString VideoIndexer::computeVideoId(const QString& videoPath)
 
 void VideoIndexer::startIndex(const QString& videoPath)
 {
-    if (m_running && m_currentPath == videoPath) return;
+    if (videoPath.isEmpty() || !QFileInfo::exists(videoPath)) {
+        emit indexError(StageMetadata, tr("视频文件不存在: %1").arg(videoPath));
+        return;
+    }
 
-    // 内存缓存命中：repr 已完成 Level1 索引，直接复用，无需重跑流水线
     {
         QMutexLocker l(&m_reprMutex);
+        if (m_running.load() && m_currentPath == videoPath) return;
+
         auto it = m_repr.find(videoPath);
         if (it != m_repr.end() && it.value()
                 && it.value()->level >= VideoRepresentation::Level1) {
             auto cached = it.value();
             l.unlock();
-            m_currentPath = videoPath;
+            cancel();
+            {
+                QMutexLocker currentLock(&m_reprMutex);
+                m_currentPath = videoPath;
+                m_currentVideoId = cached->videoId;
+            }
             emit progress(100, StageDone, tr("索引完成 (缓存命中)"));
             emit levelReady(0, cached);
             emit levelReady(1, cached);
@@ -107,43 +116,95 @@ void VideoIndexer::startIndex(const QString& videoPath)
 
     cancel();
 
-    m_running = true;
-    m_cancelRequested = false;
-    m_currentPath = videoPath;
+    const QString videoId = computeVideoId(videoPath);
+    const quint64 taskId = m_taskGeneration.fetch_add(1) + 1;
+    m_cancelRequested.store(false);
+    m_running.store(true);
+    {
+        QMutexLocker l(&m_reprMutex);
+        m_currentPath = videoPath;
+        m_currentVideoId = videoId;
+    }
 
-    // 立即在工作线程运行 Level 0 + Level 1
-    QtConcurrent::run(&m_pool, [this, videoPath]() {
-        // Level 0
+    VideoInfo initialInfo;
+    if (m_player) {
+        const VideoInfo activeInfo = m_player->videoInfo();
+        const QString requested = QFileInfo(videoPath).canonicalFilePath();
+        const QString active = QFileInfo(activeInfo.filePath).canonicalFilePath();
+        if (!requested.isEmpty() && requested == active) initialInfo = activeInfo;
+    }
+
+    if (m_ragStore) {
+        m_ragStore->invalidateVideo(videoId);
+    }
+
+    m_pool.start([this, videoPath, videoId, taskId, initialInfo]() {
+        auto finishIfCurrent = [this, taskId, videoId]() {
+            if (isTaskCurrent(taskId, videoId)) m_running.store(false);
+        };
+
         auto repr = QSharedPointer<VideoRepresentation>::create();
-        repr->videoId = computeVideoId(videoPath);
+        repr->videoId = videoId;
+        repr->metadata = initialInfo;
         repr->metadata.filePath = videoPath;
         repr->metadata.fileName = QFileInfo(videoPath).fileName();
 
-        buildLevel0(repr, videoPath);
-        if (m_cancelRequested) { m_running = false; return; }
+        if (!isTaskCurrent(taskId, videoId)) {
+            finishIfCurrent();
+            return;
+        }
+
+        buildLevel0(repr, videoPath, taskId);
+        if (!isTaskCurrent(taskId, videoId)) {
+            finishIfCurrent();
+            return;
+        }
 
         {
             QMutexLocker l(&m_reprMutex);
+            if (m_cancelRequested.load()
+                    || m_taskGeneration.load() != taskId
+                    || m_currentVideoId != videoId) {
+                return;
+            }
             m_repr[videoPath] = repr;
         }
         emit levelReady(0, repr);
 
-        // Level 1
-        buildLevel1(repr, videoPath);
-        if (m_cancelRequested) { m_running = false; return; }
+        buildLevel1(repr, videoPath, taskId);
+        if (!isTaskCurrent(taskId, videoId)) {
+            finishIfCurrent();
+            return;
+        }
         emit levelReady(1, repr);
 
-        // Level 2 交由 VideoAnalysisService 负责（需要 VLM）
-        // 索引器本身只到 Level 1 结束
-        emit progress(100, StageDone, tr("索引完成 (Level 1)"));
+        const int visualCount = m_ragStore
+            ? m_ragStore->listChunks(VideoRAGStore::VisualFrames, videoId).size() : 0;
+        const int textCount = m_ragStore
+            ? m_ragStore->listChunks(VideoRAGStore::TextSegments, videoId).size() : 0;
+        qDebug() << "[VideoIndexer] chunk 核对 | videoId:" << videoId
+                 << "| visual:" << visualCount << "| text:" << textCount;
+
+        emit progress(100, StageDone,
+                      tr("索引完成 (Level 1，视觉 %1 / 文本 %2)")
+                          .arg(visualCount).arg(textCount));
         emit indexCompleted(repr);
-        m_running = false;
+        finishIfCurrent();
     });
 }
 
 void VideoIndexer::cancel()
 {
-    m_cancelRequested = true;
+    m_cancelRequested.store(true);
+    m_taskGeneration.fetch_add(1);
+    m_running.store(false);
+}
+
+bool VideoIndexer::isTaskCurrent(quint64 taskId, const QString& videoId) const
+{
+    if (m_cancelRequested.load() || m_taskGeneration.load() != taskId) return false;
+    QMutexLocker l(&m_reprMutex);
+    return m_currentVideoId == videoId;
 }
 
 QSharedPointer<VideoRepresentation> VideoIndexer::representation(
@@ -161,21 +222,17 @@ QSharedPointer<VideoRepresentation> VideoIndexer::representation(
 // ============================================================
 
 void VideoIndexer::buildLevel0(QSharedPointer<VideoRepresentation> repr,
-                               const QString& videoPath)
+                               const QString& videoPath,
+                               quint64 taskId)
 {
     emit progress(0, StageMetadata, tr("解析视频元信息"));
 
-    // metadata 通常在 PlayerService open 之后可用；此处允许调用方在 open 后触发。
-    // 对齐架构：从 player 拉当前 videoInfo（可能字段不全，容忍）
-    if (m_player) {
-        const VideoInfo info = m_player->videoInfo();
-        if (info.durationMs > 0) repr->metadata = info;
-        repr->metadata.filePath = videoPath;   // 保证路径存在
-        repr->metadata.fileName = QFileInfo(videoPath).fileName();
-    }
+    // metadata 在任务启动时按目标路径快照；播放器后续切换不会覆盖它。
+    repr->metadata.filePath = videoPath;
+    repr->metadata.fileName = QFileInfo(videoPath).fileName();
 
     emit progress(10, StageSceneSplit, tr("场景分割"));
-    if (m_cancelRequested) return;
+    if (!isTaskCurrent(taskId, repr->videoId)) return;
 
     // 根据是否有 TransNetV2 决定采样密度
     const bool useTransNet = m_sceneDet && m_sceneDet->isUsingTransNet();
@@ -185,7 +242,8 @@ void VideoIndexer::buildLevel0(QSharedPointer<VideoRepresentation> repr,
              << "| 模式:" << (useTransNet ? "TransNetV2 (1fps)" : "直方图 (稀疏)");
     QVector<int64_t> timestamps;
     QVector<QImage> frames = sampleFrames(
-        videoPath, repr->metadata.durationMs, sampleCount, &timestamps);
+        videoPath, repr->metadata.durationMs, sampleCount, &timestamps,
+        taskId, repr->videoId);
 
     if (m_sceneDet && !frames.isEmpty()) {
         repr->scenes = m_sceneDet->detectScenes(frames, timestamps);
@@ -194,10 +252,17 @@ void VideoIndexer::buildLevel0(QSharedPointer<VideoRepresentation> repr,
         single.id = 0;
         single.startMs = 0;
         single.endMs   = repr->metadata.durationMs;
-        single.keyframeMs = repr->metadata.durationMs / 2;
+        single.keyframeMs = timestamps.isEmpty()
+            ? repr->metadata.durationMs / 2 : timestamps.first();
         if (!frames.isEmpty()) single.keyframe = frames.first();
         repr->scenes.append(single);
     }
+
+    if (!isTaskCurrent(taskId, repr->videoId)) return;
+
+    const int savedKeyframes = persistKeyframes(repr);
+    qDebug() << "[VideoIndexer] 关键帧落盘 | videoId:" << repr->videoId
+             << "| saved:" << savedKeyframes << "/" << repr->scenes.size();
 
     repr->level = VideoRepresentation::Level0;
     emit progress(30, StageSceneSplit,
@@ -209,7 +274,8 @@ void VideoIndexer::buildLevel0(QSharedPointer<VideoRepresentation> repr,
 // ============================================================
 
 void VideoIndexer::buildLevel1(QSharedPointer<VideoRepresentation> repr,
-                               const QString& videoPath)
+                               const QString& videoPath,
+                               quint64 taskId)
 {
     qDebug() << "[VideoIndexer] buildLevel1 开始 | scenes:"
              << repr->scenes.size();
@@ -225,28 +291,44 @@ void VideoIndexer::buildLevel1(QSharedPointer<VideoRepresentation> repr,
         emit progress(40, StageKeyframeEncode, tr("编码关键帧 CLIP 向量"));
 
         std::vector<QImage> keyframes;
+        QVector<int> keyframeSceneIndexes;
         keyframes.reserve(repr->scenes.size());
-        for (const Scene& s : repr->scenes) {
-            if (!s.keyframe.isNull()) keyframes.push_back(s.keyframe);
+        keyframeSceneIndexes.reserve(repr->scenes.size());
+        for (int sceneIndex = 0; sceneIndex < repr->scenes.size(); ++sceneIndex) {
+            if (!isTaskCurrent(taskId, repr->videoId)) return;
+            const Scene& scene = repr->scenes[sceneIndex];
+            if (!scene.keyframe.isNull()) {
+                keyframes.push_back(scene.keyframe);
+                keyframeSceneIndexes.append(sceneIndex);
+            }
         }
 
         if (!keyframes.empty()) {
             const auto embeddings = m_clip->encodeImages(keyframes);
             // 写入 RAG store: visual_frames
-            for (int i = 0; i < repr->scenes.size() && i < static_cast<int>(embeddings.size()); ++i) {
-                if (m_cancelRequested) return;
-                const Scene& s = repr->scenes[i];
+            const int embeddingCount = qMin(
+                keyframeSceneIndexes.size(), static_cast<int>(embeddings.size()));
+            for (int embeddingIndex = 0; embeddingIndex < embeddingCount; ++embeddingIndex) {
+                if (!isTaskCurrent(taskId, repr->videoId)) return;
+                const Scene& s = repr->scenes[keyframeSceneIndexes[embeddingIndex]];
 
                 VideoChunk c;
-                c.chunkId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+                c.chunkId = makeChunkId(
+                    repr->videoId, VideoChunk::FrameDesc,
+                    s.startMs, s.endMs, QString::number(s.id));
                 c.videoId = repr->videoId;
                 c.startMs = s.startMs;
                 c.endMs   = s.endMs;
                 c.chunkType = VideoChunk::FrameDesc;
                 c.textContent = tr("场景 %1 关键帧").arg(s.id);
-                c.frameEmbedding = embeddings[i];
+                c.frameEmbedding = embeddings[embeddingIndex];
                 c.keyframePath = s.keyframePath;
                 c.metadata.insert(QStringLiteral("scene_id"), s.id);
+                c.metadata.insert(QStringLiteral("keyframe_ms"),
+                                  static_cast<qlonglong>(s.keyframeMs));
+                c.metadata.insert(QStringLiteral("image_width"), s.keyframe.width());
+                c.metadata.insert(QStringLiteral("image_height"), s.keyframe.height());
+                c.metadata.insert(QStringLiteral("index_version"), 1);
                 c.metadata.insert(QStringLiteral("file_path"), repr->metadata.filePath);
 
                 if (m_ragStore) {
@@ -274,14 +356,18 @@ void VideoIndexer::buildLevel1(QSharedPointer<VideoRepresentation> repr,
         });
 
         auto pcmData = decoder.decodeToFloat32(videoPath);
-        if (!pcmData.empty() && !m_cancelRequested) {
+        if (!pcmData.empty() && isTaskCurrent(taskId, repr->videoId)) {
             emit progress(85, StageTranscribe, tr("Whisper 转写中..."));
             repr->speechSegments = m_whisper->transcribe(pcmData);
 
             if (m_ragStore) {
-                for (const auto& seg : repr->speechSegments) {
+                for (int segIndex = 0; segIndex < repr->speechSegments.size(); ++segIndex) {
+                    if (!isTaskCurrent(taskId, repr->videoId)) return;
+                    const auto& seg = repr->speechSegments[segIndex];
                     VideoChunk c;
-                    c.chunkId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+                    c.chunkId = makeChunkId(
+                        repr->videoId, VideoChunk::SpeechSegment,
+                        seg.startMs, seg.endMs, QString::number(segIndex));
                     c.videoId = repr->videoId;
                     c.startMs = seg.startMs;
                     c.endMs   = seg.endMs;
@@ -306,6 +392,10 @@ void VideoIndexer::buildLevel1(QSharedPointer<VideoRepresentation> repr,
     }
 #endif
 
+    if (!isTaskCurrent(taskId, repr->videoId)) return;
+    for (Scene& scene : repr->scenes) {
+        scene.keyframe = QImage();
+    }
     repr->level = VideoRepresentation::Level1;
     qDebug() << "[VideoIndexer] buildLevel1 完成";
     emit progress(90, StageKeyframeEncode, tr("索引 Level 1 完成"));
@@ -323,19 +413,21 @@ void VideoIndexer::buildLevel2Async(QSharedPointer<VideoRepresentation> /*repr*/
 
 QVector<QImage> VideoIndexer::sampleFrames(const QString& videoPath,
                                             int64_t durationMs, int count,
-                                            QVector<int64_t>* outTimestamps)
+                                            QVector<int64_t>* outTimestamps,
+                                            quint64 taskId,
+                                            const QString& videoId)
 {
-    (void)videoPath;
     QVector<QImage> frames;
-    if (!m_player || durationMs <= 0 || count <= 0) return frames;
+    if (!m_player || videoPath.isEmpty() || durationMs <= 0 || count <= 0) return frames;
 
     frames.reserve(count);
     for (int i = 0; i < count; ++i) {
-        if (m_cancelRequested) break;
+        if (!isTaskCurrent(taskId, videoId)) break;
         const int64_t ts = static_cast<int64_t>(
             (static_cast<double>(i) + 0.5) / count * durationMs);
-        auto future = m_player->captureFrameAt(ts, 2000);
+        auto future = m_player->captureFrameAt(videoPath, ts, 2000);
         future.waitForFinished();
+        if (!isTaskCurrent(taskId, videoId)) break;
         if (future.resultCount() > 0) {
             const QImage img = future.result();
             if (!img.isNull()) {
@@ -345,6 +437,60 @@ QVector<QImage> VideoIndexer::sampleFrames(const QString& videoPath,
         }
     }
     return frames;
+}
+
+int VideoIndexer::persistKeyframes(QSharedPointer<VideoRepresentation> repr)
+{
+    if (!repr || repr->videoId.isEmpty()) return 0;
+
+    QString appData = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    if (appData.isEmpty()) {
+        appData = QStandardPaths::writableLocation(QStandardPaths::TempLocation)
+                  + QStringLiteral("/FrameMind");
+    }
+    const QString dirPath = appData + QStringLiteral("/keyframes/") + repr->videoId;
+    QDir keyframeDir(dirPath);
+    if (keyframeDir.exists() && !keyframeDir.removeRecursively()) {
+        qWarning() << "[VideoIndexer] 无法清理旧关键帧目录:" << dirPath;
+        return 0;
+    }
+    if (!QDir().mkpath(dirPath)) {
+        qWarning() << "[VideoIndexer] 无法创建关键帧目录:" << dirPath;
+        return 0;
+    }
+
+    int saved = 0;
+    for (Scene& scene : repr->scenes) {
+        if (m_cancelRequested.load() || scene.keyframe.isNull()) break;
+        const QString fileName = QStringLiteral("scene_%1_%2.jpg")
+                                     .arg(scene.id)
+                                     .arg(scene.keyframeMs);
+        const QString path = QDir(dirPath).filePath(fileName);
+        if (scene.keyframe.save(path, "JPG", 85)) {
+            scene.keyframePath = path;
+            ++saved;
+        } else {
+            qWarning() << "[VideoIndexer] 关键帧保存失败:" << path;
+        }
+    }
+    return saved;
+}
+
+QString VideoIndexer::makeChunkId(const QString& videoId,
+                                            VideoChunk::ChunkType chunkType,
+                                            int64_t startMs,
+                                            int64_t endMs,
+                                            const QString& discriminator)
+{
+    const QByteArray identity = QStringLiteral("%1|%2|%3|%4|%5|v1")
+                                    .arg(videoId)
+                                    .arg(static_cast<int>(chunkType))
+                                    .arg(startMs)
+                                    .arg(endMs)
+                                    .arg(discriminator)
+                                    .toUtf8();
+    return QString::fromLatin1(
+        QCryptographicHash::hash(identity, QCryptographicHash::Sha1).toHex());
 }
 
 void VideoIndexer::writeChunksToStore(const VideoRepresentation& repr)
@@ -359,7 +505,9 @@ void VideoIndexer::writeChunksToStore(const VideoRepresentation& repr)
         if (!s.isValid() || desc.isEmpty()) continue;
 
         VideoChunk c;
-        c.chunkId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        c.chunkId = makeChunkId(
+            repr.videoId, VideoChunk::SceneSummary,
+            s.startMs, s.endMs, QString::number(sceneId));
         c.videoId = repr.videoId;
         c.startMs = s.startMs;
         c.endMs   = s.endMs;
@@ -370,9 +518,12 @@ void VideoIndexer::writeChunksToStore(const VideoRepresentation& repr)
     }
 
     // 语音段
-    for (const auto& seg : repr.speechSegments) {
+    for (int segIndex = 0; segIndex < repr.speechSegments.size(); ++segIndex) {
+        const auto& seg = repr.speechSegments[segIndex];
         VideoChunk c;
-        c.chunkId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        c.chunkId = makeChunkId(
+            repr.videoId, VideoChunk::SpeechSegment,
+            seg.startMs, seg.endMs, QString::number(segIndex));
         c.videoId = repr.videoId;
         c.startMs = seg.startMs;
         c.endMs   = seg.endMs;

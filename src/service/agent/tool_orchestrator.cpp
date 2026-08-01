@@ -39,10 +39,10 @@ void ToolOrchestrator::runQuery(
     const VideoContext& videoCtx,
     std::function<void(const QString&)> onProgress,
     std::function<void(const QString&, const QVector<ToolResult>&, int)> onDone,
-    std::function<void(const QString&)> onError)
+    std::function<void(const QString&)> onError,
+    const QJsonValue& toolChoice)
 {
     if (m_running) {
-        // 简化：正在跑则拒绝新的
         if (onError) onError(QStringLiteral("Agent 正在执行，请稍后"));
         return;
     }
@@ -56,6 +56,7 @@ void ToolOrchestrator::runQuery(
     m_question   = question;
     m_userFrames = userFrames;
     m_videoCtx   = videoCtx;
+    m_toolChoice = toolChoice;
     m_currentRound = 0;
     m_totalToolCalls = 0;
     m_streamingText.clear();
@@ -104,9 +105,9 @@ void ToolOrchestrator::startRound(int round)
     emit roundStarted(round);
 
     if (round == 0) {
-        // 首轮：发起带 tools 的初始请求
         m_agent->sendMessageWithTools(m_convId, m_question, m_userFrames,
-                                        m_videoCtx, m_registry->allDefinitions());
+                                        m_videoCtx, m_registry->allDefinitions(),
+                                        m_toolChoice);
     }
     // 后续轮次由 executeToolsThenContinue 触发（在 onAgentFinished 中）
 }

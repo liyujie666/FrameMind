@@ -102,7 +102,9 @@ public:
     // ---- 连接测试 ----
 
     /// 测试指定提供商的连接
-    void testProviderConnection(const QString& providerId);
+    /// @param overrideKey 若非空，使用该 key 而不是从存储读取（测试时避免提前写入）
+    void testProviderConnection(const QString& providerId,
+                                const QString& overrideKey = {});
 
 signals:
     /// 提供商配置变更信号

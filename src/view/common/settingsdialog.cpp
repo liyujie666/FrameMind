@@ -436,9 +436,9 @@ void SettingsDialog::onSaveAiSettings()
         m_providers->setModel(providerId, model);
     }
 
-    // 保存 API Key
+    // 保存 API Key（跳过占位符，避免覆盖已保存的真实 key）
     const QString apiKey = m_apiKeyEdit->text().trimmed();
-    if (!apiKey.isEmpty()) {
+    if (!apiKey.isEmpty() && apiKey != QStringLiteral("********")) {
         m_providers->setApiKey(providerId, apiKey);
     }
 
@@ -551,9 +551,6 @@ void SettingsDialog::onTestConnection()
         return;
     }
 
-    // 先临时保存 API Key
-    m_providers->setApiKey(providerId, keyToTest);
-
     // 更新 UI 状态
     m_connectionTesting = true;
     m_testConnectionBtn->setEnabled(false);
@@ -561,8 +558,8 @@ void SettingsDialog::onTestConnection()
     m_providerStatusLabel->setText(QStringLiteral("正在测试连接..."));
     m_providerStatusLabel->setStyleSheet("color: #2196F3;");
 
-    // 执行测试
-    m_providers->testProviderConnection(providerId);
+    // 直接传入 key 执行测试，不提前写入持久化，避免触发 providerUpdated 信号
+    m_providers->testProviderConnection(providerId, keyToTest);
 }
 
 void SettingsDialog::onConnectionTestResult(const QString& providerId, bool success, const QString& message)

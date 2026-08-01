@@ -205,21 +205,10 @@ void SummaryTabWidget::onSummaryReady(const QString& summary)
 
 void SummaryTabWidget::onSceneDescribed(int sceneId, const QString& description)
 {
-    // 提取 summary 字段
-    QString displayText = description;
-    const int sumIdx = description.indexOf(QStringLiteral("\"summary\""));
-    if (sumIdx >= 0) {
-        const int colon = description.indexOf(QLatin1Char(':'), sumIdx);
-        if (colon >= 0) {
-            const int q1 = description.indexOf(QLatin1Char('"'), colon + 1);
-            const int q2 = description.indexOf(QLatin1Char('"'), q1 + 1);
-            if (q1 >= 0 && q2 > q1)
-                displayText = description.mid(q1 + 1, q2 - q1 - 1);
-        }
-    }
+    if (description.trimmed().isEmpty()) return;
 
     m_emptyLabel->hide();
-    addSceneDescEntry(sceneId, displayText);
+    addSceneDescEntry(sceneId, description.trimmed());
     m_scenesSection->show();
 }
 

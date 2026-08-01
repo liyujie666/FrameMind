@@ -99,6 +99,7 @@ QVector<Scene> SceneDetector::detectScenes(
         s.id = 0;
         s.startMs = timestampsMs[0];
         s.endMs = timestampsMs[0] + 1000;
+        s.keyframeMs = timestampsMs[0];
         s.keyframe = frames[0];
         scenes.append(s);
         return scenes;
@@ -137,6 +138,7 @@ QVector<Scene> SceneDetector::detectScenes(
             s.id       = currentSceneId++;
             s.startMs  = timestampsMs[sceneStartIdx];
             s.endMs    = timestampsMs[i + 1];
+            s.keyframeMs = timestampsMs[sceneStartIdx];
             s.keyframe = frames[sceneStartIdx];
             scenes.append(s);
 
@@ -151,6 +153,7 @@ QVector<Scene> SceneDetector::detectScenes(
         s.id       = currentSceneId;
         s.startMs  = timestampsMs[sceneStartIdx];
         s.endMs    = timestampsMs.last() + 1000;
+        s.keyframeMs = timestampsMs[sceneStartIdx];
         s.keyframe = frames[sceneStartIdx];
         scenes.append(s);
     }

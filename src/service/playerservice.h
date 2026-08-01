@@ -46,6 +46,11 @@ public:
      */
     QFuture<QImage> captureFrameAt(int64_t posMs, int timeoutMs = 2000);
 
+    /// 从指定视频文件截取帧，不依赖当前播放器打开的媒体。
+    QFuture<QImage> captureFrameAt(const QString& videoPath,
+                                   int64_t posMs,
+                                   int timeoutMs = 2000);
+
     /// 同步获取当前已缓存的最近一帧（不触发 seek），可能为空
     QImage lastDecodedFrame() const;
 

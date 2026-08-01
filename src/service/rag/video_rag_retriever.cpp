@@ -113,6 +113,13 @@ QVector<RetrievalResult> VideoRAGRetriever::textPathSearch(
         r.chunk = chunk;
         r.score = sim;
         r.hitPath = QStringLiteral("text");
+        if (!chunk.keyframePath.isEmpty()) {
+            QImage image(chunk.keyframePath);
+            if (!image.isNull()) {
+                r.keyframeThumb = image.scaled(
+                    320, 180, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+            }
+        }
         out.append(r);
     }
 #else
@@ -140,6 +147,13 @@ QVector<RetrievalResult> VideoRAGRetriever::visualPathSearch(
         r.chunk = chunk;
         r.score = sim;
         r.hitPath = QStringLiteral("visual");
+        if (!chunk.keyframePath.isEmpty()) {
+            QImage image(chunk.keyframePath);
+            if (!image.isNull()) {
+                r.keyframeThumb = image.scaled(
+                    320, 180, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+            }
+        }
         out.append(r);
     }
 #else

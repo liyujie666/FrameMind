@@ -8,9 +8,11 @@
 #include <QMutex>
 #include <QSharedPointer>
 #include <QVector>
+#include <atomic>
 #include <memory>
 
 #include "model/video_representation.h"
+#include "model/retrieval_result.h"
 
 class PlayerService;
 class SceneDetector;
@@ -74,11 +76,18 @@ public:
     void cancel();
 
     /// 是否有正在运行的索引任务
-    bool isRunning() const { return m_running; }
+    bool isRunning() const { return m_running.load(); }
 
     /// 获取当前视频的表示（可能未完成）
     /// 若 videoPath 为空，返回最近一次
     QSharedPointer<VideoRepresentation> representation(const QString& videoPath = {}) const;
+
+    /// 计算确定性 chunk ID，供各索引阶段幂等写入。
+    static QString makeChunkId(const QString& videoId,
+                               VideoChunk::ChunkType chunkType,
+                               int64_t startMs,
+                               int64_t endMs,
+                               const QString& discriminator = {});
 
     /// 根据文件路径计算稳定 videoId（size + 头 1MB hash）
     static QString computeVideoId(const QString& videoPath);
@@ -98,14 +107,23 @@ signals:
 
 private:
     /// 各级构建函数（在工作线程执行）
-    void buildLevel0(QSharedPointer<VideoRepresentation> repr, const QString& videoPath);
-    void buildLevel1(QSharedPointer<VideoRepresentation> repr, const QString& videoPath);
+    void buildLevel0(QSharedPointer<VideoRepresentation> repr,
+                     const QString& videoPath, quint64 taskId);
+    void buildLevel1(QSharedPointer<VideoRepresentation> repr,
+                     const QString& videoPath, quint64 taskId);
     void buildLevel2Async(QSharedPointer<VideoRepresentation> repr);
 
     /// 从 PlayerService 按均匀采样抽帧（同步等待 captureFrameAt future）
     QVector<QImage> sampleFrames(const QString& videoPath,
                                   int64_t durationMs, int count,
-                                  QVector<int64_t>* outTimestamps);
+                                  QVector<int64_t>* outTimestamps,
+                                  quint64 taskId,
+                                  const QString& videoId);
+
+    /// 将关键帧持久化到 AppData/keyframes/<videoId>/，返回成功数量
+    int persistKeyframes(QSharedPointer<VideoRepresentation> repr);
+
+    bool isTaskCurrent(quint64 taskId, const QString& videoId) const;
 
     /// 将场景/语音段写入 RAG 存储
     void writeChunksToStore(const VideoRepresentation& repr);
@@ -118,13 +136,15 @@ private:
     WhisperService*   m_whisper    = nullptr;
 
     QThreadPool m_pool;
-    bool        m_running = false;
-    bool        m_cancelRequested = false;
+    std::atomic_bool m_running{false};
+    std::atomic_bool m_cancelRequested{false};
+    std::atomic<quint64> m_taskGeneration{0};
 
     // 记录已加载 / 正在加载的视频
     mutable QMutex m_reprMutex;
     QHash<QString, QSharedPointer<VideoRepresentation>> m_repr; // videoPath → repr
     QString       m_currentPath;
+    QString       m_currentVideoId;
 };
 
 #endif // FRAMEMIND_VIDEO_INDEXER_H

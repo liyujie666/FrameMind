@@ -46,12 +46,7 @@ void VideoAnalysisViewModel::connectServices()
         connect(m_indexer, &VideoIndexer::indexCompleted,
                 this, [this](QSharedPointer<VideoRepresentation> repr) {
             if (!repr || repr->metadata.filePath != m_currentPath) return;
-            m_repr           = repr;
-            m_isIndexing     = false;
-            m_indexPercent   = 100;
-            m_indexStageLabel = tr("索引完成");
-            emit progressChanged(100, m_indexStageLabel);
-            emit indexingChanged(false);
+            m_repr = repr;
         });
     }
 
@@ -67,6 +62,11 @@ void VideoAnalysisViewModel::connectServices()
         connect(m_analysis, &VideoAnalysisService::summaryReady,
                 this, [this](const QString& summary) {
             m_videoSummary = summary;
+            m_isIndexing = false;
+            m_indexPercent = 100;
+            m_indexStageLabel = tr("分析完成");
+            emit progressChanged(100, m_indexStageLabel);
+            emit indexingChanged(false);
             emit summaryReady(summary);
         });
 

@@ -61,7 +61,8 @@ public:
                    std::function<void(const QString& answer,
                                        const QVector<ToolResult>& toolTrace,
                                        int rounds)> onDone,
-                   std::function<void(const QString&)> onError);
+                   std::function<void(const QString&)> onError,
+                   const QJsonValue& toolChoice = QStringLiteral("auto"));
 
     /// 中断当前 Agent 循环
     void cancel();
@@ -100,9 +101,10 @@ private:
 
     int          m_currentRound = 0;
     int          m_totalToolCalls = 0;
-    QString      m_streamingText;      // 最新一轮 LLM 文本增量累积
+    QString      m_streamingText;
     QVector<ToolResult> m_toolTrace;
-    QJsonArray   m_lastAssistantToolCalls;  // 上一轮 LLM 返回的 tool_calls，回填下一轮用
+    QJsonArray   m_lastAssistantToolCalls;
+    QJsonValue   m_toolChoice = QJsonValue(QStringLiteral("auto"));
 
     // 回调
     std::function<void(const QString&)> m_onProgress;

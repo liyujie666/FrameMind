@@ -61,6 +61,7 @@ void ChatViewModel::connectAgent()
 
     connect(m_agentService, &AgentService::responseChunk, this,
             [this](const QString& convId, const QString& delta) {
+                if (m_videoAgentStreaming) return;
                 if (convId != m_currentConversationId || m_assistantRow < 0) return;
                 m_messageModel->appendDeltaSilent(m_assistantRow, delta);
                 m_dirty = true;
@@ -235,6 +236,7 @@ void ChatViewModel::doSend(const QString& text, const QList<QImage>& frames)
 
     if (m_videoAgent && !m_activeVideoPath.isEmpty()) {
         // VideoAgent 五阶段路径：RAG 检索 + Tool Calling
+        m_videoAgentStreaming = true;
         m_videoAgent->ask(
             m_currentConversationId,
             text,
@@ -248,6 +250,7 @@ void ChatViewModel::doSend(const QString& text, const QList<QImage>& frames)
             },
             [this](const AgentAnswer& answer) {
                 // onDone
+                m_videoAgentStreaming = false;
                 m_flushTimer->stop();
                 m_messageModel->updateContent(m_assistantRow, answer.answer);
                 m_messageModel->setStreaming(m_assistantRow, false);
@@ -268,6 +271,7 @@ void ChatViewModel::doSend(const QString& text, const QList<QImage>& frames)
             },
             [this](const QString& err) {
                 // onError
+                m_videoAgentStreaming = false;
                 m_flushTimer->stop();
                 if (m_assistantRow >= 0) {
                     m_messageModel->updateContent(
@@ -331,6 +335,27 @@ void ChatViewModel::onScreenshotForAI(const QImage& frame, int64_t /*ts*/)
 void ChatViewModel::stopGeneration()
 {
     if (!m_streaming) return;
+    if (m_videoAgentStreaming && m_videoAgent) {
+        m_videoAgent->cancel();
+        m_videoAgentStreaming = false;
+        m_flushTimer->stop();
+        if (m_assistantRow >= 0) {
+            m_messageModel->setStreaming(m_assistantRow, false);
+            emit messageUpdated(m_assistantRow);
+            if (m_convService) {
+                ChatMessage saved;
+                saved.id = m_assistantId;
+                saved.role = ChatMessage::Assistant;
+                saved.content = m_messageModel->messageAt(m_assistantRow).content;
+                saved.timestamp = QDateTime::currentDateTime();
+                m_convService->saveMessage(m_currentConversationId, saved);
+            }
+            m_assistantRow = -1;
+        }
+        m_streaming = false;
+        emit streamingChanged(false);
+        return;
+    }
     if (m_agentService) m_agentService->stopGeneration();
     // 最终化由 responseFinished 处理
 }

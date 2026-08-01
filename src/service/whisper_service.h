@@ -70,7 +70,7 @@ signals:
 
 private:
     struct whisper_context* m_ctx = nullptr;
-    QString                 m_language  = QStringLiteral("zh");
+    QString                 m_language  = QStringLiteral("auto");
     bool                    m_greedy    = true;
     int                     m_nThreads  = 4;
 #endif // FRAMEMIND_HAS_WHISPER
