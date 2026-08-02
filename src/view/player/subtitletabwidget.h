@@ -11,6 +11,8 @@ class VideoAnalysisViewModel;
 class QScrollArea;
 class QVBoxLayout;
 class QLabel;
+class QTimer;
+class QEvent;
 
 /**
  * 字幕 Tab：展示 Whisper ASR 转写的语音段列表。
@@ -38,6 +40,9 @@ private slots:
     void onSpeechSegmentsReady(const QVector<SpeechSegment>& segments);
     void onThemeChanged();
 
+protected:
+    bool eventFilter(QObject* obj, QEvent* event) override;
+
 private:
     void buildRows();
     void clearRows();
@@ -58,6 +63,9 @@ private:
     int                     m_currentRow   = -1;
 
     QVector<QWidget*> m_rows;
+
+    bool m_userScrolling = false;
+    QTimer* m_scrollResetTimer = nullptr;
 };
 
 #endif // FRAMEMIND_SUBTITLETABWIDGET_H

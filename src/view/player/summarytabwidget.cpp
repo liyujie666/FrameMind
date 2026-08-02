@@ -57,6 +57,7 @@ SummaryTabWidget::SummaryTabWidget(QWidget* parent)
 
     m_scrollContent = new QWidget(m_scroll);
     m_scrollContent->setAttribute(Qt::WA_StyledBackground, false);
+    m_scrollContent->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     m_contentLayout = new QVBoxLayout(m_scrollContent);
     m_contentLayout->setContentsMargins(0, 4, 6, 4);
     m_contentLayout->setSpacing(12);
@@ -66,9 +67,11 @@ SummaryTabWidget::SummaryTabWidget(QWidget* parent)
     m_emptyLabel = new QLabel(tr("暂无摘要，请先打开视频"), m_scrollContent);
     m_emptyLabel->setAlignment(Qt::AlignCenter);
     m_emptyLabel->setWordWrap(true);
+    m_emptyLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     m_emptyLabel->setStyleSheet(
         "color: #888; font-size: 13px; background: transparent; border: none;");
-    m_contentLayout->addWidget(m_emptyLabel);
+    m_contentLayout->addWidget(m_emptyLabel, 1);
+    m_contentLayout->addStretch(1);
 
     // 全视频摘要（QTextBrowser 支持 Markdown 渲染）
     m_summaryBrowser = new QTextBrowser(m_scrollContent);
@@ -103,7 +106,6 @@ SummaryTabWidget::SummaryTabWidget(QWidget* parent)
     m_scenesLayout->addWidget(scenesTitle);
 
     m_contentLayout->addWidget(m_scenesSection);
-    m_contentLayout->addStretch(1);
 
     m_scroll->setWidget(m_scrollContent);
     root->addWidget(m_scroll, 1);

@@ -13,6 +13,7 @@ class QScrollArea;
 class QVBoxLayout;
 class QLabel;
 class QTimer;
+class QEvent;
 
 /**
  * 时间线 Tab：以卡片列表展示各场景。
@@ -45,6 +46,9 @@ private slots:
     void onSceneDescribed(int sceneId, const QString& description);
     void onSceneFused(int sceneId, const SceneFusion& fusion);
     void onThemeChanged();
+
+protected:
+    bool eventFilter(QObject* obj, QEvent* event) override;
 
 private:
     void buildCards();
