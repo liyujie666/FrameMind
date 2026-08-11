@@ -1,0 +1,56 @@
+{
+  "name": "video_qa",
+  "description": "视频问答工作流：感知→检索→充分性判断→推理→反思→质量门控",
+  "maxIterations": 5,
+  "entry": "perceive",
+  "nodes": [
+    {
+      "id": "perceive",
+      "type": "function",
+      "handler": "PerceptionStrategy::decide",
+      "timeout": 10000
+    },
+    {
+      "id": "retrieve",
+      "type": "function",
+      "handler": "VideoRAGRetriever::retrieve",
+      "timeout": 30000
+    },
+    {
+      "id": "sufficient",
+      "type": "condition",
+      "expression": "sufficiency >= 0.7"
+    },
+    {
+      "id": "reason",
+      "type": "llm",
+      "systemPrompt": "你是一个专业的视频分析助手。请基于提供的视频内容和检索结果，准确回答用户的问题。如果需要更多信息，请使用工具获取。",
+      "enableTools": true,
+      "maxToolRounds": 5,
+      "questionKey": "question",
+      "answerKey": "answer",
+      "timeout": 120000
+    },
+    {
+      "id": "reflect",
+      "type": "function",
+      "handler": "ReflectionEngine::check",
+      "timeout": 15000
+    },
+    {
+      "id": "quality_gate",
+      "type": "condition",
+      "expression": "confidence >= 0.7"
+    }
+  ],
+  "edges": [
+    { "from": "perceive", "to": "retrieve" },
+    { "from": "retrieve", "to": "sufficient" },
+    { "from": "sufficient", "to": "reason", "condition": "true" },
+    { "from": "sufficient", "to": "perceive", "condition": "false" },
+    { "from": "reason", "to": "reflect" },
+    { "from": "reflect", "to": "quality_gate" },
+    { "from": "quality_gate", "to": "__END__", "condition": "true" },
+    { "from": "quality_gate", "to": "reason", "condition": "false" }
+  ]
+}

@@ -8,11 +8,19 @@
 #include "service/rag/video_rag_retriever.h"
 #include "service/rag/qa_cache_manager.h"
 #include "service/rag/entity_tracker.h"
+#include "model/entity_profile.h"
 #include "model/video_representation.h"
+
+#include "service/agent/workflow/workflow_executor.h"
+#include "service/agent/workflow/workflow_factory.h"
+#include "service/agent/workflow/workflow_checkpoint.h"
+#include "service/agent/workflow/workflow_state.h"
 
 #include <QDebug>
 #include <QJsonObject>
 #include <QRegularExpression>
+#include <QUuid>
+#include <limits>
 
 namespace {
 
@@ -144,13 +152,14 @@ void VideoAgent::ask(const QString& conversationId,
     m_currentQuestion = question;
     m_currentPlayerPosMs = currentPlayerPosMs;
     m_retrievedEvidence.clear();
+    m_reflectionRetries = 0;
     m_onProgress = std::move(onProgress);
     m_onDone     = std::move(onDone);
     m_onError    = std::move(onError);
 
     emit stageChanged(QStringLiteral("PERCEIVE"));
 
-    // === 快速路径：QA 缓存命中 ===
+    // ===快速路径：QA 缓存命中 ===
     // 播放器操作（seek/play/pause）必须每次真正执行，不走缓存
     const bool playerOp = isPlayerOp(question);
     if (!playerOp && m_qaCache && !m_activeVideoId.isEmpty()) {
@@ -169,20 +178,76 @@ void VideoAgent::ask(const QString& conversationId,
         }
     }
 
+    // === Workflow 模式（优先） ===
+    if (m_workflowExecutor && m_workflowFactory && !playerOp) {
+        askViaWorkflow(conversationId, question, userFrames, videoCtx, currentPlayerPosMs);
+        return;
+    }
+
     // === PERCEIVE: 感知策略 ===
     QSharedPointer<VideoRepresentation> repr;
     if (m_analysis) repr = m_analysis->representation(m_activeVideoPath);
 
-    phasePerceive(question, repr, currentPlayerPosMs);
+    SamplingPlan samplingPlan;
+    QuestionType questionType = QuestionType::Unknown;
+    if (m_perception) {
+        questionType = m_perception->classifyQuestion(question);
+        samplingPlan = m_perception->decideSampling(question, repr, currentPlayerPosMs);
+        qDebug() << "[VideoAgent] PERCEIVE"
+                 << "qType=" << static_cast<int>(questionType)
+                 << "needPerception=" << samplingPlan.needNewPerception
+                 << "density=" << static_cast<int>(samplingPlan.density)
+                 << "budget=" << samplingPlan.frameBudget
+                 << "ranges=" << samplingPlan.timeRanges.size();
+    }
 
-    // === REPRESENT: RAG 检索作为上下文补充 ===
+    // === REPRESENT: RAG 检索 — 受 PerceptionStrategy 约束 ===
     if (m_retriever && !m_activeVideoId.isEmpty()) {
         VideoRAGRetriever::Constraints c;
         c.videoId = m_activeVideoId;
-        m_retrievedEvidence = m_retriever->retrieve(question, c, 5);
+
+        // P1: 用采样计划的时间范围约束检索
+        if (!samplingPlan.timeRanges.isEmpty()
+            && questionType != QuestionType::GlobalSummary) {
+            // 取采样计划中最大的时间范围作为检索约束
+            int64_t minStart = std::numeric_limits<int64_t>::max();
+            int64_t maxEnd = 0;
+            for (const auto& range : samplingPlan.timeRanges) {
+                minStart = std::min(minStart, range.first);
+                maxEnd = std::max(maxEnd, range.second);
+            }
+            c.startMsGte = minStart;
+            c.endMsLte = maxEnd;
+        }
+
+        // P1: 根据问题类型调整检索数量和路径偏好
+        int topK = 5;
+        switch (questionType) {
+        case QuestionType::CurrentFrame:
+            topK = 3; // 当前帧问题不需要太多检索
+            break;
+        case QuestionType::GlobalSummary:
+            topK = 8; // 全局问题需要更多证据
+            break;
+        case QuestionType::EntityQuery:
+            topK = 6;
+            c.preferPath = QStringLiteral("entity"); // 优先实体路径
+            break;
+        case QuestionType::TemporalLocalization:
+        case QuestionType::CausalReasoning:
+            topK = 6;
+            break;
+        default:
+            topK = 5;
+            break;
+        }
+
+        m_retrievedEvidence = m_retriever->retrieve(question, c, topK);
         qDebug() << "[VideoAgent] RAG retrieve"
                  << "videoId=" << m_activeVideoId
-                 << "hits=" << m_retrievedEvidence.size();
+                 << "hits=" << m_retrievedEvidence.size()
+                 << "qType=" << static_cast<int>(questionType)
+                 << "constrained=" << (!samplingPlan.timeRanges.isEmpty());
     }
 
     // === REASON + ACT: 通过 ToolOrchestrator 让 LLM 决定是否调工具 ===
@@ -228,8 +293,36 @@ void VideoAgent::phaseReasonAndAct(const QString& convId,
     VideoContext enrichedCtx = ctx;
     enrichedCtx.retrievalEvidence = formatRetrievalEvidence(m_retrievedEvidence);
     enrichedCtx.currentPositionMs = m_currentPlayerPosMs;
+
+    // === P2: 实体档案显式注入 ===
+    if (m_entities && !m_activeVideoId.isEmpty()) {
+        const auto entities = m_entities->listEntities(m_activeVideoId);
+        if (!entities.isEmpty()) {
+            QString entityText;
+            int idx = 1;
+            for (const auto& e : entities) {
+                entityText += QStringLiteral("## 实体 %1: %2\n")
+                                  .arg(idx).arg(e.primaryDescription.left(100));
+                entityText += QStringLiteral("- 类型: %1\n")
+                                  .arg(e.type == EntityProfile::Person
+                                           ? QStringLiteral("人物")
+                                           : e.type == EntityProfile::Object
+                                                 ? QStringLiteral("物体")
+                                                 : QStringLiteral("其他"));
+                if (!e.aliases.isEmpty())
+                    entityText += QStringLiteral("- 别名: %1\n")
+                                      .arg(e.aliases.join(QStringLiteral(", ")));
+                entityText += QStringLiteral("- 出现次数: %1\n\n").arg(e.appearances.size());
+                ++idx;
+                if (idx > 10) break; // 最多注入 10 个实体
+            }
+            enrichedCtx.entityContext = entityText;
+        }
+    }
+
     qDebug() << "[VideoAgent] inject context"
              << "evidenceChars=" << enrichedCtx.retrievalEvidence.size()
+             << "entityChars=" << enrichedCtx.entityContext.size()
              << "sceneOverviewChars=" << enrichedCtx.sceneOverview.size();
 
     // 播放器操作强制指定 tool_choice，防止 LM 绕过工具直接输出文字
@@ -247,10 +340,9 @@ void VideoAgent::phaseReasonAndAct(const QString& convId,
         [this](const QString& delta) {
             if (m_onProgress) m_onProgress(delta);
         },
-        [this](const QString& answer,
-                const QVector<ToolResult>& toolTrace, int rounds) {
+        [this, convId, question, userFrames, enrichedCtx]
+        (const QString& answer, const QVector<ToolResult>& toolTrace, int rounds) {
             emit stageChanged(QStringLiteral("REFLECT"));
-            phaseReflect(answer, toolTrace);
 
             AgentAnswer result;
             result.conversationId = m_currentConvId;
@@ -266,6 +358,89 @@ void VideoAgent::phaseReasonAndAct(const QString& convId,
                 const auto rr = m_reflection->reflect(answer, m_retrievedEvidence, repr);
                 result.confidence = rr.confidence;
                 for (const auto& iss : rr.issues) emit reflectionIssueFound(iss.detail);
+
+                // === P2: 反思闭环 ===
+                // 当反思发现严重问题（置信度 < 0.5）且尚未重试，触发补充检索并重新推理
+                if (!rr.valid && rr.confidence < 0.5f
+                    && m_reflectionRetries < kMaxReflectionRetries
+                    && !isPlayerOp(m_currentQuestion)) {
+                    ++m_reflectionRetries;
+                    qDebug() << "[VideoAgent] REFLECT: low confidence"
+                             << rr.confidence << ", retrying with expanded retrieval"
+                             << "(attempt" << m_reflectionRetries << ")";
+
+                    emit stageChanged(QStringLiteral("REFLECT_RETRY"));
+
+                    // 补充检索：扩大 topK 和去除时间约束
+                    if (m_retriever && !m_activeVideoId.isEmpty()) {
+                        VideoRAGRetriever::Constraints expandedC;
+                        expandedC.videoId = m_activeVideoId;
+                        // 不设时间约束，扩大检索范围
+                        auto expanded = m_retriever->retrieve(question, expandedC, 10);
+                        // 合并去重
+                        for (const auto& e : expanded) {
+                            bool exists = false;
+                            for (const auto& existing : m_retrievedEvidence) {
+                                if (existing.chunk.startMs == e.chunk.startMs
+                                    && existing.chunk.endMs == e.chunk.endMs) {
+                                    exists = true;
+                                    break;
+                                }
+                            }
+                            if (!exists) m_retrievedEvidence.append(e);
+                        }
+                    }
+
+                    // 用扩展后的证据重新调用 REASON+ACT
+                    VideoContext retryCtx = enrichedCtx;
+                    retryCtx.retrievalEvidence = formatRetrievalEvidence(m_retrievedEvidence);
+
+                    // 在证据中附加反思反馈，告知 LLM 上次答案的问题
+                    retryCtx.retrievalEvidence += QStringLiteral(
+                        "\n# 反思反馈（上次回答存在以下问题，请修正）\n%1\n")
+                                                      .arg(rr.fixSuggestion);
+
+                    m_orchestrator->runQuery(convId, question, userFrames, retryCtx,
+                        [this](const QString& delta) {
+                            if (m_onProgress) m_onProgress(delta);
+                        },
+                        [this](const QString& retryAnswer,
+                                const QVector<ToolResult>& retryTrace, int retryRounds) {
+                            AgentAnswer retryResult;
+                            retryResult.conversationId = m_currentConvId;
+                            retryResult.question       = m_currentQuestion;
+                            retryResult.answer         = retryAnswer;
+                            retryResult.rounds         = retryRounds;
+                            retryResult.evidence       = m_retrievedEvidence;
+                            for (const auto& t : retryTrace)
+                                retryResult.toolCallsTrace.append(t.toolName);
+
+                            // 重新反思（仅评估，不再递归重试）
+                            if (m_reflection) {
+                                auto repr2 = m_analysis
+                                                 ? m_analysis->representation(m_activeVideoPath)
+                                                 : QSharedPointer<VideoRepresentation>();
+                                const auto rr2 = m_reflection->reflect(
+                                    retryAnswer, m_retrievedEvidence, repr2);
+                                retryResult.confidence = rr2.confidence;
+                            } else {
+                                retryResult.confidence = 0.7f;
+                            }
+
+                            // 缓存
+                            if (!isPlayerOp(m_currentQuestion)
+                                && m_qaCache && !m_activeVideoId.isEmpty()
+                                && retryResult.confidence >= 0.6f) {
+                                m_qaCache->cache(m_activeVideoId,
+                                                  m_currentQuestion, retryAnswer,
+                                                  retryResult.confidence);
+                            }
+                            finishAnswer(retryResult);
+                        },
+                        [this](const QString& err) { failWith(err); },
+                        toolChoice);
+                    return; // 不执行下面的 finishAnswer
+                }
             } else {
                 result.confidence = 0.8f;
             }
@@ -285,13 +460,6 @@ void VideoAgent::phaseReasonAndAct(const QString& convId,
         toolChoice);
 }
 
-void VideoAgent::phaseReflect(const QString& /*answer*/,
-                                const QVector<ToolResult>& /*toolTrace*/)
-{
-    // 反思在 phaseReasonAndAct 的 onDone 里同步执行
-    // 这里保留占位以便未来做异步反思
-}
-
 // ============================================================
 // 结果回调
 // ============================================================
@@ -306,4 +474,127 @@ void VideoAgent::failWith(const QString& err)
 {
     m_busy = false;
     if (m_onError) m_onError(err);
+}
+
+// ============================================================
+// Workflow 引擎集成
+// ============================================================
+
+void VideoAgent::setWorkflowExecutor(WorkflowExecutor* executor)
+{
+    m_workflowExecutor = executor;
+}
+
+void VideoAgent::setWorkflowFactory(WorkflowFactory* factory)
+{
+    m_workflowFactory = factory;
+}
+
+void VideoAgent::setWorkflowCheckpoint(WorkflowCheckpoint* checkpoint)
+{
+    m_workflowCheckpoint = checkpoint;
+}
+
+void VideoAgent::askViaWorkflow(const QString& conversationId,
+                                 const QString& question,
+                                 const QList<QImage>& userFrames,
+                                 const VideoContext& videoCtx,
+                                 int64_t currentPlayerPosMs)
+{
+    // 构建初始 state
+    WorkflowState state;
+    state.set("question", question);
+    state.set("conversation_id", conversationId);
+    state.set("video_path", m_activeVideoPath);
+    state.set("video_id", m_activeVideoId);
+    state.set("current_pos_ms", static_cast<qlonglong>(currentPlayerPosMs));
+    state.set("video_context", QVariant::fromValue(videoCtx));
+    if (!userFrames.isEmpty()) {
+        state.set("user_frames", QVariant::fromValue(userFrames));
+    }
+
+    // 从预设加载视频 QA 工作流
+    WorkflowGraph graph = m_workflowFactory->fromFile(
+        QStringLiteral(":/workflow/presets/video_qa.json"));
+
+    QString validateError;
+    if (!graph.validate(&validateError)) {
+        // 验证失败，回退到传统模式
+        qWarning() << "[VideoAgent] Workflow graph invalid:" << validateError
+                   << "- falling back to legacy mode";
+        emit stageChanged(QStringLiteral("PERCEIVE"));
+        QSharedPointer<VideoRepresentation> repr;
+        if (m_analysis) repr = m_analysis->representation(m_activeVideoPath);
+        phasePerceive(question, repr, currentPlayerPosMs);
+        if (m_retriever && !m_activeVideoId.isEmpty()) {
+            VideoRAGRetriever::Constraints c;
+            c.videoId = m_activeVideoId;
+            m_retrievedEvidence = m_retriever->retrieve(question, c, 5);
+        }
+        phaseReasonAndAct(conversationId, question, userFrames, videoCtx);
+        return;
+    }
+
+    // 设置 checkpoint
+    QString workflowId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    m_workflowExecutor->setWorkflowId(workflowId);
+    if (m_workflowCheckpoint) {
+        m_workflowExecutor->setCheckpoint(m_workflowCheckpoint);
+    }
+
+    // 连接信号
+    auto connCompleted = QObject::connect(
+        m_workflowExecutor, &WorkflowExecutor::workflowCompleted,
+        this, [this, conversationId, question](const WorkflowState& finalState) {
+            AgentAnswer result;
+            result.conversationId = conversationId;
+            result.question = question;
+            result.answer = finalState.get("answer").toString();
+            result.confidence = finalState.get("confidence").toFloat();
+            result.rounds = finalState.get("tool_rounds").toInt();
+
+            // 缓存
+            if (m_qaCache && !m_activeVideoId.isEmpty() && result.confidence >= 0.6f) {
+                m_qaCache->cache(m_activeVideoId, question, result.answer, result.confidence);
+            }
+
+            finishAnswer(result);
+        });
+
+    auto connFailed = QObject::connect(
+        m_workflowExecutor, &WorkflowExecutor::workflowFailed,
+        this, [this](const QString& error) {
+            failWith(error);
+        });
+
+    auto connProgress = QObject::connect(
+        m_workflowExecutor, &WorkflowExecutor::streamingChunk,
+        this, [this](const QString& chunk) {
+            if (m_onProgress) m_onProgress(chunk);
+        });
+
+    auto connNode = QObject::connect(
+        m_workflowExecutor, &WorkflowExecutor::nodeEntered,
+        this, [this](const QString& nodeId) {
+            emit stageChanged(nodeId.toUpper());
+        });
+
+    // 工作流完成后断开信号
+    QObject::connect(m_workflowExecutor, &WorkflowExecutor::workflowCompleted,
+                     this, [connCompleted, connFailed, connProgress, connNode]() {
+        QObject::disconnect(connCompleted);
+        QObject::disconnect(connFailed);
+        QObject::disconnect(connProgress);
+        QObject::disconnect(connNode);
+    });
+    QObject::connect(m_workflowExecutor, &WorkflowExecutor::workflowFailed,
+                     this, [connCompleted, connFailed, connProgress, connNode]() {
+        QObject::disconnect(connCompleted);
+        QObject::disconnect(connFailed);
+        QObject::disconnect(connProgress);
+        QObject::disconnect(connNode);
+    });
+
+    // 启动工作流
+    m_workflowExecutor->run(graph, std::move(state));
 }

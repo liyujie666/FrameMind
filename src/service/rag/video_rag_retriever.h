@@ -36,6 +36,7 @@ public:
         VideoChunk::ChunkType chunkType = static_cast<VideoChunk::ChunkType>(-1);
         QStringList entityIds;
         float    minScore = 0.0f;
+        QString  preferPath;   ///< 偏好检索路径 ("entity"/"text"/"visual")，空=不偏好
     };
 
     /// 查询意图（简单启发式判断）

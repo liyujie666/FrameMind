@@ -39,6 +39,11 @@ class ToolRegistry;
 class ToolOrchestrator;
 class VideoAgent;
 
+// Workflow Engine
+class WorkflowExecutor;
+class WorkflowFactory;
+class WorkflowCheckpoint;
+
 // Analysis ViewModel (分析面板)
 class VideoAnalysisViewModel;
 
@@ -94,6 +99,11 @@ public:
     VideoAnalysisViewModel* videoAnalysisVM() const;
     KnowledgeViewModel*     knowledgeVM() const;
 
+    // ---- Workflow Engine ----
+    WorkflowExecutor*     workflowExecutor() const;
+    WorkflowFactory*      workflowFactory() const;
+    WorkflowCheckpoint*   workflowCheckpoint() const;
+
 private:
     EventBus*        m_eventBus = nullptr;        // 不持有所有权
     DatabaseManager* m_db = nullptr;              // 不持有所有权（单例）
@@ -128,8 +138,13 @@ private:
     std::unique_ptr<PerceptionStrategy>   m_perception;
     std::unique_ptr<ReflectionEngine>     m_reflection;
     std::unique_ptr<ToolRegistry>         m_toolRegistry;
-    std::unique_ptr<ToolOrchestrator>     m_toolOrchestrator;
+    std::unique_ptr<ToolOrchestrator>m_toolOrchestrator;
     std::unique_ptr<VideoAgent>           m_videoAgent;
+
+    // Workflow Engine
+    std::unique_ptr<WorkflowExecutor>     m_workflowExecutor;
+    std::unique_ptr<WorkflowFactory>      m_workflowFactory;
+    std::unique_ptr<WorkflowCheckpoint>   m_workflowCheckpoint;
 
     std::unique_ptr<PlayerViewModel>        m_playerVM;
     std::unique_ptr<ChatViewModel>          m_chatVM;

@@ -39,6 +39,11 @@
 #include "service/agent/tools/get_scene_info_tool.h"
 #include "service/agent/tools/control_player_tool.h"
 
+// Workflow Engine
+#include "service/agent/workflow/workflow_executor.h"
+#include "service/agent/workflow/workflow_factory.h"
+#include "service/agent/workflow/workflow_checkpoint.h"
+
 #include "viewmodel/playerviewmodel.h"
 #include "viewmodel/chatviewmodel.h"
 #include "viewmodel/filelistviewmodel.h"
@@ -108,9 +113,12 @@ PerceptionStrategy*     DIContainer::perceptionStrategy() const    { return m_pe
 ReflectionEngine*       DIContainer::reflectionEngine() const      { return m_reflection.get(); }
 ToolRegistry*           DIContainer::toolRegistry() const          { return m_toolRegistry.get(); }
 ToolOrchestrator*       DIContainer::toolOrchestrator() const      { return m_toolOrchestrator.get(); }
-VideoAgent*             DIContainer::videoAgent() const            { return m_videoAgent.get(); }
+VideoAgent*DIContainer::videoAgent() const            { return m_videoAgent.get(); }
 VideoAnalysisViewModel* DIContainer::videoAnalysisVM() const       { return m_videoAnalysisVM.get(); }
 KnowledgeViewModel*     DIContainer::knowledgeVM() const           { return m_knowledgeVM.get(); }
+WorkflowExecutor*       DIContainer::workflowExecutor() const      { return m_workflowExecutor.get(); }
+WorkflowFactory*        DIContainer::workflowFactory() const       { return m_workflowFactory.get(); }
+WorkflowCheckpoint*     DIContainer::workflowCheckpoint() const    { return m_workflowCheckpoint.get(); }
 
 void DIContainer::initialize()
 {
@@ -255,6 +263,25 @@ void DIContainer::initialize()
         m_perception.get(),
         m_reflection.get(),
         m_entityTracker.get());
+
+    // 11. Workflow 引擎
+    m_workflowCheckpoint = std::make_unique<WorkflowCheckpoint>();
+    m_workflowCheckpoint->initialize();
+
+    m_workflowFactory = std::make_unique<WorkflowFactory>();
+    m_workflowFactory->setDependencies({
+        m_agentService.get(),
+        m_toolOrchestrator.get(),
+        m_toolRegistry.get()
+    });
+
+    m_workflowExecutor = std::make_unique<WorkflowExecutor>();
+    m_workflowExecutor->setCheckpoint(m_workflowCheckpoint.get());
+
+    // 注入 Workflow 引擎到 VideoAgent
+    m_videoAgent->setWorkflowExecutor(m_workflowExecutor.get());
+    m_videoAgent->setWorkflowFactory(m_workflowFactory.get());
+    m_videoAgent->setWorkflowCheckpoint(m_workflowCheckpoint.get());
 
     // ViewModels
     m_playerVM = std::make_unique<PlayerViewModel>(m_playerService.get(),
