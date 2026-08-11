@@ -2,6 +2,7 @@
 #define FRAMEMIND_VIDEOCONTEXT_H
 
 #include <QString>
+#include <QMetaType>
 #include <cstdint>
 
 /**
@@ -30,5 +31,7 @@ struct VideoContext {
                && entityContext.isEmpty();
     }
 };
+
+Q_DECLARE_METATYPE(VideoContext)
 
 #endif // FRAMEMIND_VIDEOCONTEXT_H

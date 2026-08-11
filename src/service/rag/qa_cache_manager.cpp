@@ -23,7 +23,7 @@ std::vector<float> QACacheManager::encodeQuery(const QString& question) const
 {
 #ifdef FRAMEMIND_HAS_ONNXRUNTIME
     if (m_embedder && m_embedder->isReady()) {
-        return m_embedder->embed(question);
+        return m_embedder->embedQuery(question);
     }
 #endif
     (void)question;
@@ -36,7 +36,10 @@ void QACacheManager::cache(const QString& videoId,
                            float confidence,
                            const QVector<int>& evidenceSceneIds)
 {
-    if (!m_store) return;
+    if (!m_store || videoId.isEmpty() || question.trimmed().isEmpty()
+        || answer.trimmed().isEmpty() || confidence < 0.7f || evidenceSceneIds.isEmpty()) {
+        return;
+    }
 
     const std::vector<float> emb = encodeQuery(question);
     if (emb.empty()) return;    // 无 embedding 不缓存（不能被检索）
@@ -55,6 +58,8 @@ void QACacheManager::cache(const QString& videoId,
     meta.insert(QStringLiteral("question"), question);
     meta.insert(QStringLiteral("answer"), answer);
     meta.insert(QStringLiteral("confidence"), confidence);
+    meta.insert(QStringLiteral("embedding_model_id"), QStringLiteral("bge_text"));
+    meta.insert(QStringLiteral("embedding_version"), QStringLiteral("query_v2"));
     meta.insert(QStringLiteral("cached_at"),
                 QDateTime::currentDateTime().toString(Qt::ISODate));
     QVariantList sceneList;
@@ -74,6 +79,8 @@ std::optional<QACacheManager::CachedAnswer> QACacheManager::tryAnswer(
 
     VideoRAGStore::Filter filter;
     filter.videoId  = videoId;
+    filter.expectedEmbeddingModelId = QStringLiteral("bge_text");
+    filter.expectedEmbeddingVersion = QStringLiteral("query_v2");
     filter.minScore = m_threshold;
 
     const auto results = m_store->search(VideoRAGStore::QACache, emb, filter, 1);
@@ -81,7 +88,19 @@ std::optional<QACacheManager::CachedAnswer> QACacheManager::tryAnswer(
 
     const VideoChunk& c = results.first().first;
     const float sim = results.first().second;
-    if (sim < m_threshold) return std::nullopt;
+    const auto evidenceIds = c.metadata.value(QStringLiteral("evidence_scene_ids")).toList();
+    const float originalConfidence = c.metadata.value(QStringLiteral("confidence")).toFloat();
+    const QString modelId = c.metadata.value(QStringLiteral("embedding_model_id")).toString();
+    const QString modelVersion = c.metadata.value(QStringLiteral("embedding_version")).toString();
+    const QDateTime cachedAt = QDateTime::fromString(
+        c.metadata.value(QStringLiteral("cached_at")).toString(), Qt::ISODate);
+    const bool expired = m_maxAgeDays > 0 && (!cachedAt.isValid()
+        || cachedAt < QDateTime::currentDateTime().addDays(-m_maxAgeDays));
+    if (sim < m_threshold || evidenceIds.isEmpty() || originalConfidence < 0.7f
+        || modelId != QLatin1String("bge_text")
+        || modelVersion != QLatin1String("query_v2") || expired) {
+        return std::nullopt;
+    }
 
     CachedAnswer ans;
     ans.question           = c.metadata.value(QStringLiteral("question")).toString();

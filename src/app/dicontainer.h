@@ -32,6 +32,7 @@ class VideoRAGRetriever;
 class EntityTracker;
 class AudioVisualAligner;
 class VideoIndexer;
+class OneShotVlmChannel;
 class VideoAnalysisService;
 class PerceptionStrategy;
 class ReflectionEngine;
@@ -109,11 +110,14 @@ private:
     DatabaseManager* m_db = nullptr;              // 不持有所有权（单例）
 
     std::unique_ptr<NetworkClient>       m_network;
+    std::unique_ptr<NetworkClient>       m_vlmNetwork;
     std::unique_ptr<SettingsService>     m_settingsService;
     std::unique_ptr<ThemeService>       m_themeService;
     std::unique_ptr<PlayerService>      m_playerService;
     std::unique_ptr<LLMProviderService> m_providerService;
     std::unique_ptr<AgentService>       m_agentService;
+    std::unique_ptr<AgentService>       m_vlmAgentService;
+    std::unique_ptr<OneShotVlmChannel>  m_oneShotVlmChannel;
     std::unique_ptr<ConversationService> m_convService;
     std::unique_ptr<FileManagerService> m_fileService;
 

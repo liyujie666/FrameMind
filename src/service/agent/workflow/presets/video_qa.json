@@ -47,10 +47,10 @@
     { "from": "perceive", "to": "retrieve" },
     { "from": "retrieve", "to": "sufficient" },
     { "from": "sufficient", "to": "reason", "condition": "true" },
-    { "from": "sufficient", "to": "perceive", "condition": "false" },
+    { "from": "sufficient", "to": "reason", "condition": "false" },
     { "from": "reason", "to": "reflect" },
     { "from": "reflect", "to": "quality_gate" },
     { "from": "quality_gate", "to": "__END__", "condition": "true" },
-    { "from": "quality_gate", "to": "reason", "condition": "false" }
+    { "from": "quality_gate", "to": "__END__", "condition": "false" }
   ]
 }

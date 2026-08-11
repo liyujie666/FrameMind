@@ -8,6 +8,7 @@
 #include "service/rag/video_rag_retriever.h"
 #include "service/rag/qa_cache_manager.h"
 #include "service/rag/entity_tracker.h"
+#include "service/rag/evidence_composer.h"
 #include "model/entity_profile.h"
 #include "model/video_representation.h"
 
@@ -19,6 +20,7 @@
 #include <QDebug>
 #include <QJsonObject>
 #include <QRegularExpression>
+#include <QSet>
 #include <QUuid>
 #include <limits>
 
@@ -36,63 +38,23 @@ bool isPlayerOp(const QString& question)
     return re.match(question).hasMatch();
 }
 
-QString formatMs(int64_t ms)
+bool requestsFreshAnalysis(const QString& question)
 {
-    const int h = static_cast<int>(ms / 3600000);
-    const int m = static_cast<int>((ms % 3600000) / 60000);
-    const int sec = static_cast<int>((ms % 60000) / 1000);
-    if (h > 0)
-        return QStringLiteral("%1:%2:%3")
-                   .arg(h)
-                   .arg(m, 2, 10, QChar('0'))
-                   .arg(sec, 2, 10, QChar('0'));
-    return QStringLiteral("%1:%2").arg(m).arg(sec, 2, 10, QChar('0'));
+    static const QRegularExpression re(
+        QStringLiteral("重新(?:分析|检查|识别|看|检索)|再(?:分析|检查|识别|看一次)|"
+                       "(?:重新|再)\\s*(?:analy[sz]e|check|inspect|retrieve)"),
+        QRegularExpression::CaseInsensitiveOption);
+    return re.match(question).hasMatch();
 }
 
-QString hitPathLabel(const QString& hitPath)
+QVector<int> evidenceSceneIds(const QVector<RetrievalResult>& evidence)
 {
-    if (hitPath == QLatin1String("visual")) return QStringLiteral("视觉检索");
-    if (hitPath == QLatin1String("text")) return QStringLiteral("文本/语音");
-    if (hitPath == QLatin1String("entity")) return QStringLiteral("实体");
-    if (hitPath == QLatin1String("qa_cache")) return QStringLiteral("历史问答");
-    return hitPath;
-}
-
-QString formatRetrievalEvidence(const QVector<RetrievalResult>& evidence)
-{
-    if (evidence.isEmpty()) return {};
-    QString out;
-    int idx = 1;
-    for (const RetrievalResult& r : evidence) {
-        const VideoChunk& c = r.chunk;
-        out += QString::fromUtf8("## 证据 %1\n").arg(idx);
-        out += QString::fromUtf8("时间范围：%1 - %2\n")
-                   .arg(formatMs(c.startMs), formatMs(c.endMs));
-        out += QString::fromUtf8("来源：%1（相似度 %2）\n")
-                   .arg(hitPathLabel(r.hitPath))
-                   .arg(r.score, 0, 'f', 2);
-        const QVariant sceneVar = c.metadata.value(QStringLiteral("scene_id"));
-        if (sceneVar.isValid()) {
-            out += QString::fromUtf8("场景 ID：%1\n").arg(sceneVar.toInt());
-        }
-        const QString evidenceType =
-            c.metadata.value(QStringLiteral("evidence_type")).toString();
-        if (!evidenceType.isEmpty()) {
-            out += QString::fromUtf8("证据类型：%1\n").arg(evidenceType);
-        }
-        const QString relation =
-            c.metadata.value(QStringLiteral("audio_relation")).toString();
-        if (!relation.isEmpty()) {
-            out += QString::fromUtf8("音画关系：%1（置信度 %2）\n")
-                       .arg(relation)
-                       .arg(c.metadata.value(QStringLiteral("relation_confidence"))
-                                .toFloat(), 0, 'f', 2);
-        }
-        if (!c.textContent.isEmpty())
-            out += QString::fromUtf8("相关内容：%1\n\n").arg(c.textContent.left(200));
-        ++idx;
+    QSet<int> uniqueIds;
+    for (const RetrievalResult& result : evidence) {
+        const QVariant sceneId = result.chunk.metadata.value(QStringLiteral("scene_id"));
+        if (sceneId.isValid()) uniqueIds.insert(sceneId.toInt());
     }
-    return out;
+    return QVector<int>(uniqueIds.cbegin(), uniqueIds.cend());
 }
 
 } // namespace
@@ -162,7 +124,8 @@ void VideoAgent::ask(const QString& conversationId,
     // ===快速路径：QA 缓存命中 ===
     // 播放器操作（seek/play/pause）必须每次真正执行，不走缓存
     const bool playerOp = isPlayerOp(question);
-    if (!playerOp && m_qaCache && !m_activeVideoId.isEmpty()) {
+    const bool forceFreshAnalysis = requestsFreshAnalysis(question);
+    if (!playerOp && !forceFreshAnalysis && m_qaCache && !m_activeVideoId.isEmpty()) {
         auto cached = m_qaCache->tryAnswer(m_activeVideoId, question);
         if (cached) {
             AgentAnswer ans;
@@ -205,9 +168,13 @@ void VideoAgent::ask(const QString& conversationId,
     if (m_retriever && !m_activeVideoId.isEmpty()) {
         VideoRAGRetriever::Constraints c;
         c.videoId = m_activeVideoId;
+        c.currentPositionMs = currentPlayerPosMs;
+        if (repr) c.videoDurationMs = repr->metadata.durationMs;
+        const QueryPlan queryPlan = m_retriever->compileQueryPlan(question, c);
 
-        // P1: 用采样计划的时间范围约束检索
-        if (!samplingPlan.timeRanges.isEmpty()
+        // 采样计划只在问题本身没有明确时间约束时限制检索，避免“00:30”
+        // 被感知策略的候选范围覆盖。
+        if (!queryPlan.hasTimeRange() && !samplingPlan.timeRanges.isEmpty()
             && questionType != QuestionType::GlobalSummary) {
             // 取采样计划中最大的时间范围作为检索约束
             int64_t minStart = std::numeric_limits<int64_t>::max();
@@ -256,6 +223,9 @@ void VideoAgent::ask(const QString& conversationId,
 
 void VideoAgent::cancel()
 {
+    if (m_workflowExecutor && m_workflowExecutor->isRunning()) {
+        m_workflowExecutor->cancel();
+    }
     if (m_orchestrator) m_orchestrator->cancel();
     m_busy = false;
 }
@@ -291,8 +261,10 @@ void VideoAgent::phaseReasonAndAct(const QString& convId,
     emit stageChanged(QStringLiteral("REASON+ACT"));
 
     VideoContext enrichedCtx = ctx;
-    enrichedCtx.retrievalEvidence = formatRetrievalEvidence(m_retrievedEvidence);
+    enrichedCtx.retrievalEvidence = EvidenceComposer::formatText(m_retrievedEvidence);
     enrichedCtx.currentPositionMs = m_currentPlayerPosMs;
+    const QList<QImage> evidenceFrames = EvidenceComposer::mergeFrames(
+        userFrames, m_retrievedEvidence);
 
     // === P2: 实体档案显式注入 ===
     if (m_entities && !m_activeVideoId.isEmpty()) {
@@ -336,7 +308,7 @@ void VideoAgent::phaseReasonAndAct(const QString& convId,
         };
     }
 
-    m_orchestrator->runQuery(convId, question, userFrames, enrichedCtx,
+    m_orchestrator->runQuery(convId, question, evidenceFrames, enrichedCtx,
         [this](const QString& delta) {
             if (m_onProgress) m_onProgress(delta);
         },
@@ -393,14 +365,16 @@ void VideoAgent::phaseReasonAndAct(const QString& convId,
 
                     // 用扩展后的证据重新调用 REASON+ACT
                     VideoContext retryCtx = enrichedCtx;
-                    retryCtx.retrievalEvidence = formatRetrievalEvidence(m_retrievedEvidence);
+                    retryCtx.retrievalEvidence = EvidenceComposer::formatText(m_retrievedEvidence);
+                    const QList<QImage> retryFrames = EvidenceComposer::mergeFrames(
+                        userFrames, m_retrievedEvidence);
 
                     // 在证据中附加反思反馈，告知 LLM 上次答案的问题
                     retryCtx.retrievalEvidence += QStringLiteral(
                         "\n# 反思反馈（上次回答存在以下问题，请修正）\n%1\n")
                                                       .arg(rr.fixSuggestion);
 
-                    m_orchestrator->runQuery(convId, question, userFrames, retryCtx,
+                    m_orchestrator->runQuery(convId, question, retryFrames, retryCtx,
                         [this](const QString& delta) {
                             if (m_onProgress) m_onProgress(delta);
                         },
@@ -427,13 +401,14 @@ void VideoAgent::phaseReasonAndAct(const QString& convId,
                                 retryResult.confidence = 0.7f;
                             }
 
-                            // 缓存
+                            const QVector<int> retrySceneIds = evidenceSceneIds(m_retrievedEvidence);
                             if (!isPlayerOp(m_currentQuestion)
                                 && m_qaCache && !m_activeVideoId.isEmpty()
-                                && retryResult.confidence >= 0.6f) {
+                                && !retrySceneIds.isEmpty()
+                                && retryResult.confidence >= 0.7f) {
                                 m_qaCache->cache(m_activeVideoId,
-                                                  m_currentQuestion, retryAnswer,
-                                                  retryResult.confidence);
+                                                 m_currentQuestion, retryAnswer,
+                                                 retryResult.confidence, retrySceneIds);
                             }
                             finishAnswer(retryResult);
                         },
@@ -445,13 +420,13 @@ void VideoAgent::phaseReasonAndAct(const QString& convId,
                 result.confidence = 0.8f;
             }
 
-            // 缓存 QA（播放器操作不缓存，避免后续相似问题命中缓存而跳过工具执行）
+            // 只缓存能回溯到实际场景证据的高可信结论，避免错误答案被相似查询复用。
+            const QVector<int> sceneIds = evidenceSceneIds(m_retrievedEvidence);
             if (!isPlayerOp(m_currentQuestion)
                 && m_qaCache && !m_activeVideoId.isEmpty()
-                && result.confidence >= 0.6f) {
-                m_qaCache->cache(m_activeVideoId,
-                                  m_currentQuestion, answer,
-                                  result.confidence);
+                && !sceneIds.isEmpty() && result.confidence >= 0.7f) {
+                m_qaCache->cache(m_activeVideoId, m_currentQuestion, answer,
+                                 result.confidence, sceneIds);
             }
 
             finishAnswer(result);
@@ -501,6 +476,78 @@ void VideoAgent::askViaWorkflow(const QString& conversationId,
                                  const VideoContext& videoCtx,
                                  int64_t currentPlayerPosMs)
 {
+    // 预设中的 function 节点必须在加载图之前绑定到真实服务；未绑定时 FunctionNode
+    // 会静默直通，导致默认 Workflow 从未执行检索与质量评估。
+    m_workflowFactory->registerFunctionHandler(
+        QStringLiteral("PerceptionStrategy::decide"),
+        [this](WorkflowState& workflowState, NodeCallback done) {
+            QSharedPointer<VideoRepresentation> repr;
+            if (m_analysis) repr = m_analysis->representation(m_activeVideoPath);
+            SamplingPlan plan;
+            if (m_perception) {
+                plan = m_perception->decideSampling(
+                    workflowState.get(QStringLiteral("question")).toString(), repr,
+                    workflowState.get(QStringLiteral("current_pos_ms")).toLongLong());
+            }
+            workflowState.set(QStringLiteral("sampling_plan"), QVariant::fromValue(plan));
+            done(NodeResult{.nextRoute = {}, .success = true, .error = {}});
+        });
+    m_workflowFactory->registerFunctionHandler(
+        QStringLiteral("VideoRAGRetriever::retrieve"),
+        [this](WorkflowState& workflowState, NodeCallback done) {
+            const QString workflowQuestion = workflowState.get(QStringLiteral("question")).toString();
+            const QString workflowVideoId = workflowState.get(QStringLiteral("video_id")).toString();
+            m_retrievedEvidence.clear();
+            if (m_retriever && !workflowQuestion.isEmpty() && !workflowVideoId.isEmpty()) {
+                VideoRAGRetriever::Constraints constraints;
+                constraints.videoId = workflowVideoId;
+                constraints.currentPositionMs = workflowState.get(
+                    QStringLiteral("current_pos_ms")).toLongLong();
+                if (m_analysis) {
+                    const auto repr = m_analysis->representation(m_activeVideoPath);
+                    if (repr) constraints.videoDurationMs = repr->metadata.durationMs;
+                }
+                m_retrievedEvidence = m_retriever->retrieve(workflowQuestion, constraints, 6);
+            }
+
+            VideoContext context;
+            const QVariant contextValue = workflowState.get(QStringLiteral("video_context"));
+            if (contextValue.canConvert<VideoContext>()) context = contextValue.value<VideoContext>();
+            workflowState.addArtifact(QStringLiteral("retrieval_evidence"),
+                                      EvidenceComposer::toJson(m_retrievedEvidence));
+            context.retrievalEvidence = EvidenceComposer::formatText(m_retrievedEvidence);
+            context.currentPositionMs = workflowState.get(QStringLiteral("current_pos_ms")).toLongLong();
+            workflowState.set(QStringLiteral("video_context"), QVariant::fromValue(context));
+
+            QList<QImage> userFrames;
+            const QVariant framesValue = workflowState.get(QStringLiteral("user_frames"));
+            if (framesValue.canConvert<QList<QImage>>()) userFrames = framesValue.value<QList<QImage>>();
+            workflowState.set(QStringLiteral("user_frames"), QVariant::fromValue(
+                EvidenceComposer::mergeFrames(userFrames, m_retrievedEvidence)));
+
+            // 没有静态检索命中时仍进入带工具的推理节点，让模型可发起局部复核，
+            // 不在 perceive/retrieve 间空转。
+            workflowState.set(QStringLiteral("sufficiency"), 0.7);
+            done(NodeResult{.nextRoute = {}, .success = true, .error = {}});
+        });
+    m_workflowFactory->registerFunctionHandler(
+        QStringLiteral("ReflectionEngine::check"),
+        [this](WorkflowState& workflowState, NodeCallback done) {
+            const QVector<RetrievalResult> evidence = EvidenceComposer::fromJson(
+                workflowState.artifact(QStringLiteral("retrieval_evidence")).toArray());
+            float confidence = 0.7f;
+            if (m_reflection) {
+                QSharedPointer<VideoRepresentation> repr;
+                if (m_analysis) repr = m_analysis->representation(m_activeVideoPath);
+                const auto reflection = m_reflection->reflect(
+                    workflowState.get(QStringLiteral("answer")).toString(), evidence, repr);
+                confidence = reflection.confidence;
+                for (const auto& issue : reflection.issues) emit reflectionIssueFound(issue.detail);
+            }
+            workflowState.set(QStringLiteral("confidence"), confidence);
+            done(NodeResult{.nextRoute = {}, .success = true, .error = {}});
+        });
+
     // 构建初始 state
     WorkflowState state;
     state.set("question", question);
@@ -529,6 +576,8 @@ void VideoAgent::askViaWorkflow(const QString& conversationId,
         if (m_retriever && !m_activeVideoId.isEmpty()) {
             VideoRAGRetriever::Constraints c;
             c.videoId = m_activeVideoId;
+            c.currentPositionMs = currentPlayerPosMs;
+            if (repr) c.videoDurationMs = repr->metadata.durationMs;
             m_retrievedEvidence = m_retriever->retrieve(question, c, 5);
         }
         phaseReasonAndAct(conversationId, question, userFrames, videoCtx);
@@ -543,9 +592,10 @@ void VideoAgent::askViaWorkflow(const QString& conversationId,
     }
 
     // 连接信号
+    const QString workflowVideoId = m_activeVideoId;
     auto connCompleted = QObject::connect(
         m_workflowExecutor, &WorkflowExecutor::workflowCompleted,
-        this, [this, conversationId, question](const WorkflowState& finalState) {
+        this, [this, conversationId, question, workflowVideoId](const WorkflowState& finalState) {
             AgentAnswer result;
             result.conversationId = conversationId;
             result.question = question;
@@ -553,9 +603,13 @@ void VideoAgent::askViaWorkflow(const QString& conversationId,
             result.confidence = finalState.get("confidence").toFloat();
             result.rounds = finalState.get("tool_rounds").toInt();
 
-            // 缓存
-            if (m_qaCache && !m_activeVideoId.isEmpty() && result.confidence >= 0.6f) {
-                m_qaCache->cache(m_activeVideoId, question, result.answer, result.confidence);
+            result.evidence = EvidenceComposer::fromJson(
+                finalState.artifact(QStringLiteral("retrieval_evidence")).toArray());
+            const QVector<int> sceneIds = evidenceSceneIds(result.evidence);
+            if (m_qaCache && !workflowVideoId.isEmpty()
+                && !sceneIds.isEmpty() && result.confidence >= 0.7f) {
+                m_qaCache->cache(workflowVideoId, question, result.answer,
+                                 result.confidence, sceneIds);
             }
 
             finishAnswer(result);

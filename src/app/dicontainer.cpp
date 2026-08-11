@@ -26,6 +26,7 @@
 #include "service/rag/entity_tracker.h"
 #include "service/rag/audio_visual_aligner.h"
 #include "service/agent/video_indexer.h"
+#include "service/agent/one_shot_vlm_channel.h"
 #include "service/agent/video_analysis_service.h"
 #include "service/agent/perception_strategy.h"
 #include "service/agent/reflection_engine.h"
@@ -142,6 +143,13 @@ void DIContainer::initialize()
     m_agentService   = std::make_unique<AgentService>(m_network.get(),
                                                       m_settingsService.get(),
                                                       m_providerService.get());
+    // 后台/局部视觉分析使用专属网络与 AgentService，避免抢占用户问答 SSE 状态。
+    m_vlmNetwork = std::make_unique<NetworkClient>();
+    m_vlmAgentService = std::make_unique<AgentService>(m_vlmNetwork.get(),
+                                                       m_settingsService.get(),
+                                                       m_providerService.get());
+    m_oneShotVlmChannel = std::make_unique<OneShotVlmChannel>(
+        m_vlmAgentService.get());
     m_convService    = std::make_unique<ConversationService>(m_db);
     m_fileService    = std::make_unique<FileManagerService>(m_db);
 
@@ -225,7 +233,7 @@ void DIContainer::initialize()
 
     // 7. 分析服务
     m_videoAnalysis = std::make_unique<VideoAnalysisService>(
-        m_agentService.get(), m_videoIndexer.get(),
+        m_oneShotVlmChannel.get(), m_videoIndexer.get(),
         m_ragStore.get(), m_playerService.get());
     m_videoAnalysis->setAudioVisualAligner(m_avAligner.get());
 #ifdef FRAMEMIND_HAS_ONNXRUNTIME

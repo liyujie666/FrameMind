@@ -44,7 +44,13 @@ public:
     /// 是否已初始化
     bool isReady() const;
 
-    /// 单条文本 → 512 维 embedding（已 L2 归一化）
+    /// 查询文本 → 512 维 embedding（自动添加 BGE 检索前缀）
+    std::vector<float> embedQuery(const QString& text);
+
+    /// 入库 passage → 512 维 embedding（不添加查询前缀）
+    std::vector<float> embedPassage(const QString& text);
+
+    /// 兼容旧调用：等价于 embedQuery()。
     std::vector<float> embed(const QString& text);
 
     /// 批量文本 → 批量 embedding
@@ -59,6 +65,8 @@ public:
     static constexpr int MAX_SEQ_LEN   = 512;
 
 private:
+    std::vector<float> embedInternal(const QString& text, bool queryMode);
+
     /// BGE (BERT-based) WordPiece tokenizer
     std::vector<int64_t> tokenize(const QString& text);
 

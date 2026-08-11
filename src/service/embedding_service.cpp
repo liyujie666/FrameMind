@@ -58,27 +58,42 @@ bool EmbeddingService::initialize(const QString& modelPath)
                    << "| model:" << (ok ? "OK" : "FAIL")
                    << "| vocab:" << (ok2 ? "OK" : "FAIL");
     }
-    return ok;
+    return ok && ok2;
 }
 
 bool EmbeddingService::isReady() const
 {
-    return m_engine->isLoaded();
+    return m_engine && m_engine->isLoaded() && m_tokenizer && m_tokenizer->isLoaded();
+}
+
+std::vector<float> EmbeddingService::embedQuery(const QString& text)
+{
+    return embedInternal(text, true);
+}
+
+std::vector<float> EmbeddingService::embedPassage(const QString& text)
+{
+    return embedInternal(text, false);
 }
 
 std::vector<float> EmbeddingService::embed(const QString& text)
 {
-    if (!m_engine->isLoaded() || text.isEmpty()) {
+    return embedQuery(text);
+}
+
+std::vector<float> EmbeddingService::embedInternal(const QString& text, bool queryMode)
+{
+    if (!isReady() || text.isEmpty()) {
         return {};
     }
 
-    // BGE 检索时需要为查询添加前缀
-    // 对于 passages（入库的文本）不需要前缀
-    // 这里统一用查询前缀；入库时调用方可传 raw text
-    QString prefixed = QStringLiteral("为这个句子生成表示以用于检索相关文章：") + text;
+    // BGE 的检索指令仅适用于查询；入库 passage 保持原文，以维持正确的非对称检索空间。
+    const QString encodedText = queryMode
+        ? QStringLiteral("为这个句子生成表示以用于检索相关文章：") + text
+        : text;
 
     // 1. Tokenize
-    auto inputIds = tokenize(prefixed);
+    auto inputIds = tokenize(encodedText);
     if (inputIds.empty()) return {};
 
     auto attentionMask = buildAttentionMask(inputIds);
@@ -153,26 +168,9 @@ std::vector<int64_t> EmbeddingService::tokenize(const QString& text)
         return m_tokenizer->encode(text, MAX_SEQ_LEN);
     }
 
-    // 降级：tokenizer 未加载时用字符级编码（质量差，但不崩溃）
-    qWarning() << "[EmbeddingService] tokenizer 未加载，使用降级编码";
-    std::vector<int64_t> tokens(MAX_SEQ_LEN, 0);
-    constexpr int64_t CLS_TOKEN = 101;
-    constexpr int64_t SEP_TOKEN = 102;
-
-    tokens[0] = CLS_TOKEN;
-    int pos = 1;
-    for (const QChar& ch : text) {
-        if (pos >= MAX_SEQ_LEN - 1) break;
-        uint32_t cp = ch.unicode();
-        if (cp < 0x4E00) {
-            tokens[pos] = static_cast<int64_t>(cp);
-        } else {
-            tokens[pos] = static_cast<int64_t>(cp - 0x4E00 + 1000);
-        }
-        ++pos;
-    }
-    tokens[pos] = SEP_TOKEN;
-    return tokens;
+    // 初始化已将 tokenizer 设为必要条件；此处只保留安全失败路径。
+    qWarning() << "[EmbeddingService] tokenizer 未加载，拒绝生成 embedding";
+    return {};
 }
 
 std::vector<int64_t> EmbeddingService::buildAttentionMask(

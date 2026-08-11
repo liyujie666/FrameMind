@@ -13,7 +13,7 @@ FrameMind 期望的模型目录:
     ├── clip_vocab.json      (CLIP BPE 词表, ~860KB)
     ├── clip_merges.txt      (CLIP BPE merge 规则, ~525KB)
     ├── bge-small-zh.onnx    (BGE-small-zh-v1.5 ONNX, ~100MB)
-    ├── bge_tokenizer.json   (BGE WordPiece tokenizer)
+    ├── vocab.txt            (BGE WordPiece 词表)
     └── ggml-medium.bin      (Whisper medium, ~1.5GB)
 
 用法:
@@ -71,7 +71,7 @@ EXPECTED_FILES = {
     "clip_vocab.json":   ("CLIP BPE 词表",     500 * 1024),          # >= 500KB
     "clip_merges.txt":   ("CLIP BPE merge",    400 * 1024),          # >= 400KB
     "bge-small-zh.onnx": ("BGE-small-zh ONNX", 80 * 1024 * 1024),   # >= 80MB
-    "bge_tokenizer.json":("BGE tokenizer",     100 * 1024),          # >= 100KB
+    "vocab.txt":          ("BGE WordPiece 词表", 100 * 1024),         # >= 100KB
     "ggml-medium.bin":   ("Whisper medium",   1400 * 1024 * 1024),  # >= 1.4GB
 }
 
@@ -257,12 +257,12 @@ def install_bge(models_dir: Path) -> bool:
     print("=" * 60)
 
     dst_onnx = models_dir / "bge-small-zh.onnx"
-    dst_tok  = models_dir / "bge_tokenizer.json"
+    dst_vocab = models_dir / "vocab.txt"
 
-    if dst_onnx.exists() and dst_tok.exists():
+    if dst_onnx.exists() and dst_vocab.exists():
         print(f"  SKIP (已存在):")
         print(f"    {dst_onnx}")
-        print(f"    {dst_tok}")
+        print(f"    {dst_vocab}")
         return True
 
     # 1. 安装依赖（optimum + onnx + transformers + torch）
@@ -391,14 +391,14 @@ def install_bge(models_dir: Path) -> bool:
               f"({human_size(src_onnx.stat().st_size)})")
         shutil.copy2(src_onnx, dst_onnx)
 
-        # tokenizer.json
-        src_tok = tmp_path / "tokenizer.json"
-        if src_tok.exists():
-            shutil.copy2(src_tok, dst_tok)
-            print(f"  Copy: tokenizer.json -> bge_tokenizer.json "
-                  f"({human_size(src_tok.stat().st_size)})")
-        else:
-            print(f"  WARN: 未找到 tokenizer.json（BGE WordPiece tokenizer 需要）")
+        # 运行时 BertTokenizer 读取标准 WordPiece vocab.txt，而不是 tokenizer.json。
+        src_vocab = tmp_path / "vocab.txt"
+        if not src_vocab.exists():
+            print("  ERROR: 未找到 vocab.txt（运行时 WordPiece tokenizer 必需）")
+            return False
+        shutil.copy2(src_vocab, dst_vocab)
+        print(f"  Copy: vocab.txt -> {dst_vocab.name} "
+              f"({human_size(src_vocab.stat().st_size)})")
 
     return True
 

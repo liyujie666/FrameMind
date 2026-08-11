@@ -1,6 +1,6 @@
 #include "service/agent/video_analysis_service.h"
 
-#include "service/agentservice.h"
+#include "service/agent/one_shot_vlm_channel.h"
 #include "service/playerservice.h"
 #include "service/agent/video_indexer.h"
 #include "service/rag/video_rag_store.h"
@@ -21,15 +21,21 @@ namespace {
 // Prompt 模板：agent-core-design.md §3.2
 // 阶段一：纯视觉基线。此处严禁引入任何音频信息，保证视觉事实不被污染。
 const char* kSceneDescPrompt = R"PROMPT(
-你是一个专业的视频内容分析师。请根据提供的视频帧，用2~4句话描述该场景。
+你是一个专业的视频内容分析师。请根据按时间顺序提供的视频帧，提取可验证的纯视觉证据。
 
 要求：
-1. 描述画面中的主要人物、物体和环境
-2. 说明正在发生的动作或事件
-3. 如有文字/字幕/标志请转录
-4. 客观描述，不做主观推断
-5. 只描述画面中可见的内容，不要推测画面外的声音、对话或剧情
-6. 直接输出描述文字，不要 JSON 格式，不要标题
+1. 只描述画面中可见的人物、物体、环境、动作和状态变化，不推测画面外声音、对话或剧情
+2. 画面文字/字幕/招牌/界面文字只转录清晰可辨的部分；看不清则不要猜测
+3. action 与 visible_text 仅记录肉眼可见事实，不得从音频或常识补全
+4. visual_description 用2~4句中文客观描述场景
+5. 只输出一个 JSON 对象，不要 Markdown 代码块或额外说明：
+{
+  "visual_description": "...",
+  "visible_text": ["..."],
+  "actions": ["..."],
+  "uncertain": ["..."],
+  "confidence": 0.0
+}
 )PROMPT";
 
 // 阶段二：保守融合。归因约束是这个 prompt 的核心，不能放松。
@@ -98,6 +104,18 @@ QJsonObject extractJsonObject(const QString& raw)
     return doc.object();
 }
 
+QStringList jsonStringList(const QJsonObject& object, const QString& key, int maxItems = 12)
+{
+    QStringList result;
+    const QJsonArray values = object.value(key).toArray();
+    for (const QJsonValue& value : values) {
+        const QString text = value.toString().simplified();
+        if (!text.isEmpty() && !result.contains(text)) result.append(text);
+        if (result.size() >= maxItems) break;
+    }
+    return result;
+}
+
 QString msToTimeLabel(int64_t ms)
 {
     const int h = static_cast<int>(ms / 3600000);
@@ -119,13 +137,13 @@ const char* kFrameDescPrompt = R"PROMPT(
 )PROMPT";
 } // namespace
 
-VideoAnalysisService::VideoAnalysisService(AgentService*    agent,
-                                           VideoIndexer*    indexer,
-                                           VideoRAGStore*   ragStore,
-                                           PlayerService*   player,
-                                           QObject*         parent)
+VideoAnalysisService::VideoAnalysisService(OneShotVlmChannel* vlmChannel,
+                                           VideoIndexer*      indexer,
+                                           VideoRAGStore*     ragStore,
+                                           PlayerService*     player,
+                                           QObject*           parent)
     : QObject(parent)
-    , m_agent(agent)
+    , m_vlmChannel(vlmChannel)
     , m_indexer(indexer)
     , m_ragStore(ragStore)
     , m_player(player)
@@ -160,10 +178,19 @@ VideoAnalysisService::VideoAnalysisService(AgentService*    agent,
 
 void VideoAnalysisService::onVideoOpened(const QString& videoPath)
 {
+    const QString videoId = VideoIndexer::computeVideoId(videoPath);
+    if (m_vlmChannel && !m_backgroundVideoId.isEmpty()
+        && m_backgroundVideoId != videoId) {
+        m_vlmChannel->cancelBackground(m_backgroundVideoId);
+    }
+    m_backgroundVideoId = videoId;
     if (m_ragStore) {
-        // 先尝试加载已有索引
-        const QString vid = VideoIndexer::computeVideoId(videoPath);
-        m_ragStore->loadVideo(vid);
+        // 先尝试加载已有索引；QA 缓存只能在其原始证据也仍存在时复用。
+        m_ragStore->loadVideo(videoId);
+        if (m_ragStore->hasIndexedContent(videoId)) {
+            emit analysisProgress(100, tr("已加载持久化视频索引"));
+            return;
+        }
     }
     if (m_indexer) {
         m_indexer->startIndex(videoPath);
@@ -264,13 +291,20 @@ void VideoAnalysisService::doDescribeSceneWithCallback(
 
     const Scene& s = repr->scenes[sceneId];
     QList<QImage> frames;
-    if (!s.keyframe.isNull()) frames.append(s.keyframe);
+    for (const SceneFrame& representative : s.representativeFrames) {
+        QImage image = representative.image;
+        if (image.isNull() && !representative.imagePath.isEmpty()) {
+            image.load(representative.imagePath);
+        }
+        if (!image.isNull()) frames.append(image);
+    }
+    if (frames.isEmpty() && !s.keyframe.isNull()) frames.append(s.keyframe);
     if (frames.isEmpty() && !s.keyframePath.isEmpty()) {
         const QImage persisted(s.keyframePath);
         if (!persisted.isNull()) frames.append(persisted);
     }
 
-    // 若持久化关键帧也缺失，退化为对绑定视频的场景关键时间点截帧
+    // 若持久化代表帧也缺失，退化为对绑定视频的场景关键时间点截帧
     if (frames.isEmpty() && m_player) {
         const int64_t ts = s.keyframeMs;
         auto fut = m_player->captureFrameAt(repr->metadata.filePath, ts, 2000);
@@ -298,7 +332,7 @@ void VideoAnalysisService::doDescribeSceneWithCallback(
         return QString("%1:%2").arg(m).arg(sec, 2, 10, QChar('0'));
     };
 
-    const QString userText = tr("这是视频中 [%1 - %2]（即 %3ms - %4ms）的场景，请描述画面内容。")
+    const QString userText = tr("这是视频中 [%1 - %2]（即 %3ms - %4ms）的场景。提供的帧按时间顺序覆盖开始、中间和结束状态；请描述可见内容及状态变化。")
                                  .arg(msToTime(s.startMs)).arg(msToTime(s.endMs))
                                  .arg(s.startMs).arg(s.endMs);
 
@@ -306,14 +340,22 @@ void VideoAnalysisService::doDescribeSceneWithCallback(
     oneShotVLM(QString::fromUtf8(kSceneDescPrompt),
                userText,
                frames,
-               [guard, sceneId, repr, onDone](const QString& desc) {
+               false,
+               repr->videoId,
+               [guard, sceneId, repr, onDone](const QString& reply) {
         if (!guard) return;
 
-        // 阶段一产物：纯视觉描述。单独保存，后续融合不会覆盖它。
-        const QString visualDesc = desc.trimmed();
+        // 阶段一产物：优先解析结构化纯视觉证据；旧模型或异常输出时保留原文回退。
+        const QJsonObject object = extractJsonObject(reply);
+        const QString visualDesc = object.value(QStringLiteral("visual_description"))
+            .toString().trimmed().isEmpty() ? reply.trimmed()
+            : object.value(QStringLiteral("visual_description")).toString().trimmed();
         repr->sceneVisualDescriptions.insert(sceneId, visualDesc);
         if (sceneId >= 0 && sceneId < repr->scenes.size()) {
-            repr->scenes[sceneId].visualDescription = visualDesc;
+            Scene& scene = repr->scenes[sceneId];
+            scene.visualDescription = visualDesc;
+            scene.visibleTexts = jsonStringList(object, QStringLiteral("visible_text"));
+            scene.visibleActions = jsonStringList(object, QStringLiteral("actions"));
         }
 
         if (visualDesc.isEmpty()) {
@@ -403,6 +445,8 @@ void VideoAnalysisService::fuseSceneAudio(
     oneShotVLM(QString::fromUtf8(kSceneFusionPrompt),
                userText,
                {},
+               false,
+               repr->videoId,
                [guard, fusion, repr, onDone](const QString& reply) mutable {
         if (!guard) return;
 
@@ -479,6 +523,14 @@ void VideoAnalysisService::commitSceneFusion(
         writeSceneEvidence(fusion, repr, VideoChunk::SceneAudio,
                            QStringLiteral("audio"), fusion.audioSummary);
     }
+    // 可见文字独立入库，供字幕、招牌、PPT 等精确文字问题走文本检索；
+    // 当前来源是 VLM 可见文字转录，未来专用 OCR 可作为同类型补充来源。
+    if (sceneId >= 0 && sceneId < repr->scenes.size()
+        && !repr->scenes[sceneId].visibleTexts.isEmpty()) {
+        writeSceneEvidence(fusion, repr, VideoChunk::Event,
+                           QStringLiteral("visible_text"),
+                           repr->scenes[sceneId].visibleTexts.join(QStringLiteral("\n")));
+    }
     // 无音频时融合描述与视觉描述相同，不重复占用一条 chunk
     if (fusion.hasAudio() && fusion.fusedDescription != fusion.visualDescription) {
         writeSceneEvidence(fusion, repr, VideoChunk::SceneFused,
@@ -524,16 +576,26 @@ void VideoAnalysisService::writeSceneEvidence(
                       static_cast<qlonglong>(scene.keyframeMs));
     c.metadata.insert(QStringLiteral("file_path"), repr->metadata.filePath);
     c.metadata.insert(QStringLiteral("evidence_type"), evidenceType);
+    if (evidenceType == QLatin1String("visible_text")) {
+        c.metadata.insert(QStringLiteral("source"), QStringLiteral("vlm_visible_text"));
+    }
     c.metadata.insert(QStringLiteral("audio_relation"),
                       SceneFusion::relationToString(fusion.relation));
     c.metadata.insert(QStringLiteral("relation_confidence"), fusion.confidence);
     c.metadata.insert(QStringLiteral("audio_type"),
                       SceneFusion::audioTypeToString(fusion.audioType));
     c.metadata.insert(QStringLiteral("has_speech"), fusion.hasAudio());
+    c.metadata.insert(QStringLiteral("visible_texts"), scene.visibleTexts);
+    c.metadata.insert(QStringLiteral("visible_actions"), scene.visibleActions);
+    c.metadata.insert(QStringLiteral("embedding_model_id"), QStringLiteral("bge_text"));
+    c.metadata.insert(QStringLiteral("embedding_version"), QStringLiteral("passage_v2"));
+    c.metadata.insert(QStringLiteral("index_version"), 2);
 
 #ifdef FRAMEMIND_HAS_ONNXRUNTIME
     if (m_embedder && m_embedder->isReady()) {
-        c.textEmbedding = m_embedder->embed(text);
+        c.textEmbedding = m_embedder->embedPassage(text);
+        c.metadata.insert(QStringLiteral("embedding_dimension"),
+                          static_cast<int>(c.textEmbedding.size()));
     }
 #endif
     m_ragStore->insertChunk(VideoRAGStore::TextSegments, c);
@@ -591,6 +653,8 @@ void VideoAnalysisService::summarizeVideo(QSharedPointer<VideoRepresentation> re
     oneShotVLM(QString::fromUtf8(kVideoSummaryPrompt),
                userText,
                {},
+               false,
+               repr->videoId,
                [guard, repr](const QString& summary) {
         if (!guard) return;
         if (summary.trimmed().isEmpty()) {
@@ -623,7 +687,7 @@ void VideoAnalysisService::describeFrame(const QImage& frame,
         : tr("请描述这一帧画面（时间戳 %1ms），特别关注：%2").arg(timestampMs).arg(focus);
 
     oneShotVLM(QString::fromUtf8(kFrameDescPrompt),
-               userText, { frame }, std::move(onDone));
+               userText, { frame }, true, {}, std::move(onDone));
 }
 
 void VideoAnalysisService::analyzeTimeRange(int64_t startMs, int64_t endMs,
@@ -664,7 +728,7 @@ void VideoAnalysisService::analyzeTimeRange(int64_t startMs, int64_t endMs,
         "你正在分析一段视频的连续帧序列，请理解帧间的时间关系与运动变化，"
         "综合所有帧回答问题，而不是逐帧独立描述。");
 
-    oneShotVLM(sysPrompt, userText, frames, std::move(onDone));
+    oneShotVLM(sysPrompt, userText, frames, true, {}, std::move(onDone));
 }
 
 // ============================================================
@@ -723,44 +787,16 @@ VideoContext VideoAnalysisService::buildVideoContext(
 void VideoAnalysisService::oneShotVLM(const QString& sysPrompt,
                                        const QString& userText,
                                        const QList<QImage>& frames,
+                                       bool interactive,
+                                       const QString& cancellationKey,
                                        std::function<void(const QString&)> onDone)
 {
-    if (!m_agent) {
-        if (onDone) onDone(QString{});
+    if (!m_vlmChannel) {
+        if (onDone) onDone({});
         return;
     }
-
-    // 用临时 conversation 承载一次调用，收到 responseFinished 后回调并清理
-    const QString convId = QStringLiteral("__vlm_oneshot_")
-                            + QUuid::createUuid().toString(QUuid::WithoutBraces);
-
-    // 用 shared_ptr 包装回调，确保 finished 和 error 两条路径都能访问
-    auto sharedDone = QSharedPointer<std::function<void(const QString&)>>::create(std::move(onDone));
-
-    QPointer<AgentService> agentGuard(m_agent);
-    auto* aggregator = new QObject(this);
-
-    connect(m_agent, &AgentService::responseFinished,
-            aggregator, [aggregator, agentGuard, convId, sharedDone](
-                            const QString& id, const ChatMessage& msg) {
-                if (id != convId) return;
-                if (*sharedDone) (*sharedDone)(msg.content);
-                if (agentGuard) agentGuard->clearHistory(convId);
-                aggregator->deleteLater();
-            });
-
-    connect(m_agent, &AgentService::responseError,
-            aggregator, [aggregator, agentGuard, convId, sharedDone](
-                            const QString& id, const QString& err) {
-                if (id != convId) return;
-                qWarning() << "[VLM oneShot] error:" << err;
-                // 出错也必须触发回调（传空串），否则串行链路会断裂
-                if (*sharedDone) (*sharedDone)(QString{});
-                if (agentGuard) agentGuard->clearHistory(convId);
-                aggregator->deleteLater();
-            });
-
-    VideoContext emptyCtx;
-    const QString fullUser = sysPrompt + QStringLiteral("\n\n") + userText;
-    m_agent->sendMessage(convId, fullUser, frames, emptyCtx);
+    m_vlmChannel->enqueue(sysPrompt, userText, frames,
+                           interactive ? OneShotVlmChannel::Priority::Interactive
+                                       : OneShotVlmChannel::Priority::Background,
+                           cancellationKey, std::move(onDone));
 }

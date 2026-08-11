@@ -11,7 +11,7 @@
 #include "model/videocontext.h"
 #include "model/audio_visual_relation.h"
 
-class AgentService;
+class OneShotVlmChannel;
 class VideoIndexer;
 class VideoRAGStore;
 class PlayerService;
@@ -32,8 +32,8 @@ class AudioVisualAligner;
 class VideoAnalysisService : public QObject {
     Q_OBJECT
 public:
-    explicit VideoAnalysisService(AgentService*    agent,
-                                  VideoIndexer*    indexer,
+    explicit VideoAnalysisService(OneShotVlmChannel* vlmChannel,
+                                  VideoIndexer*     indexer,
                                   VideoRAGStore*   ragStore,
                                   PlayerService*   player,
                                   QObject*         parent = nullptr);
@@ -144,18 +144,21 @@ private:
                             const QString& evidenceType,
                             const QString& text);
 
-    /// 借助 AgentService 走一次一次性（非流式）VLM 调用
+    /// 经专属串行通道发起一次一次性 VLM 调用，不占用用户问答流。
     void oneShotVLM(const QString& sysPrompt,
                     const QString& userText,
                     const QList<QImage>& frames,
+                    bool interactive,
+                    const QString& cancellationKey,
                     std::function<void(const QString&)> onDone);
 
-    AgentService*       m_agent    = nullptr;
+    OneShotVlmChannel*  m_vlmChannel = nullptr;
     VideoIndexer*       m_indexer  = nullptr;
     VideoRAGStore*      m_ragStore = nullptr;
     PlayerService*      m_player   = nullptr;
     EmbeddingService*   m_embedder = nullptr;
     AudioVisualAligner* m_aligner  = nullptr;
+    QString             m_backgroundVideoId;
 };
 
 #endif // FRAMEMIND_VIDEO_ANALYSIS_SERVICE_H

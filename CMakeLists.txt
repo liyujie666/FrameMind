@@ -207,8 +207,8 @@ set(FFMPEG_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ffmpeg")
 
 target_include_directories(FrameMind PRIVATE "${FFMPEG_ROOT}/include")
 
-# 需要链接的 FFmpeg 子库（AudioDecoder 用到 avformat + avcodec + avutil + swresample）
-set(FFMPEG_LIBS avformat avcodec avutil swresample)
+# 需要链接的 FFmpeg 子库（AudioDecoder 与 FrameExtractor 分别使用音频重采样和视频像素转换）
+set(FFMPEG_LIBS avformat avcodec avutil swresample swscale)
 foreach(_lib ${FFMPEG_LIBS})
     add_library(ffmpeg_${_lib} SHARED IMPORTED)
     # 查找 bin/ 下的对应 DLL（文件名含版本号，用 GLOB 匹配）

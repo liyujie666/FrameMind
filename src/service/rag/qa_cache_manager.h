@@ -3,6 +3,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QtGlobal>
 #include <QVector>
 #include <optional>
 #include <vector>
@@ -40,8 +41,12 @@ public:
                             QObject* parent = nullptr);
 
     /// 设置命中阈值（默认 0.88）
-    void setThreshold(float thr) { m_threshold = thr; }
+    void setThreshold(float thr) { m_threshold = qBound(0.0f, thr, 1.0f); }
     float threshold() const { return m_threshold; }
+
+    /// 控制缓存结论最大有效期，过期内容必须重新检索原始证据。
+    void setMaxAgeDays(int days) { m_maxAgeDays = qMax(0, days); }
+    int maxAgeDays() const { return m_maxAgeDays; }
 
     /// 缓存一次成功的 QA
     /// @param evidenceScenes 该次回答涉及的场景 ID 列表（用于评估证据范围）
@@ -65,6 +70,7 @@ private:
     VideoRAGStore*    m_store   = nullptr;
     EmbeddingService* m_embedder = nullptr;
     float             m_threshold = 0.88f;
+    int               m_maxAgeDays = 7;
 };
 
 #endif // FRAMEMIND_QA_CACHE_MANAGER_H
