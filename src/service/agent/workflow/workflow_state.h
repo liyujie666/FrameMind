@@ -21,6 +21,28 @@ class WorkflowState
 {
 public:
     WorkflowState() = default;
+    
+    WorkflowState(const WorkflowState& other)
+        : m_data(other.m_data)
+        , m_messages(other.m_messages)
+        , m_artifacts(other.m_artifacts)
+        , m_currentNode(other.m_currentNode)
+        , m_iteration(other.m_iteration)
+        , m_cancelled(other.m_cancelled.load())
+    {}
+    
+    WorkflowState& operator=(const WorkflowState& other)
+    {
+        if (this != &other) {
+            m_data = other.m_data;
+            m_messages = other.m_messages;
+            m_artifacts = other.m_artifacts;
+            m_currentNode = other.m_currentNode;
+            m_iteration = other.m_iteration;
+            m_cancelled.store(other.m_cancelled.load());
+        }
+        return *this;
+    }
 
     //─── 键值存储 ───────────────────────────────────────────────
 

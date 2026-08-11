@@ -22,7 +22,7 @@ void ToolNode::execute(WorkflowState& state, NodeCallback done)
         return;
     }
 
-    ITool* tool = m_registry->tool(m_toolName);
+    ITool* tool = m_registry->getTool(m_toolName);
     if (!tool) {
         done(NodeResult{.nextRoute = {}, .success = false,
                         .error = QString("Tool '%1' not found").arg(m_toolName)});

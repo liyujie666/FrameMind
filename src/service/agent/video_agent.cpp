@@ -340,7 +340,7 @@ void VideoAgent::phaseReasonAndAct(const QString& convId,
         [this](const QString& delta) {
             if (m_onProgress) m_onProgress(delta);
         },
-        [this, convId, question, userFrames, enrichedCtx]
+        [this, convId, question, userFrames, enrichedCtx, toolChoice]
         (const QString& answer, const QVector<ToolResult>& toolTrace, int rounds) {
             emit stageChanged(QStringLiteral("REFLECT"));
 
