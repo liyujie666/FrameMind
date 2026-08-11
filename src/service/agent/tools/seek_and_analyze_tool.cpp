@@ -6,6 +6,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QFutureWatcher>
 
 SeekAndAnalyzeTool::SeekAndAnalyzeTool(PlayerService* player,
                                         VideoAnalysisService* analysis)
@@ -47,23 +48,23 @@ void SeekAndAnalyzeTool::executeAsync(const QString& callId,
     const int64_t ts = args.value(QStringLiteral("timestamp_ms")).toVariant().toLongLong();
     const QString focus = args.value(QStringLiteral("focus")).toString();
 
-    auto future = m_player->captureFrameAt(ts, 3000);
-    // 阻塞等待帧（工具执行处于工作线程，主线程不受影响）
-    future.waitForFinished();
-    QImage frame;
-    if (future.resultCount() > 0) frame = future.result();
-    if (frame.isNull()) {
-        done(ToolResult::fail(callId, name(),
-                              QStringLiteral("截取 %1ms 处的帧失败").arg(ts)));
-        return;
-    }
-
-    // 调用 VLM 描述
-    m_analysis->describeFrame(frame, ts, focus,
-        [callId, ts, done](const QString& desc) {
-            QJsonObject data;
-            data.insert(QStringLiteral("timestamp_ms"), static_cast<qint64>(ts));
-            data.insert(QStringLiteral("description"), desc);
-            done(ToolResult::ok(callId, QStringLiteral("seek_and_analyze"), data));
+    auto* watcher = new QFutureWatcher<QImage>(m_analysis);
+    QObject::connect(watcher, &QFutureWatcher<QImage>::finished, m_analysis,
+        [this, watcher, callId, ts, focus, done]() {
+            const QImage frame = watcher->result();
+            watcher->deleteLater();
+            if (frame.isNull()) {
+                done(ToolResult::fail(callId, name(),
+                                      QStringLiteral("截取 %1ms 处的帧失败").arg(ts)));
+                return;
+            }
+            m_analysis->describeFrame(frame, ts, focus,
+                [callId, ts, done](const QString& desc) {
+                    QJsonObject data;
+                    data.insert(QStringLiteral("timestamp_ms"), static_cast<qint64>(ts));
+                    data.insert(QStringLiteral("description"), desc);
+                    done(ToolResult::ok(callId, QStringLiteral("seek_and_analyze"), data));
+                });
         });
+    watcher->setFuture(m_player->captureFrameAt(ts, 3000));
 }

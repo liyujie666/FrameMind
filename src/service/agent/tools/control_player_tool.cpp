@@ -52,7 +52,20 @@ void ControlPlayerTool::executeAsync(const QString& callId,
     const QString action = args.value(QStringLiteral("action")).toString();
 
     if (action == QLatin1String("seek")) {
-        const int64_t ts = args.value(QStringLiteral("timestamp_ms")).toVariant().toLongLong();
+        // 部分提供商把数字序列化为字符串，这里按值转换而不是按 JSON 类型拒绝。
+        const QJsonValue tsValue = args.value(QStringLiteral("timestamp_ms"));
+        bool tsOk = false;
+        const int64_t ts = tsValue.toVariant().toLongLong(&tsOk);
+        if (tsValue.isUndefined() || tsValue.isNull() || !tsOk) {
+            done(ToolResult::fail(callId, name(),
+                                  QStringLiteral("seek 需要有效的 timestamp_ms（毫秒）")));
+            return;
+        }
+        if (ts < 0) {
+            done(ToolResult::fail(callId, name(),
+                                  QStringLiteral("timestamp_ms 不能为负数")));
+            return;
+        }
         // 保证信号在主线程触发（EventBus 为 QObject，跨线程用 QueuedConnection）
         QMetaObject::invokeMethod(m_eventBus, [bus = m_eventBus.data(), ts] {
             bus->requestSeek(ts);
@@ -60,13 +73,18 @@ void ControlPlayerTool::executeAsync(const QString& callId,
         QJsonObject data{{ QStringLiteral("action"), action },
                          { QStringLiteral("timestamp_ms"), static_cast<qint64>(ts) }};
         done(ToolResult::ok(callId, name(), data));
-    } else if (action == QLatin1String("play") || action == QLatin1String("pause")) {
-        // 当前 EventBus 未定义 play/pause 事件；后续可扩展
-        // 暂时也用 seek 到当前位置 + 附带 action 提示
-        QJsonObject data{{ QStringLiteral("action"), action },
-                         { QStringLiteral("note"),
-                           QStringLiteral("play/pause 事件在 EventBus 中未实现，已跳过") }};
-        done(ToolResult::ok(callId, name(), data));
+    } else if (action == QLatin1String("play")) {
+        QMetaObject::invokeMethod(m_eventBus, [bus = m_eventBus.data()] {
+            bus->requestPlay();
+        }, Qt::QueuedConnection);
+        done(ToolResult::ok(callId, name(),
+                            QJsonObject{{QStringLiteral("action"), action}}));
+    } else if (action == QLatin1String("pause")) {
+        QMetaObject::invokeMethod(m_eventBus, [bus = m_eventBus.data()] {
+            bus->requestPause();
+        }, Qt::QueuedConnection);
+        done(ToolResult::ok(callId, name(),
+                            QJsonObject{{QStringLiteral("action"), action}}));
     } else {
         done(ToolResult::fail(callId, name(),
                               QStringLiteral("未知 action: %1").arg(action)));

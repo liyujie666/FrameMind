@@ -43,6 +43,9 @@ public:
     void setThreshold(float thr) { m_threshold = thr; }
     float threshold() const { return m_threshold; }
 
+    /// 只有无副作用、可复用的知识问答才允许进入缓存。
+    static bool isCacheableQuestion(const QString& question);
+
     /// 缓存一次成功的 QA
     /// @param evidenceScenes 该次回答涉及的场景 ID 列表（用于评估证据范围）
     void cache(const QString& videoId,

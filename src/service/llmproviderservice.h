@@ -106,6 +106,11 @@ public:
     void testProviderConnection(const QString& providerId,
                                 const QString& overrideKey = {});
 
+    // ---- 模型能力检测 ----
+
+    /// 检查指定提供商和模型是否支持 Tool Calling
+    bool supportsToolCalling(const QString& providerId, const QString& modelName) const;
+
 signals:
     /// 提供商配置变更信号
     void providerUpdated(const QString& providerId);

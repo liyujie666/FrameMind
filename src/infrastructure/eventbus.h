@@ -24,6 +24,8 @@ public:
     // ---- 发布方法（公开） ----
     void notifyVideoOpened(const QString& filePath) { emit videoOpened(filePath); }
     void requestSeek(int64_t posMs) { emit seekToPosition(posMs); }
+    void requestPlay() { emit playRequested(); }
+    void requestPause() { emit pauseRequested(); }
     void requestFrameForAI(int64_t posMs) { emit frameForAIRequested(posMs); }
     void provideScreenshotForAI(const QImage& frame, int64_t tsMs)
     {
@@ -35,6 +37,8 @@ signals:
     void videoOpened(const QString& filePath);
     /// AI / 时间线 请求跳转到指定时间点
     void seekToPosition(int64_t posMs);
+    void playRequested();
+    void pauseRequested();
     /// 请求对指定时间点截帧用于 AI（-1 表示当前帧）
     void frameForAIRequested(int64_t posMs);
     /// 截帧回包给 AI

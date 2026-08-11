@@ -69,7 +69,8 @@ public:
     void continueWithToolResults(const QString& conversationId,
                                    const QJsonArray& assistantToolCallMsg,
                                    const QJsonArray& toolMessages,
-                                   const QJsonArray& tools);
+                                   const QJsonArray& tools,
+                                   const QJsonValue& toolChoice = QStringLiteral("auto"));
 
     void stopGeneration();
     void setModel(const QString& modelName);
@@ -83,6 +84,9 @@ public:
     /// 切换视频上下文（供 Orchestrator 更新 system prompt）
     void setActiveVideoContext(const VideoContext& ctx) { m_activeCtx = ctx; }
     VideoContext activeVideoContext() const { return m_activeCtx; }
+
+    /// 检查当前模型是否支持 Tool Calling
+    bool currentModelSupportsToolCalling() const;
 
 signals:
     void responseChunk(const QString& convId, const QString& delta);

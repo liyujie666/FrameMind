@@ -9,6 +9,7 @@
 #include "model/agent_types.h"
 #include "model/video_representation.h"
 #include "model/retrieval_result.h"
+#include "model/tool_types.h"
 
 /**
  * 反思引擎（agent-core-design.md §3.2 REFLECT）。
@@ -29,7 +30,8 @@ public:
     /// 主入口
     ReflectionResult reflect(const QString& answer,
                               const QVector<RetrievalResult>& evidence,
-                              QSharedPointer<VideoRepresentation> repr);
+                              QSharedPointer<VideoRepresentation> repr,
+                              const QVector<ToolResult>& toolTrace = {});
 
     /// 单项检查：事实一致性
     ReflectionResult::Issue* checkConsistency(

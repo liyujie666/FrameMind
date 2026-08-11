@@ -45,7 +45,7 @@ bool OnnxRuntimeEngine::loadModel(const QString& modelPath)
     }
 
     try {
-#ifdef Q_OS_WIN
+#ifdef _WIN32
         m_session = std::make_unique<Ort::Session>(
             m_env, modelPath.toStdWString().c_str(), m_sessionOptions);
 #else

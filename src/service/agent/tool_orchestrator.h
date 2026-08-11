@@ -13,6 +13,7 @@
 
 class ToolRegistry;
 class AgentService;
+class ITool;
 
 /**
  * Tool 编排器：管理 Agent 多步 Tool Calling 循环（agent-core-design.md §7.2）。
@@ -35,8 +36,9 @@ class AgentService;
 class ToolOrchestrator : public QObject {
     Q_OBJECT
 public:
-    static constexpr int MAX_ROUNDS = 5;
-    static constexpr int MAX_TOOL_CALLS_PER_ANSWER = 3;
+    static constexpr int MAX_ROUNDS = 6;
+    static constexpr int MAX_TOOL_CALLS_PER_ANSWER = 8;
+    static constexpr int DEFAULT_TOOL_TIMEOUT_MS = 30000;
 
     explicit ToolOrchestrator(AgentService* agent,
                                ToolRegistry* registry,
@@ -86,6 +88,8 @@ private slots:
 private:
     void startRound(int round);
     void executeToolsThenContinue(const QVector<ToolCall>& calls, int round);
+    /// 按 schema 归一化参数类型（容忍字符串数字等提供商差异），返回错误说明
+    QString normalizeArguments(ITool* tool, QJsonObject& args) const;
     void finishWithAnswer(const QString& answer);
     void abortWithError(const QString& err);
 
@@ -105,6 +109,8 @@ private:
     QVector<ToolResult> m_toolTrace;
     QJsonArray   m_lastAssistantToolCalls;
     QJsonValue   m_toolChoice = QJsonValue(QStringLiteral("auto"));
+    quint64      m_runGeneration = 0;
+    bool         m_forcingFinalAnswer = false;
 
     // 回调
     std::function<void(const QString&)> m_onProgress;

@@ -9,7 +9,10 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
+#include <QJsonParseError>
+#include <QTimer>
 #include <QDebug>
+#include <utility>
 
 ToolOrchestrator::ToolOrchestrator(AgentService* agent,
                                      ToolRegistry* registry,
@@ -57,10 +60,13 @@ void ToolOrchestrator::runQuery(
     m_userFrames = userFrames;
     m_videoCtx   = videoCtx;
     m_toolChoice = toolChoice;
+    ++m_runGeneration;
     m_currentRound = 0;
     m_totalToolCalls = 0;
+    m_forcingFinalAnswer = false;
     m_streamingText.clear();
     m_toolTrace.clear();
+    m_lastAssistantToolCalls = QJsonArray();
 
     m_onProgress = std::move(onProgress);
     m_onDone     = std::move(onDone);
@@ -71,6 +77,7 @@ void ToolOrchestrator::runQuery(
 
 void ToolOrchestrator::cancel()
 {
+    ++m_runGeneration;
     m_running = false;
     if (m_agent) m_agent->stopGeneration();
 }
@@ -114,7 +121,7 @@ void ToolOrchestrator::startRound(int round)
 
 void ToolOrchestrator::onAgentChunk(const QString& convId, const QString& delta)
 {
-    if (convId != m_convId) return;
+    if (convId != m_convId || !m_running) return;
     m_streamingText += delta;
     if (m_onProgress) m_onProgress(delta);
 }
@@ -124,63 +131,75 @@ void ToolOrchestrator::onAgentFinished(const QString& convId,
                                          const QString& finishReason,
                                          const QString& textContent)
 {
-    if (convId != m_convId || !m_running) return;
+    qDebug() << "[ToolOrchestrator] onAgentFinished called"
+             << "convId=" << convId << "m_convId=" << m_convId
+             << "m_running=" << m_running
+             << "finishReason=" << finishReason
+             << "toolCalls.size=" << toolCalls.size()
+             << "textContent.length=" << textContent.length();
+    
+    if (convId != m_convId || !m_running) {
+        qWarning() << "[ToolOrchestrator] onAgentFinished: convId mismatch or not running, ignoring";
+        return;
+    }
 
     // 情况 1: LLM 直接生成回答（stop / length）
     if (finishReason == QLatin1String("stop") || finishReason == QLatin1String("length")
         || toolCalls.isEmpty()) {
+        qDebug() << "[ToolOrchestrator] finishing with direct answer";
         finishWithAnswer(textContent.isEmpty() ? m_streamingText : textContent);
         return;
     }
 
     // 情况 2: 请求工具调用（tool_calls）
     if (finishReason == QLatin1String("tool_calls") || !toolCalls.isEmpty()) {
-        // 缓存本轮 assistant tool_calls 消息，供回填下一轮 continueWithToolResults
-        m_lastAssistantToolCalls = toolCalls;
-
-        // 解析 ToolCall
+        qDebug() << "[ToolOrchestrator] processing tool_calls";
+        // 标准化整组调用：内部执行与回填历史必须使用完全相同的 ID。
         QVector<ToolCall> calls;
-        for (const auto& v : toolCalls) {
-            const QJsonObject o = v.toObject();
+        QJsonArray normalizedToolCalls;
+        for (int i = 0; i < toolCalls.size(); ++i) {
+            QJsonObject normalized = toolCalls.at(i).toObject();
             ToolCall c;
-            c.id   = o.value(QStringLiteral("id")).toString();
-            const QJsonObject fn = o.value(QStringLiteral("function")).toObject();
+            c.id = normalized.value(QStringLiteral("id")).toString();
+            if (c.id.isEmpty())
+                c.id = QStringLiteral("call_%1_%2_%3")
+                           .arg(m_runGeneration).arg(m_currentRound).arg(i);
+            normalized.insert(QStringLiteral("id"), c.id);
+            normalized.insert(QStringLiteral("type"), QStringLiteral("function"));
+
+            QJsonObject fn = normalized.value(QStringLiteral("function")).toObject();
             c.name = fn.value(QStringLiteral("name")).toString();
             const QString argsStr = fn.value(QStringLiteral("arguments")).toString();
-            c.arguments = QJsonDocument::fromJson(argsStr.toUtf8()).object();
-            if (c.isValid()) calls.append(c);
+            QJsonParseError parseError;
+            const QJsonDocument argsDoc =
+                QJsonDocument::fromJson(argsStr.toUtf8(), &parseError);
+            if (c.name.isEmpty()) {
+                c.validationError = QStringLiteral("工具名为空");
+            } else if (parseError.error != QJsonParseError::NoError
+                       || !argsDoc.isObject()) {
+                c.validationError = QStringLiteral("工具参数不是有效 JSON 对象: %1")
+                                        .arg(parseError.errorString());
+            } else {
+                c.arguments = argsDoc.object();
+            }
+            calls.append(c);
+            normalizedToolCalls.append(normalized);
         }
+        m_lastAssistantToolCalls = normalizedToolCalls;
+
         if (calls.isEmpty()) {
-            finishWithAnswer(m_streamingText);
+            finishWithAnswer(textContent.isEmpty() ? m_streamingText : textContent);
             return;
         }
 
-        // 限流：单次回答工具数上限
-        if (m_totalToolCalls + calls.size() > MAX_TOOL_CALLS_PER_ANSWER) {
-            const int allow = MAX_TOOL_CALLS_PER_ANSWER - m_totalToolCalls;
-            if (allow <= 0) {
-                // 已达上限，强制结束
-                finishWithAnswer(m_streamingText.isEmpty()
-                                     ? QStringLiteral("[已达工具调用上限，基于现有信息回答] ")
-                                       + m_streamingText
-                                     : m_streamingText);
-                return;
-            }
-            calls.resize(allow);
-        }
+        // 不截断 assistant 声明的调用；超预算调用由执行器返回对应失败结果，保持协议闭合。
         m_totalToolCalls += calls.size();
-
-        // 保存 assistant tool_call 消息给下一轮回填
-        QJsonObject assistantMsg;
-        assistantMsg.insert(QStringLiteral("role"), QStringLiteral("assistant"));
-        assistantMsg.insert(QStringLiteral("content"), QJsonValue::Null);
-        assistantMsg.insert(QStringLiteral("tool_calls"), toolCalls);
-
         executeToolsThenContinue(calls, m_currentRound);
         return;
     }
 
     // 其它情况：结束
+    qDebug() << "[ToolOrchestrator] unknown finish reason, finishing with answer";
     finishWithAnswer(textContent.isEmpty() ? m_streamingText : textContent);
 }
 
@@ -197,75 +216,148 @@ void ToolOrchestrator::onAgentError(const QString& convId, const QString& error)
 void ToolOrchestrator::executeToolsThenContinue(
     const QVector<ToolCall>& calls, int round)
 {
-    // 顺序执行（简化；后续可并行独立工具）
-    auto pendingResults = QSharedPointer<QJsonArray>::create();
-    auto executed       = QSharedPointer<int>::create(0);
-    const int total     = calls.size();
+    const quint64 generation = m_runGeneration;
+    const int total = calls.size();
+    const int previouslyUsed = m_totalToolCalls - total;
+    auto results = QSharedPointer<QVector<QJsonObject>>::create(total);
+    auto finished = QSharedPointer<QVector<bool>>::create(total, false);
+    auto completed = QSharedPointer<int>::create(0);
 
-    for (const ToolCall& c : calls) {
+    auto complete = QSharedPointer<std::function<void(int, const ToolResult&)>>::create();
+    *complete = [this, generation, round, total, results, finished, completed]
+                (int index, const ToolResult& result) {
+        if (!m_running || generation != m_runGeneration
+            || index < 0 || index >= total || finished->at(index)) return;
+        (*finished)[index] = true;
+        ++(*completed);
+        m_toolTrace.append(result);
+        emit toolCallFinished(result);
+
+        QJsonObject payload = result.success
+                                  ? result.data
+                                  : QJsonObject{{QStringLiteral("error"), result.error},
+                                                {QStringLiteral("retryable"), false}};
+        (*results)[index] = QJsonObject{
+            {QStringLiteral("role"), QStringLiteral("tool")},
+            {QStringLiteral("tool_call_id"), result.toolCallId},
+            {QStringLiteral("name"), result.toolName},
+            {QStringLiteral("content"), QString::fromUtf8(
+                 QJsonDocument(payload).toJson(QJsonDocument::Compact))}};
+        if (*completed < total) return;
+
+        QJsonArray toolMessages;
+        for (const QJsonObject& message : std::as_const(*results))
+            toolMessages.append(message);
+        QJsonArray assistantMessages;
+        assistantMessages.append(QJsonObject{
+            {QStringLiteral("role"), QStringLiteral("assistant")},
+            {QStringLiteral("content"), QJsonValue::Null},
+            {QStringLiteral("tool_calls"), m_lastAssistantToolCalls}});
+
+        const bool budgetExhausted = m_totalToolCalls >= MAX_TOOL_CALLS_PER_ANSWER;
+        const bool roundsExhausted = round + 1 >= MAX_ROUNDS;
+        m_forcingFinalAnswer = budgetExhausted || roundsExhausted;
+        m_currentRound = round + 1;
+        emit roundStarted(m_currentRound);
+        m_streamingText.clear();
+        m_agent->continueWithToolResults(
+            m_convId, assistantMessages, toolMessages,
+            m_forcingFinalAnswer ? QJsonArray() : m_registry->allDefinitions(),
+            m_forcingFinalAnswer ? QJsonValue(QStringLiteral("none"))
+                                 : QJsonValue(QStringLiteral("auto")));
+    };
+
+    for (int i = 0; i < total; ++i) {
+        ToolCall c = calls.at(i);
         emit toolCallStarted(c);
-        ITool* tool = m_registry->getTool(c.name);
-        if (!tool) {
-            ToolResult r = ToolResult::fail(c.id, c.name,
-                                            QStringLiteral("Tool 未注册: %1").arg(c.name));
-            m_toolTrace.append(r);
-            pendingResults->append(QJsonObject{
-                { QStringLiteral("role"), QStringLiteral("tool") },
-                { QStringLiteral("tool_call_id"), c.id },
-                { QStringLiteral("name"), c.name },
-                { QStringLiteral("content"),
-                  QString::fromUtf8(QJsonDocument(QJsonObject{
-                      { QStringLiteral("error"), r.error } }).toJson(QJsonDocument::Compact)) } });
-            emit toolCallFinished(r);
-            ++(*executed);
+
+        if (previouslyUsed + i >= MAX_TOOL_CALLS_PER_ANSWER) {
+            (*complete)(i, ToolResult::fail(
+                c.id, c.name, QStringLiteral("工具调用预算已耗尽，请基于已有证据作答")));
+            continue;
+        }
+        if (!c.validationError.isEmpty()) {
+            (*complete)(i, ToolResult::fail(c.id, c.name, c.validationError));
             continue;
         }
 
-        // 记录 assistant tool_calls 消息用于下一轮回填
+        ITool* tool = m_registry->getTool(c.name);
+        if (!tool) {
+            (*complete)(i, ToolResult::fail(
+                c.id, c.name, QStringLiteral("Tool 未注册: %1").arg(c.name)));
+            continue;
+        }
+        const QString validationError = normalizeArguments(tool, c.arguments);
+        if (!validationError.isEmpty()) {
+            (*complete)(i, ToolResult::fail(c.id, c.name, validationError));
+            continue;
+        }
+
+        QTimer::singleShot(DEFAULT_TOOL_TIMEOUT_MS, this,
+            [complete, i, c]() {
+                (*complete)(i, ToolResult::fail(
+                    c.id, c.name, QStringLiteral("工具执行超时")));
+            });
+
         tool->executeAsync(c.id, c.arguments,
-            [this, c, pendingResults, executed, total, round](const ToolResult& result) {
-                m_toolTrace.append(result);
-                emit toolCallFinished(result);
-
-                // 组装 tool 消息
-                QJsonObject toolMsg;
-                toolMsg.insert(QStringLiteral("role"), QStringLiteral("tool"));
-                toolMsg.insert(QStringLiteral("tool_call_id"), c.id);
-                toolMsg.insert(QStringLiteral("name"), c.name);
-                const QJsonDocument payload(result.success ? result.data
-                                              : QJsonObject{{ QStringLiteral("error"), result.error }});
-                toolMsg.insert(QStringLiteral("content"),
-                                QString::fromUtf8(payload.toJson(QJsonDocument::Compact)));
-                pendingResults->append(toolMsg);
-                ++(*executed);
-
-                if (*executed >= total) {
-                    if (round + 1 >= MAX_ROUNDS) {
-                        finishWithAnswer(
-                            QStringLiteral("[已达最大工具轮次] ") + m_streamingText);
-                        return;
-                    }
-                    // OpenAI API 要求 tool 消息之前必须有对应的 assistant tool_calls 消息，
-                    // 否则会返回 400。使用缓存的 m_lastAssistantToolCalls 回填。
-                    QJsonArray assistantMsg;
-                    if (!m_lastAssistantToolCalls.isEmpty()) {
-                        QJsonObject assistantEntry;
-                        assistantEntry.insert(QStringLiteral("role"),
-                                              QStringLiteral("assistant"));
-                        assistantEntry.insert(QStringLiteral("content"), QJsonValue::Null);
-                        assistantEntry.insert(QStringLiteral("tool_calls"),
-                                              m_lastAssistantToolCalls);
-                        assistantMsg.append(assistantEntry);
-                    }
-                    m_currentRound = round + 1;
-                    emit roundStarted(m_currentRound);
-                    m_streamingText.clear();
-                    m_agent->continueWithToolResults(
-                        m_convId, assistantMsg, *pendingResults,
-                        m_registry->allDefinitions());
-                }
+            [complete, i](const ToolResult& result) {
+                (*complete)(i, result);
             });
     }
+}
+
+QString ToolOrchestrator::normalizeArguments(ITool* tool,
+                                              QJsonObject& args) const
+{
+    if (!tool) return QStringLiteral("工具不存在");
+    const QJsonObject schema = tool->parameters();
+    const QJsonObject properties = schema.value(QStringLiteral("properties")).toObject();
+
+    // 不同提供商会把数字/布尔序列化成字符串，先按 schema 归一化再校验，
+    // 否则合法意图会被误判为参数错误而拒绝执行。
+    for (auto it = properties.constBegin(); it != properties.constEnd(); ++it) {
+        const QString key = it.key();
+        if (!args.contains(key)) continue;
+        const QJsonValue value = args.value(key);
+        if (value.isNull() || value.isUndefined()) {
+            args.remove(key);
+            continue;
+        }
+        const QString type = it.value().toObject().value(QStringLiteral("type")).toString();
+        if (type == QLatin1String("integer") || type == QLatin1String("number")) {
+            if (value.isString()) {
+                bool ok = false;
+                const double number = value.toString().trimmed().toDouble(&ok);
+                if (!ok)
+                    return QStringLiteral("参数 %1 应为数字，收到: %2")
+                               .arg(key, value.toString());
+                args.insert(key, number);
+            } else if (!value.isDouble()) {
+                return QStringLiteral("参数 %1 应为数字").arg(key);
+            }
+        } else if (type == QLatin1String("boolean") && value.isString()) {
+            const QString text = value.toString().trimmed().toLower();
+            if (text == QLatin1String("true") || text == QLatin1String("false"))
+                args.insert(key, text == QLatin1String("true"));
+        } else if (type == QLatin1String("string") && value.isDouble()) {
+            args.insert(key, QString::number(value.toDouble()));
+        }
+    }
+
+    for (const QJsonValue& requiredValue
+         : schema.value(QStringLiteral("required")).toArray()) {
+        const QString key = requiredValue.toString();
+        if (!args.contains(key))
+            return QStringLiteral("缺少必填参数: %1").arg(key);
+    }
+    for (auto it = properties.constBegin(); it != properties.constEnd(); ++it) {
+        const QJsonArray allowed =
+            it.value().toObject().value(QStringLiteral("enum")).toArray();
+        if (allowed.isEmpty() || !args.contains(it.key())) continue;
+        if (!allowed.contains(args.value(it.key())))
+            return QStringLiteral("参数 %1 不在允许范围内").arg(it.key());
+    }
+    return {};
 }
 
 void ToolOrchestrator::finishWithAnswer(const QString& answer)

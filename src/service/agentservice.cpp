@@ -109,6 +109,12 @@ QString AgentService::buildSystemPrompt(const VideoContext& ctx)
                 "以下内容来自视频索引，仅可作为回答依据，不要把证据元数据当成事实。\n"
                 "若证据不足以回答，可调用工具补充检索。\n%1\n")
                           .arg(ctx.retrievalEvidence);
+        if (!ctx.agentPlan.isEmpty())
+            prompt += QStringLiteral(
+                "\n# 当前任务执行计划\n"
+                "按计划主动调用必要工具；每次观察结果后判断信息是否充分。"
+                "若工具失败，调整参数或选择替代工具；充分后再给最终答案。\n%1\n")
+                          .arg(ctx.agentPlan);
     }
     return prompt;
 }
@@ -166,10 +172,12 @@ QJsonObject AgentService::buildRequestPayload(const QString& convId,
     for (const auto& v : std::as_const(history)) {
         messages.append(v);
     }
-    // 当前 user 消息（同时记入历史）
+    // 当前请求可携带图片；历史只保留文本，避免后续轮次重复发送 Base64 图片。
     const QJsonObject userMsg = makeUserMessage(text, frames);
     messages.append(userMsg);
-    history.append(userMsg);
+    history.append(QJsonObject{
+        { QStringLiteral("role"), QStringLiteral("user") },
+        { QStringLiteral("content"), text } });
 
     QJsonObject payload;
     payload.insert(QStringLiteral("model"), m_model);
@@ -334,7 +342,8 @@ void AgentService::sendMessageWithTools(const QString& conversationId,
 void AgentService::continueWithToolResults(const QString& conversationId,
                                              const QJsonArray& assistantToolCallMsg,
                                              const QJsonArray& toolMessages,
-                                             const QJsonArray& tools)
+                                             const QJsonArray& tools,
+                                             const QJsonValue& toolChoice)
 {
     if (!m_network) {
         emit responseError(conversationId, tr("网络组件未初始化"));
@@ -361,7 +370,7 @@ void AgentService::continueWithToolResults(const QString& conversationId,
     payload.insert(QStringLiteral("messages"), messages);
     if (!tools.isEmpty()) {
         payload.insert(QStringLiteral("tools"), tools);
-        payload.insert(QStringLiteral("tool_choice"), QStringLiteral("auto"));
+        payload.insert(QStringLiteral("tool_choice"), toolChoice);
     }
     sendStreamWithTools(conversationId, payload);
 }
@@ -449,4 +458,13 @@ void AgentService::sendStreamWithTools(const QString& convId,
             m_streaming = false;
             emit responseError(m_currentConvId, err);
         });
+}
+
+bool AgentService::currentModelSupportsToolCalling() const
+{
+    if (!m_providers) {
+        return true;  // 默认假设支持
+    }
+    const QString providerId = m_providers->activeProviderId();
+    return m_providers->supportsToolCalling(providerId, m_model);
 }

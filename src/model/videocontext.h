@@ -20,12 +20,14 @@ struct VideoContext {
     QString sceneOverview;       // 场景概览（mm:ss 时间轴）
     QString videoSummary;        // 视频摘要
     QString retrievalEvidence;   // RAG 检索证据（格式化文本，注入 system prompt）
+    QString agentPlan;            // 当前问题的结构化执行建议
     int64_t currentPositionMs = 0; // 当前播放位置
 
     bool isEmpty() const
     {
         return fileName.isEmpty() && sceneOverview.isEmpty()
-               && videoSummary.isEmpty() && retrievalEvidence.isEmpty();
+               && videoSummary.isEmpty() && retrievalEvidence.isEmpty()
+               && agentPlan.isEmpty();
     }
 };
 

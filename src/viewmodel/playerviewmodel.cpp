@@ -109,6 +109,21 @@ void PlayerViewModel::connectService()
     if (m_eventBus) {
         connect(m_eventBus, &EventBus::seekToPosition,
                 this, &PlayerViewModel::seekToTimestamp);
+        connect(m_eventBus, &EventBus::playRequested, this, [this]() {
+            if (!m_playerService) return;
+            if (m_state == PlayerState::Playing) return;
+            // Ended 后 SDK 已是 Stopped，play() 无效，只能重新 open（回调里会自动 play）
+            if (m_state == PlayerState::Ended) {
+                const QString path = m_playerService->videoInfo().filePath;
+                if (!path.isEmpty()) m_playerService->open(path);
+                return;
+            }
+            m_pauseAfterSeek = false;
+            m_playerService->play();
+        });
+        connect(m_eventBus, &EventBus::pauseRequested, this, [this]() {
+            if (m_playerService) m_playerService->pause();
+        });
         connect(m_eventBus, &EventBus::frameForAIRequested,
                 this, &PlayerViewModel::captureFrameForAI);
     }

@@ -5,6 +5,7 @@
 #include <QUuid>
 #include <QVariant>
 #include <QDateTime>
+#include <QRegularExpression>
 
 #ifdef FRAMEMIND_HAS_ONNXRUNTIME
 #  include "service/embedding_service.h"
@@ -17,6 +18,26 @@ QACacheManager::QACacheManager(VideoRAGStore* store,
     , m_store(store)
     , m_embedder(embedder)
 {
+}
+
+bool QACacheManager::isCacheableQuestion(const QString& question)
+{
+    const QString q = question.trimmed();
+    if (q.isEmpty()) return false;
+
+    // 副作用指令必须每次重新执行，不能把上一次的确认文本当作答案复用。
+    static const QRegularExpression sideEffectIntent(
+        QStringLiteral(
+            u"(seek|go\\s*to|jump\\s*to|^\\s*(play|pause)\\s*[!！。.]?$|"
+            u"跳转|跳到|定位到|快进|快退|继续播放|停止播放|播放到|"
+            u"(请|帮我|麻烦|立即|现在|开始|继续|停止).{0,8}(播放|暂停)|"
+            u"调到|切到|移到|拖到|音量|静音|倍速|截图|截屏)"),
+        QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression forceFresh(
+        QStringLiteral(u"(重新|再一次|再分析|重新分析|重新检查|实时|当前|现在)"),
+        QRegularExpression::CaseInsensitiveOption);
+    return !sideEffectIntent.match(q).hasMatch()
+           && !forceFresh.match(q).hasMatch();
 }
 
 std::vector<float> QACacheManager::encodeQuery(const QString& question) const
@@ -36,7 +57,7 @@ void QACacheManager::cache(const QString& videoId,
                            float confidence,
                            const QVector<int>& evidenceSceneIds)
 {
-    if (!m_store) return;
+    if (!m_store || !isCacheableQuestion(question)) return;
 
     const std::vector<float> emb = encodeQuery(question);
     if (emb.empty()) return;    // 无 embedding 不缓存（不能被检索）
@@ -68,7 +89,7 @@ void QACacheManager::cache(const QString& videoId,
 std::optional<QACacheManager::CachedAnswer> QACacheManager::tryAnswer(
     const QString& videoId, const QString& question)
 {
-    if (!m_store) return std::nullopt;
+    if (!m_store || !isCacheableQuestion(question)) return std::nullopt;
     const std::vector<float> emb = encodeQuery(question);
     if (emb.empty()) return std::nullopt;
 

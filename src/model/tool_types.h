@@ -14,8 +14,12 @@ struct ToolCall {
     QString id;                // "call_abc123"
     QString name;              // "seek_and_analyze" 等
     QJsonObject arguments;     // 完整 JSON 参数
+    QString validationError;   // 协议或参数解析错误，执行器将其作为 tool 失败结果回填
 
-    bool isValid() const { return !id.isEmpty() && !name.isEmpty(); }
+    bool isValid() const
+    {
+        return !id.isEmpty() && !name.isEmpty() && validationError.isEmpty();
+    }
 };
 
 /// 工具执行结果

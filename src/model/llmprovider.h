@@ -29,6 +29,7 @@ struct LLMProvider {
     QString defaultModel; // 默认模型
     QString apiKeyName;   // 密钥存储名称（用于 secretGet）
     bool supportsVision;  // 是否支持视觉（多模态）
+    bool supportsToolCalling; // 是否支持 Tool Calling（Function Calling）
     bool requiresOrgId;   // 是否需要组织 ID
     QStringList models;   // 支持的模型列表
 

@@ -5,6 +5,7 @@
 LLMProvider::LLMProvider()
     : type(LLMProviderType::Custom)
     , supportsVision(true)
+    , supportsToolCalling(true)
     , requiresOrgId(false)
 {
 }
@@ -17,6 +18,7 @@ LLMProvider::LLMProvider(const QJsonObject& json)
     , defaultModel(json.value(QStringLiteral("defaultModel")).toString())
     , apiKeyName(json.value(QStringLiteral("apiKeyName")).toString(QStringLiteral("secret.llm.api_key")))
     , supportsVision(json.value(QStringLiteral("supportsVision")).toBool(true))
+    , supportsToolCalling(json.value(QStringLiteral("supportsToolCalling")).toBool(true))
     , requiresOrgId(json.value(QStringLiteral("requiresOrgId")).toBool(false))
 {
     const QJsonArray modelsArray = json.value(QStringLiteral("models")).toArray();
@@ -35,6 +37,7 @@ QJsonObject LLMProvider::toJson() const
     json.insert(QStringLiteral("defaultModel"), defaultModel);
     json.insert(QStringLiteral("apiKeyName"), apiKeyName);
     json.insert(QStringLiteral("supportsVision"), supportsVision);
+    json.insert(QStringLiteral("supportsToolCalling"), supportsToolCalling);
     json.insert(QStringLiteral("requiresOrgId"), requiresOrgId);
 
     QJsonArray modelsArray;
@@ -98,6 +101,7 @@ LLMProvider LLMProviderPresets::openAI()
     p.defaultModel = QStringLiteral("gpt-4o");
     p.apiKeyName = QStringLiteral("secret.llm.openai");
     p.supportsVision = true;
+    p.supportsToolCalling = true;
     p.requiresOrgId = false;
     p.models = {
         QStringLiteral("gpt-4o"),
@@ -119,6 +123,7 @@ LLMProvider LLMProviderPresets::deepSeek()
     p.defaultModel = QStringLiteral("deepseek-chat");
     p.apiKeyName = QStringLiteral("secret.llm.deepseek");
     p.supportsVision = false;
+    p.supportsToolCalling = true;
     p.requiresOrgId = false;
     p.models = {
         QStringLiteral("deepseek-chat"),
@@ -137,12 +142,14 @@ LLMProvider LLMProviderPresets::qianfan()
     p.defaultModel = QStringLiteral("qwen-plus");
     p.apiKeyName = QStringLiteral("secret.llm.qianfan");
     p.supportsVision = true;
+    p.supportsToolCalling = true;  // 注意：qwen-vl-* 模型不支持，需要动态判断
     p.requiresOrgId = false;
     p.models = {
         QStringLiteral("qwen-plus"),
         QStringLiteral("qwen-turbo"),
         QStringLiteral("qwen-max"),
         QStringLiteral("qwen-vl-plus"),
+        QStringLiteral("qwen-vl-max"),
         QStringLiteral("qwen2.5-72b-instruct"),
         QStringLiteral("yi-large")
     };
@@ -159,6 +166,7 @@ LLMProvider LLMProviderPresets::zhipu()
     p.defaultModel = QStringLiteral("glm-4");
     p.apiKeyName = QStringLiteral("secret.llm.zhipu");
     p.supportsVision = true;
+    p.supportsToolCalling = true;
     p.requiresOrgId = false;
     p.models = {
         QStringLiteral("glm-4"),
@@ -179,6 +187,7 @@ LLMProvider LLMProviderPresets::ollama()
     p.defaultModel = QStringLiteral("llama3");
     p.apiKeyName = QStringLiteral("secret.llm.ollama");
     p.supportsVision = false;  // 取决于具体模型
+    p.supportsToolCalling = true;
     p.requiresOrgId = false;
     p.models = {
         QStringLiteral("llama3"),
@@ -201,6 +210,7 @@ LLMProvider LLMProviderPresets::custom()
     p.defaultModel = QStringLiteral("gpt-4o");
     p.apiKeyName = QStringLiteral("secret.llm.custom");
     p.supportsVision = true;
+    p.supportsToolCalling = true;
     p.requiresOrgId = false;
     p.models = {
         QStringLiteral("gpt-4o"),

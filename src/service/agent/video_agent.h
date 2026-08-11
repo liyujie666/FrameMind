@@ -80,15 +80,19 @@ signals:
 
 private:
     // 五阶段的实现（内部调度）
-    void phasePerceive(const QString& question,
-                        QSharedPointer<VideoRepresentation> repr,
-                        int64_t currentPosMs);
+    SamplingPlan phasePerceive(const QString& question,
+                                QSharedPointer<VideoRepresentation> repr,
+                                int64_t currentPosMs);
     void phaseReasonAndAct(const QString& convId,
                             const QString& question,
                             const QList<QImage>& userFrames,
                             const VideoContext& ctx);
     void phaseReflect(const QString& answer,
                        const QVector<ToolResult>& toolTrace);
+    void handleReasoningResult(const QString& answer,
+                               const QVector<ToolResult>& toolTrace,
+                               int rounds,
+                               const VideoContext& context);
 
     void finishAnswer(const AgentAnswer& answer);
     void failWith(const QString& err);
@@ -111,6 +115,8 @@ private:
     QString  m_currentQuestion;
     int64_t  m_currentPlayerPosMs = 0;
     QVector<RetrievalResult> m_retrievedEvidence;
+    int m_reflectionAttempts = 0;
+    int m_totalRounds = 0;
 
     // 回调
     std::function<void(const QString&)> m_onProgress;

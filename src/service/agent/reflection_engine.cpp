@@ -2,6 +2,7 @@
 
 #include <QRegularExpression>
 #include <QStringList>
+#include <algorithm>
 #include <memory>
 
 ReflectionEngine::ReflectionEngine(QObject* parent)
@@ -16,12 +17,20 @@ ReflectionEngine::ReflectionEngine(QObject* parent)
 ReflectionResult ReflectionEngine::reflect(
     const QString& answer,
     const QVector<RetrievalResult>& evidence,
-    QSharedPointer<VideoRepresentation> repr)
+    QSharedPointer<VideoRepresentation> repr,
+    const QVector<ToolResult>& toolTrace)
 {
     ReflectionResult result;
+    const bool hasSuccessfulToolEvidence = std::any_of(
+        toolTrace.cbegin(), toolTrace.cend(),
+        [](const ToolResult& item) {
+            return item.success && !item.data.isEmpty()
+                   && item.toolName != QLatin1String("control_player");
+        });
 
     std::unique_ptr<ReflectionResult::Issue> consist(checkConsistency(answer, repr));
-    std::unique_ptr<ReflectionResult::Issue> support(checkEvidenceSupport(answer, evidence));
+    std::unique_ptr<ReflectionResult::Issue> support(
+        hasSuccessfulToolEvidence ? nullptr : checkEvidenceSupport(answer, evidence));
     std::unique_ptr<ReflectionResult::Issue> temporal(checkTemporalValidity(answer, repr));
     std::unique_ptr<ReflectionResult::Issue> halluc(checkHallucination(answer, repr));
 

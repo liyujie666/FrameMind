@@ -353,3 +353,23 @@ void LLMProviderService::testProviderConnection(const QString& providerId,
         emit connectionTestResult(providerId, false, errorMsg);
     }
 }
+
+bool LLMProviderService::supportsToolCalling(const QString& providerId, const QString& modelName) const
+{
+    const LLMProvider provider = providerById(providerId);
+    if (provider.id.isEmpty()) {
+        return false;
+    }
+
+    // 阿里百炼特殊处理：qwen-vl-* 系列不支持 Tool Calling
+    if (provider.type == LLMProviderType::Qianfan) {
+        if (modelName.startsWith(QStringLiteral("qwen-vl"))) {
+            return false;
+        }
+        // 其他模型支持
+        return true;
+    }
+
+    // 其他提供商按配置判断
+    return provider.supportsToolCalling;
+}
