@@ -52,7 +52,10 @@ public:
 public slots:
     void sendMessage(const QString& text);
     void sendMessageWithFrame(const QString& text, const QImage& frame);
-    void sendMessageWithCurrentFrame(const QString& text);  // 📷：经 EventBus 取当前帧
+    void sendMessageWithCachedFrame(const QString& text);
+    void requestCurrentFrame();
+    void removeFrameFromCache(int index);
+    void clearAllCachedFrames();
     void stopGeneration();
     void regenerateLastResponse();
     void setCollapsed(bool collapsed);
@@ -74,6 +77,7 @@ signals:
     void messageAppended(int index);
     void messageUpdated(int index);
     void errorOccurred(const QString& msg);
+    void currentFrameReady(const QImage& frame, int64_t timestampMs);
 
 private:
     void connectAgent();
@@ -106,7 +110,8 @@ private:
 
     // 📷 当前帧待发
     bool    m_awaitingFrame = false;
-    QString m_pendingFrameText;
+    bool m_awaitingFrameForPreview = false;
+    QList<QImage> m_cachedFrames;
 };
 
 #endif // FRAMEMIND_CHATVIEWMODEL_H

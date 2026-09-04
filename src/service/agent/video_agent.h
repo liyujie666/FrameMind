@@ -87,6 +87,7 @@ public:
 signals:
     void stageChanged(const QString& stage);     // "PERCEIVE" / "REASON" / ...
     void toolInvoked(const QString& toolName);
+    void statusChanged(const QString& status);
     void reflectionIssueFound(const QString& detail);
 
 private:

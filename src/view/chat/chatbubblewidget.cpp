@@ -140,5 +140,5 @@ void ChatBubbleWidget::setMessage(const ChatMessage& msg)
 
 void ChatBubbleWidget::updateContent(const QString& markdown)
 {
-    m_content->setText(markdown.isEmpty() ? QStringLiteral("…") : markdown);
+    m_content->setText(markdown.isEmpty() ? QStringLiteral("正在等待模型响应…") : markdown);
 }

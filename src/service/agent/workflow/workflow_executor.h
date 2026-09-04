@@ -4,6 +4,7 @@
 #include <QTimer>
 #include <QMap>
 #include <QJsonObject>
+#include <QtGlobal>
 #include <functional>
 
 #include "workflow_graph.h"
@@ -69,7 +70,7 @@ public slots:
 private:
     void executeNode(const QString& nodeId);
     void route(const QString& fromNode, const NodeResult& result);
-    void handleTimeout(const QString& nodeId);
+    void handleTimeout(const QString& nodeId, quint64 executionId);
     void handleRetry(const QString& nodeId, int attempt);
     void saveCheckpoint();
     void finish();
@@ -82,6 +83,7 @@ private:
     // 超时定时器
     QTimer* m_timeoutTimer = nullptr;
     QString m_currentTimedNode;
+    quint64 m_currentExecutionId = 0;
 
     // 重试计数器 nodeId →已重试次数
     QMap<QString, int> m_retryCount;

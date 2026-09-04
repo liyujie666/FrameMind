@@ -10,6 +10,7 @@
 #include <QDateTime>
 #include <QStandardPaths>
 #include <QFutureInterface>
+#include <QFutureWatcher>
 #include <QtConcurrent/QtConcurrent>
 
 // ===================================================================

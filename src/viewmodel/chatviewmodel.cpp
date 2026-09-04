@@ -63,6 +63,10 @@ void ChatViewModel::connectAgent()
             [this](const QString& convId, const QString& delta) {
                 if (m_videoAgentStreaming) return;
                 if (convId != m_currentConversationId || m_assistantRow < 0) return;
+                const QString current = m_messageModel->messageAt(m_assistantRow).content;
+                if (current.startsWith(QStringLiteral("正在"))) {
+                    m_messageModel->updateContent(m_assistantRow, {});
+                }
                 m_messageModel->appendDeltaSilent(m_assistantRow, delta);
                 m_dirty = true;
             });
@@ -139,7 +143,21 @@ void ChatViewModel::setPlayerViewModel(PlayerViewModel* playerVM)
 
 void ChatViewModel::setVideoAgent(VideoAgent* agent)
 {
+    if (m_videoAgent == agent) return;
+    if (m_videoAgent) disconnect(m_videoAgent, nullptr, this, nullptr);
     m_videoAgent = agent;
+    if (m_videoAgent) {
+        connect(m_videoAgent, &VideoAgent::statusChanged, this,
+                [this](const QString& status) {
+                    if (m_assistantRow < 0 || !m_streaming) return;
+                    if (m_messageModel->messageAt(m_assistantRow).content.isEmpty()
+                        || m_messageModel->messageAt(m_assistantRow).content
+                               == QStringLiteral("正在请求模型…")) {
+                        m_messageModel->updateContent(m_assistantRow, status);
+                        emit messageUpdated(m_assistantRow);
+                    }
+                });
+    }
 }
 
 void ChatViewModel::setVideoAnalysisService(VideoAnalysisService* vas)
@@ -231,6 +249,9 @@ void ChatViewModel::doSend(const QString& text, const QList<QImage>& frames)
     m_flushTimer->start();
     emit streamingChanged(true);
 
+    m_messageModel->updateContent(m_assistantRow, QStringLiteral("正在请求模型…"));
+    emit messageUpdated(m_assistantRow);
+
     VideoContext ctx = getVideoContext();
     const int64_t currentPos = m_playerVM ? m_playerVM->position() : 0;
 
@@ -244,7 +265,13 @@ void ChatViewModel::doSend(const QString& text, const QList<QImage>& frames)
             ctx,
             currentPos,
             [this](const QString& delta) {
-                // onProgress：流式 delta，与 AgentService::responseChunk 等效
+                if (m_assistantRow < 0) return;
+                const QString current = m_messageModel->messageAt(m_assistantRow).content;
+                if (current == QStringLiteral("正在请求模型…")
+                    || current.startsWith(QStringLiteral("正在调用工具"))
+                    || current == QStringLiteral("正在整理回答…")) {
+                    m_messageModel->updateContent(m_assistantRow, {});
+                }
                 m_messageModel->appendDeltaSilent(m_assistantRow, delta);
                 m_dirty = true;
             },
@@ -303,32 +330,42 @@ void ChatViewModel::sendMessageWithFrame(const QString& text, const QImage& fram
     doSend(text, frames);
 }
 
-void ChatViewModel::sendMessageWithCurrentFrame(const QString& text)
+void ChatViewModel::requestCurrentFrame()
 {
     if (m_streaming) return;
-    // 经 EventBus 向 PlayerVM 请求当前帧，回包在 onScreenshotForAI
-    m_pendingFrameText = text;
-    m_awaitingFrame = true;
-    if (m_eventBus) {
-        m_eventBus->requestFrameForAI(-1);  // -1：使用当前帧
-    } else {
-        m_awaitingFrame = false;
-        doSend(text, {});
+    m_awaitingFrameForPreview = true;
+    if (m_eventBus) m_eventBus->requestFrameForAI(-1);
+}
+
+void ChatViewModel::removeFrameFromCache(int index)
+{
+    if (index >= 0 && index < m_cachedFrames.size()) {
+        m_cachedFrames.removeAt(index);
     }
 }
 
-void ChatViewModel::onScreenshotForAI(const QImage& frame, int64_t /*ts*/)
+void ChatViewModel::clearAllCachedFrames()
 {
-    if (!m_awaitingFrame) return;
-    m_awaitingFrame = false;
-    const QString text = m_pendingFrameText;
-    m_pendingFrameText.clear();
-    if (frame.isNull()) {
-        qWarning() << "[ChatViewModel] Frame is null, sending text only";
-        emit errorOccurred(tr("未获取到当前帧，已仅按文字提问"));
-        doSend(text, {});
-    } else {
-        doSend(text, { frame });
+    m_cachedFrames.clear();
+}
+
+void ChatViewModel::sendMessageWithCachedFrame(const QString& text)
+{
+    if (m_streaming) return;
+    const QList<QImage> frames = m_cachedFrames;
+    m_cachedFrames.clear();
+    doSend(text, frames);
+}
+void ChatViewModel::onScreenshotForAI(const QImage& frame, int64_t ts)
+{
+    if (m_awaitingFrameForPreview) {
+        m_awaitingFrameForPreview = false;
+        if (frame.isNull()) {
+            emit errorOccurred(tr("未获取到当前帧"));
+            return;
+        }
+        m_cachedFrames.append(frame);
+        emit currentFrameReady(frame, ts);
     }
 }
 
@@ -386,6 +423,7 @@ void ChatViewModel::createNewConversation()
     const Conversation c = m_convService->createConversation();
     m_currentConversationId = c.id;
     m_assistantRow = -1;
+    m_cachedFrames.clear();
     if (m_agentService) m_agentService->clearHistory(c.id);
     m_messageModel->clear();
     emit conversationChanged(m_currentConversationId);
@@ -397,6 +435,7 @@ void ChatViewModel::switchConversation(const QString& convId)
     if (convId.isEmpty() || convId == m_currentConversationId) return;
     m_currentConversationId = convId;
     m_assistantRow = -1;
+    m_cachedFrames.clear();
 
     QList<ChatMessage> msgs;
     if (m_convService) msgs = m_convService->getMessages(convId);

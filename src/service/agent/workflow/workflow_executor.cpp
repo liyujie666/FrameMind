@@ -1,6 +1,7 @@
 #include "workflow_executor.h"
 #include "workflow_checkpoint.h"
 #include "nodes/llm_node.h"
+#include "service/agent/tool_orchestrator.h"
 
 #include <QMetaObject>
 #include <QDebug>
@@ -13,7 +14,7 @@ WorkflowExecutor::WorkflowExecutor(QObject* parent)
     m_timeoutTimer = new QTimer(this);
     m_timeoutTimer->setSingleShot(true);
     connect(m_timeoutTimer, &QTimer::timeout, this, [this]() {
-        handleTimeout(m_currentTimedNode);
+        handleTimeout(m_currentTimedNode, m_currentExecutionId);
     });
 }
 
@@ -149,17 +150,19 @@ void WorkflowExecutor::executeNode(const QString& nodeId)
         }
     }
 
-    // 启动超时定时器
+    const quint64 executionId = ++m_currentExecutionId;
+
+    // 启动超时定时器。执行代号会隔离前序节点的延迟回调，避免旧回调误伤当前节点。
     if (node->timeoutMs() > 0) {
         m_currentTimedNode = nodeId;
         m_timeoutTimer->start(node->timeoutMs());
     }
 
     // 异步执行节点
-    node->execute(m_state, [this, nodeId](NodeResult result) {
+    node->execute(m_state, [this, nodeId, executionId](NodeResult result) {
         // 确保在主线程处理
-        QMetaObject::invokeMethod(this, [this, nodeId, result]() {
-            if (!m_running) return;
+        QMetaObject::invokeMethod(this, [this, nodeId, executionId, result]() {
+            if (!m_running || executionId != m_currentExecutionId) return;
 
             m_timeoutTimer->stop();
 
@@ -239,9 +242,11 @@ void WorkflowExecutor::route(const QString& fromNode, const NodeResult& result)
     });
 }
 
-void WorkflowExecutor::handleTimeout(const QString& nodeId)
+void WorkflowExecutor::handleTimeout(const QString& nodeId, quint64 executionId)
 {
-    if (!m_running) return;
+    if (!m_running || executionId != m_currentExecutionId || nodeId != m_currentTimedNode) {
+        return;
+    }
 
     auto* node = m_graph.node(nodeId);
     int maxRetry = node ? node->maxRetries() : 0;

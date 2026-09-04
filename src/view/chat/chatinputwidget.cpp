@@ -6,6 +6,14 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QKeyEvent>
+#include <QMouseEvent>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QPixmap>
+#include <QIcon>
+#include <QSize>
+#include <QLabel>
+#include <utility>
 
 #include "service/themeservice.h"
 
@@ -25,14 +33,23 @@ ChatInputWidget::ChatInputWidget(QWidget* parent)
     auto* topRow = new QHBoxLayout();
     topRow->setSpacing(8);
 
-    m_frameBtn = new QToolButton(this);
-    m_frameBtn->setText(QStringLiteral("[📷] 当前帧"));
-    m_frameBtn->setCheckable(true);
-    m_frameBtn->setToolTip(tr("附带当前播放画面一起提问"));
-    topRow->addWidget(m_frameBtn);
+    m_frameButton = new QToolButton(this);
+    m_frameButton->setText(QStringLiteral("[📷] 添加当前帧"));
+    m_frameButton->setToolTip(tr("添加当前播放画面"));
+    connect(m_frameButton, &QToolButton::clicked,
+            this, &ChatInputWidget::currentFrameRequested);
+    topRow->addWidget(m_frameButton);
 
     topRow->addStretch(1);
     layout->addLayout(topRow);
+
+    m_framesContainer = new QWidget(this);
+    m_framesContainer->hide();
+    m_framesLayout = new QHBoxLayout(m_framesContainer);
+    m_framesLayout->setContentsMargins(0, 0, 0, 0);
+    m_framesLayout->setSpacing(8);
+    m_framesLayout->addStretch(1);
+    layout->addWidget(m_framesContainer);
 
     // 输入框
     m_edit = new QTextEdit(this);
@@ -45,17 +62,17 @@ ChatInputWidget::ChatInputWidget(QWidget* parent)
     auto* bottomRow = new QHBoxLayout();
     bottomRow->addStretch(1);
 
-    m_sendBtn = new QPushButton(tr("发送"), this);
-    m_sendBtn->setMinimumWidth(72);
-    m_sendBtn->setCursor(Qt::PointingHandCursor);
-    connect(m_sendBtn, &QPushButton::clicked, this, [this]() {
+    m_sendButton = new QPushButton(tr("发送"), this);
+    m_sendButton->setMinimumWidth(72);
+    m_sendButton->setCursor(Qt::PointingHandCursor);
+    connect(m_sendButton, &QPushButton::clicked, this, [this]() {
         if (m_streaming) {
             emit stopRequested();
         } else {
             triggerSend();
         }
     });
-    bottomRow->addWidget(m_sendBtn);
+    bottomRow->addWidget(m_sendButton);
     layout->addLayout(bottomRow);
 
     // 应用默认颜色
@@ -96,11 +113,10 @@ void ChatInputWidget::applyColors()
         ? m_theme->color(QStringLiteral("inputBg"))
         : QColor("#1A1A2A");
 
-    m_frameBtn->setStyleSheet(QString(
+    m_frameButton->setStyleSheet(QString(
         "QToolButton { border:1px solid %1; background:%2; color:%3; "
         "padding:4px 10px; border-radius:14px; font-size:12px; }"
-        "QToolButton:hover { border-color:%4; color:%5; }"
-        "QToolButton:checked { border-color:%4; background:%4; color:#FFFFFF; }")
+        "QToolButton:hover { border-color:%4; color:%5; }")
         .arg(border.name(), surface.name(), textSecondary.name(),
              primary.name(), textPrimary.name()));
 
@@ -112,7 +128,7 @@ void ChatInputWidget::applyColors()
         .arg(inputBg.name(), border.name(), textPrimary.name(),
              primary.name(), surface.name(), textSecondary.name()));
 
-    m_sendBtn->setStyleSheet(QString(
+    m_sendButton->setStyleSheet(QString(
         "QPushButton { background:%1; color:#FFFFFF; border:none; border-radius:6px; "
         "padding:8px 20px; font-size:13px; font-weight:500; }"
         "QPushButton:hover { background:%2; }"
@@ -125,19 +141,110 @@ void ChatInputWidget::applyColors()
 void ChatInputWidget::setStreaming(bool streaming)
 {
     m_streaming = streaming;
-    m_sendBtn->setText(streaming ? tr("停止") : tr("发送"));
+    m_sendButton->setText(streaming ? tr("停止") : tr("发送"));
     m_edit->setEnabled(!streaming);
-    m_frameBtn->setEnabled(!streaming);
+    m_frameButton->setEnabled(!streaming);
+}
+
+void ChatInputWidget::addFrame(const QImage& frame, int64_t timestampMs)
+{
+    if (frame.isNull()) return;
+    FrameItem item;
+    item.image = frame;
+    item.timestampMs = timestampMs;
+    m_frames.append(item);
+    createFramePreview(m_frames.size() - 1);
+    m_framesContainer->show();
+}
+
+void ChatInputWidget::clearAllFrames()
+{
+    for (FrameItem& item : m_frames) {
+        if (item.widget) {
+            m_framesLayout->removeWidget(item.widget);
+            item.widget->deleteLater();
+        }
+    }
+    m_frames.clear();
+    m_framesContainer->hide();
+    emit allFramesCleared();
+}
+
+void ChatInputWidget::createFramePreview(int index)
+{
+    if (index < 0 || index >= m_frames.size()) return;
+    FrameItem& item = m_frames[index];
+    item.widget = new QWidget(m_framesContainer);
+    auto* frameLayout = new QHBoxLayout(item.widget);
+    frameLayout->setContentsMargins(8, 4, 6, 4);
+    frameLayout->setSpacing(5);
+    item.label = new QLabel(formatTimestamp(item.timestampMs), item.widget);
+    item.label->setCursor(Qt::PointingHandCursor);
+    item.label->setProperty("frameIndex", index);
+    item.label->installEventFilter(this);
+    frameLayout->addWidget(item.label);
+    item.deleteButton = new QToolButton(item.widget);
+    item.deleteButton->setText(QStringLiteral("×"));
+    item.deleteButton->setToolTip(tr("删除此帧"));
+    item.deleteButton->setFixedSize(20, 20);
+    connect(item.deleteButton, &QToolButton::clicked, this, [this, index]() {
+        removeFrame(index);
+    });
+    frameLayout->addWidget(item.deleteButton);
+    m_framesLayout->insertWidget(m_framesLayout->count() - 1, item.widget);
+    applyColors();
+}
+
+void ChatInputWidget::removeFrame(int index)
+{
+    if (index < 0 || index >= m_frames.size()) return;
+    if (m_frames[index].widget) {
+        m_framesLayout->removeWidget(m_frames[index].widget);
+        m_frames[index].widget->deleteLater();
+    }
+    m_frames.removeAt(index);
+    emit frameRemoved(index);
+    const QList<FrameItem> remaining = m_frames;
+    clearAllFrames();
+    for (const FrameItem& remainingItem : remaining)
+        addFrame(remainingItem.image, remainingItem.timestampMs);
+}
+
+void ChatInputWidget::showFramePreview(int index)
+{
+    if (index < 0 || index >= m_frames.size()) return;
+    auto* dialog = new QDialog(this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setWindowTitle(tr("查看帧 %1").arg(formatTimestamp(m_frames[index].timestampMs)));
+    dialog->resize(800, 600);
+    auto* layout = new QVBoxLayout(dialog);
+    auto* image = new QLabel(dialog);
+    image->setAlignment(Qt::AlignCenter);
+    image->setPixmap(QPixmap::fromImage(m_frames[index].image).scaled(
+        760, 520, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    layout->addWidget(image, 1);
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, dialog);
+    connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+    dialog->exec();
+}
+
+QString ChatInputWidget::formatTimestamp(int64_t timestampMs) const
+{
+    const int totalSeconds = static_cast<int>(timestampMs / 1000);
+    return QStringLiteral("image_%1:%2")
+        .arg(totalSeconds / 60, 2, 10, QChar('0'))
+        .arg(totalSeconds % 60, 2, 10, QChar('0'));
 }
 
 void ChatInputWidget::triggerSend()
 {
     const QString text = m_edit->toPlainText().trimmed();
-    const bool withFrame = m_frameBtn->isChecked();
-    if (text.isEmpty() && !withFrame) return;
-    emit sendRequested(text, withFrame);
+    const bool hasFrames = !m_frames.isEmpty();
+    if (text.isEmpty() && !hasFrames) return;
+    emit sendRequested(text, hasFrames);
     m_edit->clear();
-    m_frameBtn->setChecked(false);
+    clearAllFrames();
 }
 
 bool ChatInputWidget::eventFilter(QObject* obj, QEvent* event)
@@ -148,6 +255,14 @@ bool ChatInputWidget::eventFilter(QObject* obj, QEvent* event)
             && !(ke->modifiers() & Qt::ShiftModifier)) {
             if (!m_streaming) triggerSend();
             return true;  // 拦截换行
+        }
+    }
+    if (obj != m_edit && event->type() == QEvent::MouseButtonPress) {
+        for (int i = 0; i < m_frames.size(); ++i) {
+            if (obj == m_frames[i].label) {
+                showFramePreview(i);
+                return true;
+            }
         }
     }
     return QWidget::eventFilter(obj, event);

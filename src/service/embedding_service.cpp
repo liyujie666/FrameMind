@@ -98,19 +98,29 @@ std::vector<float> EmbeddingService::embedInternal(const QString& text, bool que
 
     auto attentionMask = buildAttentionMask(inputIds);
     std::vector<int64_t> tokenTypeIds(MAX_SEQ_LEN, 0);  // 单句模式全 0
+    const std::vector<int64_t> shape = {1, MAX_SEQ_LEN};
 
-    // 2. 构造输入 tensors
-    std::vector<int64_t> shape = {1, MAX_SEQ_LEN};
-
-    auto inputIdsTensor = m_engine->createTensor(inputIds.data(), shape);
-    auto attnMaskTensor = m_engine->createTensor(attentionMask.data(), shape);
-    auto tokenTypeTensor = m_engine->createTensor(tokenTypeIds.data(), shape);
-
-    // 3. 推理
+    // 模型输入按名称绑定；不同导出器的输入顺序可能不同，且 token_type_ids 可能不存在。
+    const auto& inputNames = m_engine->inputNames();
     std::vector<Ort::Value> inputs;
-    inputs.push_back(std::move(inputIdsTensor));
-    inputs.push_back(std::move(attnMaskTensor));
-    inputs.push_back(std::move(tokenTypeTensor));
+    inputs.reserve(inputNames.size());
+    for (const auto& inputName : inputNames) {
+        const QString name = QString::fromStdString(inputName);
+        if (name == QLatin1String("input_ids")) {
+            inputs.push_back(m_engine->createTensor(inputIds.data(), shape));
+        } else if (name == QLatin1String("attention_mask")) {
+            inputs.push_back(m_engine->createTensor(attentionMask.data(), shape));
+        } else if (name == QLatin1String("token_type_ids")) {
+            inputs.push_back(m_engine->createTensor(tokenTypeIds.data(), shape));
+        } else {
+            qWarning() << "[EmbeddingService] 模型包含不支持的输入:" << name;
+            return {};
+        }
+    }
+    if (inputs.empty()) {
+        qWarning() << "[EmbeddingService] 模型没有可用输入";
+        return {};
+    }
 
     std::vector<Ort::Value> outputs;
     m_engine->run(inputs, outputs);

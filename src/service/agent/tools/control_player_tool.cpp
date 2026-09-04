@@ -5,6 +5,9 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QMetaObject>
+#include <QTimer>
+#include <QUuid>
+#include <QSharedPointer>
 
 ControlPlayerTool::ControlPlayerTool(EventBus* eventBus)
     : m_eventBus(eventBus)
@@ -50,25 +53,55 @@ void ControlPlayerTool::executeAsync(const QString& callId,
         return;
     }
     const QString action = args.value(QStringLiteral("action")).toString();
-
-    if (action == QLatin1String("seek")) {
-        const int64_t ts = args.value(QStringLiteral("timestamp_ms")).toVariant().toLongLong();
-        // 保证信号在主线程触发（EventBus 为 QObject，跨线程用 QueuedConnection）
-        QMetaObject::invokeMethod(m_eventBus, [bus = m_eventBus.data(), ts] {
-            bus->requestSeek(ts);
-        }, Qt::QueuedConnection);
-        QJsonObject data{{ QStringLiteral("action"), action },
-                         { QStringLiteral("timestamp_ms"), static_cast<qint64>(ts) }};
-        done(ToolResult::ok(callId, name(), data));
-    } else if (action == QLatin1String("play") || action == QLatin1String("pause")) {
-        // 当前 EventBus 未定义 play/pause 事件；后续可扩展
-        // 暂时也用 seek 到当前位置 + 附带 action 提示
-        QJsonObject data{{ QStringLiteral("action"), action },
-                         { QStringLiteral("note"),
-                           QStringLiteral("play/pause 事件在 EventBus 中未实现，已跳过") }};
-        done(ToolResult::ok(callId, name(), data));
-    } else {
+    if (action != QLatin1String("seek") && action != QLatin1String("play")
+        && action != QLatin1String("pause")) {
         done(ToolResult::fail(callId, name(),
                               QStringLiteral("未知 action: %1").arg(action)));
+        return;
     }
+    if (action == QLatin1String("seek") && !args.contains(QStringLiteral("timestamp_ms"))) {
+        done(ToolResult::fail(callId, name(),
+                              QStringLiteral("seek 缺少 timestamp_ms")));
+        return;
+    }
+
+    const int64_t ts = args.value(QStringLiteral("timestamp_ms")).toVariant().toLongLong();
+    if (action == QLatin1String("seek") && ts < 0) {
+        done(ToolResult::fail(callId, name(), QStringLiteral("timestamp_ms 不能为负数")));
+        return;
+    }
+
+    const QString requestId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    auto completed = QSharedPointer<bool>::create(false);
+    auto connection = QSharedPointer<QMetaObject::Connection>::create();
+    *connection = QObject::connect(
+        m_eventBus, &EventBus::playerActionCompleted, m_eventBus,
+        [callId, action, ts, requestId, completed, connection, done](
+            const QString& completedAction, const QString& id, bool success,
+            int64_t actual, const QString& error) {
+            if (id != requestId || completedAction != action || *completed) return;
+            *completed = true;
+            QObject::disconnect(*connection);
+            if (!success) {
+                done(ToolResult::fail(callId, QStringLiteral("control_player"), error));
+                return;
+            }
+            QJsonObject data{{QStringLiteral("action"), action},
+                             {QStringLiteral("actual_timestamp_ms"), static_cast<qint64>(actual)}};
+            if (action == QLatin1String("seek")) {
+                data.insert(QStringLiteral("requested_timestamp_ms"), static_cast<qint64>(ts));
+            }
+            done(ToolResult::ok(callId, QStringLiteral("control_player"), data));
+        });
+    QTimer::singleShot(5000, m_eventBus, [callId, action, completed, connection, done] {
+        if (*completed) return;
+        *completed = true;
+        QObject::disconnect(*connection);
+        done(ToolResult::fail(callId, QStringLiteral("control_player"),
+                              QStringLiteral("播放器操作超时，未收到确认")));
+    });
+    QMetaObject::invokeMethod(m_eventBus, [bus = m_eventBus.data(), action, requestId, ts] {
+        if (action == QLatin1String("seek")) bus->requestSeekWithResult(ts, requestId);
+        else bus->requestPlayerActionWithResult(action, requestId);
+    }, Qt::QueuedConnection);
 }

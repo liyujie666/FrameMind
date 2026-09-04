@@ -38,7 +38,7 @@ public:
     void execute(WorkflowState& state, NodeCallback done) override;
 
     int timeoutMs() const override { return m_config.timeout; }
-    int maxRetries() const override { return 1; }
+    int maxRetries() const override { return m_config.enableToolCalling ? 0 : 1; }
     
     /// 设置流式输出回调（由 WorkflowExecutor 调用）
     void setStreamingCallback(std::function<void(const QString&)> callback) {

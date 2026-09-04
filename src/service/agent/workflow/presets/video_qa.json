@@ -31,7 +31,7 @@
       "maxToolRounds": 5,
       "questionKey": "question",
       "answerKey": "answer",
-      "timeout": 120000
+      "timeout": 300000
     },
     {
       "id": "reflect",

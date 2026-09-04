@@ -79,6 +79,18 @@ VideoAgent::VideoAgent(AgentService*          agent,
     , m_reflection(reflection)
     , m_entities(entities)
 {
+    if (m_orchestrator) {
+        connect(m_orchestrator, &ToolOrchestrator::toolCallStarted, this,
+                [this](const ToolCall& call) {
+                    emit statusChanged(QStringLiteral("正在调用工具：%1").arg(call.name));
+                });
+        connect(m_orchestrator, &ToolOrchestrator::toolCallFinished, this,
+                [this](const ToolResult& result) {
+                    if (result.success) {
+                        emit statusChanged(QStringLiteral("工具已完成，正在整理回答…"));
+                    }
+                });
+    }
 }
 
 // ============================================================
@@ -120,11 +132,29 @@ void VideoAgent::ask(const QString& conversationId,
     m_onDone     = std::move(onDone);
     m_onError    = std::move(onError);
 
-    emit stageChanged(QStringLiteral("PERCEIVE"));
+    const bool playerOp = isPlayerOp(question);
+
+    // 播放器是副作用命令，必须与视频问答推理完全隔离。
+    // 先完成本地控制，再由确定性结果更新对话，避免云端工具协议影响播放器。
+    if (playerOp && m_orchestrator) {
+        emit stageChanged(QStringLiteral("ACT"));
+        m_orchestrator->runPlayerCommand(
+            question,
+            [this, conversationId, question](const QString& answer) {
+                AgentAnswer result;
+                result.conversationId = conversationId;
+                result.question = question;
+                result.answer = answer;
+                result.confidence = 1.0f;
+                result.rounds = 1;
+                finishAnswer(result);
+            },
+            [this](const QString& error) { failWith(error); });
+        return;
+    }
 
     // ===快速路径：QA 缓存命中 ===
     // 播放器操作（seek/play/pause）必须每次真正执行，不走缓存
-    const bool playerOp = isPlayerOp(question);
     const bool forceFreshAnalysis = requestsFreshAnalysis(question);
     if (!playerOp && !forceFreshAnalysis && m_qaCache && !m_activeVideoId.isEmpty()) {
         auto cached = m_qaCache->tryAnswer(m_activeVideoId, question);
@@ -154,8 +184,10 @@ void VideoAgent::ask(const QString& conversationId,
 
     SamplingPlan samplingPlan;
     QuestionType questionType = QuestionType::Unknown;
+    emit statusChanged(QStringLiteral("正在分析视频内容…"));
     if (m_perception) {
         questionType = m_perception->classifyQuestion(question);
+        samplingPlan = m_perception->decideSampling(question, repr, currentPlayerPosMs);
         samplingPlan = m_perception->decideSampling(question, repr, currentPlayerPosMs);
         qDebug() << "[VideoAgent] PERCEIVE"
                  << "qType=" << static_cast<int>(questionType)
@@ -293,10 +325,10 @@ void VideoAgent::phaseReasonAndAct(const QString& convId,
         }
     }
 
-    qDebug() << "[VideoAgent] inject context"
-             << "evidenceChars=" << enrichedCtx.retrievalEvidence.size()
-             << "entityChars=" << enrichedCtx.entityContext.size()
-             << "sceneOverviewChars=" << enrichedCtx.sceneOverview.size();
+    qDebug() << "[VideoAgent] 注入上下文"
+             << "证据字符数=" << enrichedCtx.retrievalEvidence.size()
+             << "实体字符数=" << enrichedCtx.entityContext.size()
+             << "场景概览字符数=" << enrichedCtx.sceneOverview.size();
 
     // 播放器操作强制指定 tool_choice，防止 LM 绕过工具直接输出文字
     QJsonValue toolChoice = QJsonValue(QStringLiteral("auto"));
@@ -623,6 +655,7 @@ void VideoAgent::askViaWorkflow(const QString& conversationId,
 
     connect(m_workflowExecutor, &WorkflowExecutor::workflowFailed,
             context, [this, context](const QString& error) {
+        if (m_orchestrator) m_orchestrator->cancel();
         failWith(error);
         context->deleteLater(); // 清理连接
     });

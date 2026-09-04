@@ -217,9 +217,19 @@ void ChatView::setViewModel(ChatViewModel* vm)
     m_messageList->setModel(m_vm->messageModel());
 
     connect(m_inputWidget, &ChatInputWidget::sendRequested, this,
-            [this](const QString& text, bool withFrame) {
-                if (withFrame) m_vm->sendMessageWithCurrentFrame(text);
-                else           m_vm->sendMessage(text);
+            [this](const QString& text, bool withFrames) {
+                if (withFrames) m_vm->sendMessageWithCachedFrame(text);
+                else m_vm->sendMessage(text);
+            });
+    connect(m_inputWidget, &ChatInputWidget::currentFrameRequested,
+            m_vm, &ChatViewModel::requestCurrentFrame);
+    connect(m_inputWidget, &ChatInputWidget::frameRemoved,
+            m_vm, &ChatViewModel::removeFrameFromCache);
+    connect(m_inputWidget, &ChatInputWidget::allFramesCleared,
+            m_vm, &ChatViewModel::clearAllCachedFrames);
+    connect(m_vm, &ChatViewModel::currentFrameReady,
+            this, [this](const QImage& frame, int64_t timestampMs) {
+                m_inputWidget->addFrame(frame, timestampMs);
             });
     connect(m_inputWidget, &ChatInputWidget::stopRequested,
             m_vm, &ChatViewModel::stopGeneration);

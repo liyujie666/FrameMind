@@ -140,14 +140,14 @@ QJsonObject AgentService::buildRequestPayload(const QString& convId,
     payload.insert(QStringLiteral("stream"), true);
     payload.insert(QStringLiteral("messages"), messages);
 
-    qDebug() << "[AgentService] buildRequestPayload"
-             << "conv=" << convId
-             << "historyMsgs=" << history.size()
-             << "images=" << frames.size()
-             << "systemTokens=" << systemTokens
-             << "historyTokens=" << m_budgetManager.estimateTokens(history)
-             << "evidenceChars=" << videoCtx.retrievalEvidence.size()
-             << "sceneOverviewChars=" << videoCtx.sceneOverview.size();
+    qDebug() << "[AgentService] 构建模型请求"
+             << "会话=" << convId
+             << "历史消息数=" << history.size()
+             << "图片数=" << frames.size()
+             << "系统提示词Token数=" << systemTokens
+             << "历史Token数=" << m_budgetManager.estimateTokens(history)
+             << "证据字符数=" << videoCtx.retrievalEvidence.size()
+             << "场景概览字符数=" << videoCtx.sceneOverview.size();
 
     if (m_settings) {
         bool ok = false;
@@ -440,19 +440,20 @@ void AgentService::sendStreamWithTools(const QString& convId,
             m_streaming = false;
             // tool_calls 轮次的 assistant 消息由 continueWithToolResults 回填；
             // stop/length 时在此写入最终 assistant 文本，保证多轮历史闭环。
-            if (m_pendingFinishReason == QLatin1String("stop")
-                || m_pendingFinishReason == QLatin1String("length")
-                || (m_pendingFinishReason != QLatin1String("tool_calls")
-                    && !m_accumulated.isEmpty())) {
+            if (m_pendingToolCalls.isEmpty()
+                && (m_pendingFinishReason == QLatin1String("stop")
+                    || m_pendingFinishReason == QLatin1String("length")
+                    || (m_pendingFinishReason != QLatin1String("tool_calls")
+                        && !m_accumulated.isEmpty()))) {
                 m_histories[m_currentConvId].append(QJsonObject{
                     { QStringLiteral("role"), QStringLiteral("assistant") },
                     { QStringLiteral("content"), m_accumulated } });
             }
-            qDebug() << "[AgentService] streamDone"
-                     << "conv=" << m_currentConvId
-                     << "finish=" << m_pendingFinishReason
-                     << "toolCalls=" << m_pendingToolCalls.size()
-                     << "answerChars=" << m_accumulated.size();
+            qDebug() << "[AgentService] 模型流式响应结束"
+                     << "会话=" << m_currentConvId
+                     << "结束原因=" << m_pendingFinishReason
+                     << "工具调用数=" << m_pendingToolCalls.size()
+                     << "回答字符数=" << m_accumulated.size();
             emit responseFinishedWithTools(m_currentConvId,
                                             m_pendingToolCalls,
                                             m_pendingFinishReason,
@@ -476,8 +477,8 @@ void AgentService::applyBudgetTruncation(QJsonArray& history,
     const int before = m_budgetManager.estimateTokens(history);
     const int after = m_budgetManager.truncateHistory(history, systemTokens, currentUserTokens);
     if (before != after) {
-        qDebug() << "[AgentService] history truncated"
-                 << "before=" << before << "after=" << after
-                 << "msgs=" << history.size();
+        qDebug() << "[AgentService] 历史消息已截断"
+                 << "截断前Token数=" << before << "截断后Token数=" << after
+                 << "剩余消息数=" << history.size();
     }
 }

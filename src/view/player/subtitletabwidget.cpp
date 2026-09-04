@@ -11,7 +11,9 @@
 #include <QFrame>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QEvent>
 #include <QPainterPath>
+#include <QTimer>
 
 // ---- 可点击字幕行 ----
 class SubtitleRow : public QWidget {
@@ -72,6 +74,19 @@ SubtitleTabWidget::SubtitleTabWidget(QWidget* parent)
     m_scroll->setFrameShape(QFrame::NoFrame);
     m_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    connect(m_scroll->verticalScrollBar(), &QScrollBar::sliderPressed,
+            this, [this]() { m_userScrolling = true; });
+    connect(m_scroll->verticalScrollBar(), &QScrollBar::sliderReleased,
+            this, [this]() {
+                if (!m_scrollResetTimer) {
+                    m_scrollResetTimer = new QTimer(this);
+                    m_scrollResetTimer->setSingleShot(true);
+                    connect(m_scrollResetTimer, &QTimer::timeout, this,
+                            [this]() { m_userScrolling = false; });
+                }
+                m_scrollResetTimer->start(3000);
+            });
+    m_scroll->viewport()->installEventFilter(this);
 
     m_container = new QWidget(m_scroll);
     m_container->setAttribute(Qt::WA_StyledBackground, false);
@@ -270,12 +285,28 @@ void SubtitleTabWidget::updateHighlight(int64_t posMs)
     if (m_currentRow >= 0 && m_currentRow < m_rows.size()) {
         if (auto* r = qobject_cast<SubtitleRow*>(m_rows[m_currentRow])) {
             r->setHighlighted(true);
-            m_scroll->ensureWidgetVisible(r, 0, 40);
+            if (!m_userScrolling)
+                m_scroll->ensureWidgetVisible(r, 0, 40);
         }
     }
 }
 
 // static
+bool SubtitleTabWidget::eventFilter(QObject* obj, QEvent* event)
+{
+    if (obj == m_scroll->viewport() && event->type() == QEvent::Wheel) {
+        m_userScrolling = true;
+        if (!m_scrollResetTimer) {
+            m_scrollResetTimer = new QTimer(this);
+            m_scrollResetTimer->setSingleShot(true);
+            connect(m_scrollResetTimer, &QTimer::timeout, this,
+                    [this]() { m_userScrolling = false; });
+        }
+        m_scrollResetTimer->start(3000);
+    }
+    return QWidget::eventFilter(obj, event);
+}
+
 QString SubtitleTabWidget::formatMs(int64_t ms)
 {
     const int totalSec = int(ms / 1000);
