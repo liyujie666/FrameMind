@@ -5,6 +5,7 @@
 
 #include <QJsonArray>
 #include <QUuid>
+#include <memory>
 
 LLMNode::LLMNode(const QString& id, Config config,
                  AgentService* agentService,
@@ -40,41 +41,40 @@ void LLMNode::executeWithTools(WorkflowState& state, NodeCallback done)
         return;
     }
 
-    // 构建 VideoContext 从 state 获取
     VideoContext videoCtx;
     QVariant ctxVar = state.get("video_context");
     if (ctxVar.canConvert<VideoContext>()) {
         videoCtx = ctxVar.value<VideoContext>();
     }
 
-    // 获取附带帧
     QList<QImage> frames;
     QVariant framesVar = state.get("user_frames");
     if (framesVar.canConvert<QList<QImage>>()) {
         frames = framesVar.value<QList<QImage>>();
     }
 
-    QString convId = QUuid::createUuid().toString(QUuid::WithoutBraces);
-
-    // 如果有 system prompt，先seed history
-    if (!m_config.systemPrompt.isEmpty()) {
-        ChatMessage sysMsg;
-        sysMsg.role = ChatMessage::System;
-        sysMsg.content = m_config.systemPrompt;
-        m_agentService->seedHistory(convId, {sysMsg});
+    // 使用用户的原始 conversationId 保持对话上下文连贯
+    QString convId = state.get("conversation_id").toString();
+    if (convId.isEmpty()) {
+        convId = QUuid::createUuid().toString(QUuid::WithoutBraces);
     }
+
+    // 捕获 state 指针和所需的 key，避免引用悬挂
+    WorkflowState* statePtr = &state;
+    QString answerKey = m_config.answerKey;
 
     m_orchestrator->runQuery(
         convId, question, frames, videoCtx,
-        // onProgress
-        [](const QString&) {},
-        // onDone
-        [&state, done, this](const QString& answer,
+        [this](const QString& chunk) {
+            if (m_streamingCallback) {
+                m_streamingCallback(chunk);
+            }
+        },
+        [statePtr, answerKey, done](const QString& answer,
                               const QVector<ToolResult>& toolTrace,
                               int rounds) {
-            state.set(m_config.answerKey, answer);
+            statePtr->set(answerKey, answer);
 
-            // 保存工具调用轨迹
             QJsonArray traceArray;
             for (const auto& tr : toolTrace) {
                 QJsonObject obj;
@@ -84,12 +84,11 @@ void LLMNode::executeWithTools(WorkflowState& state, NodeCallback done)
                 if (!tr.error.isEmpty()) obj["error"] = tr.error;
                 traceArray.append(obj);
             }
-            state.addArtifact("tool_trace", traceArray);
-            state.set("tool_rounds", rounds);
+            statePtr->addArtifact("tool_trace", traceArray);
+            statePtr->set("tool_rounds", rounds);
 
             done(NodeResult{.nextRoute = {}, .success = true, .error = {}});
         },
-        // onError
         [done](const QString& error) {
             done(NodeResult{.nextRoute = {}, .success = false, .error = error});
         }
@@ -105,14 +104,10 @@ void LLMNode::executeDirectLLM(WorkflowState& state, NodeCallback done)
         return;
     }
 
-    QString convId = QUuid::createUuid().toString(QUuid::WithoutBraces);
-
-    // Seed system prompt
-    if (!m_config.systemPrompt.isEmpty()) {
-        ChatMessage sysMsg;
-        sysMsg.role = ChatMessage::System;
-        sysMsg.content = m_config.systemPrompt;
-        m_agentService->seedHistory(convId, {sysMsg});
+    // 使用用户的原始 conversationId 保持对话上下文连贯
+    QString convId = state.get("conversation_id").toString();
+    if (convId.isEmpty()) {
+        convId = QUuid::createUuid().toString(QUuid::WithoutBraces);
     }
 
     VideoContext videoCtx;
@@ -127,32 +122,33 @@ void LLMNode::executeDirectLLM(WorkflowState& state, NodeCallback done)
         frames = framesVar.value<QList<QImage>>();
     }
 
-    // 连接信号接收响应
-    QMetaObject::Connection connFinished;
-    QMetaObject::Connection connError;
+    WorkflowState* statePtr = &state;
+    QString answerKey = m_config.answerKey;
 
-    connFinished = QObject::connect(
+    // 使用 shared_ptr 管理连接的生命周期，避免局部变量引用悬挂
+    auto conns = std::make_shared<std::pair<QMetaObject::Connection, QMetaObject::Connection>>();
+
+    conns->first = QObject::connect(
         m_agentService, &AgentService::responseFinished,
-        m_agentService, [&state, done, convId, this,
-                          &connFinished, &connError](const QString& cId, const ChatMessage& msg) {
+        m_agentService, [statePtr, answerKey, done, convId, conns](const QString& cId, const ChatMessage& msg) {
             if (cId != convId) return;
 
-            QObject::disconnect(connFinished);
-            QObject::disconnect(connError);
+            QObject::disconnect(conns->first);
+            QObject::disconnect(conns->second);
 
-            state.set(m_config.answerKey, msg.content);
-            state.addMessage(msg);
+            statePtr->set(answerKey, msg.content);
+            statePtr->addMessage(msg);
 
             done(NodeResult{.nextRoute = {}, .success = true, .error = {}});
         });
 
-    connError = QObject::connect(
+    conns->second = QObject::connect(
         m_agentService, &AgentService::responseError,
-        m_agentService, [done, convId, &connFinished, &connError](const QString& cId, const QString& error) {
+        m_agentService, [done, convId, conns](const QString& cId, const QString& error) {
             if (cId != convId) return;
 
-            QObject::disconnect(connFinished);
-            QObject::disconnect(connError);
+            QObject::disconnect(conns->first);
+            QObject::disconnect(conns->second);
 
             done(NodeResult{.nextRoute = {}, .success = false, .error = error});
         });

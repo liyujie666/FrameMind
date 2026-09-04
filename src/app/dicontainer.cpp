@@ -44,6 +44,9 @@
 #include "service/agent/workflow/workflow_executor.h"
 #include "service/agent/workflow/workflow_factory.h"
 #include "service/agent/workflow/workflow_checkpoint.h"
+#include "service/agent/workflow/workflow_state.h"
+#include "model/videocontext.h"
+#include "model/agent_types.h"
 
 #include "viewmodel/playerviewmodel.h"
 #include "viewmodel/chatviewmodel.h"
@@ -282,6 +285,127 @@ void DIContainer::initialize()
         m_toolOrchestrator.get(),
         m_toolRegistry.get()
     });
+
+    // 注册 Workflow Function Handlers
+    m_workflowFactory->registerFunctionHandler(
+        QStringLiteral("PerceptionStrategy::decide"),
+        [this](WorkflowState& state, NodeCallback done) {
+            const QString question = state.get("question").toString();
+            const QString videoPath = state.get("video_path").toString();
+            const int64_t posMs = state.get("current_pos_ms").toLongLong();
+
+            QSharedPointer<VideoRepresentation> repr;
+            if (m_videoAnalysis)
+                repr = m_videoAnalysis->representation(videoPath);
+
+            if (m_perception) {
+                QuestionType qType = m_perception->classifyQuestion(question);
+                SamplingPlan plan = m_perception->decideSampling(question, repr, posMs);
+                SufficiencyCheck suff = m_perception->checkSufficiency(question, repr);
+
+                state.set("question_type", static_cast<int>(qType));
+                state.set("sampling_density", static_cast<int>(plan.density));
+                state.set("frame_budget", plan.frameBudget);
+                state.set("sufficiency", suff.isEnough ? 1.0 : 0.3);
+
+                if (!plan.timeRanges.isEmpty()) {
+                    state.set("sample_start_ms", plan.timeRanges.first().first);
+                    state.set("sample_end_ms", plan.timeRanges.last().second);
+                }
+            } else {
+                state.set("sufficiency", 1.0);
+            }
+
+            done(NodeResult{.nextRoute = {}, .success = true, .error = {}});
+        });
+
+    m_workflowFactory->registerFunctionHandler(
+        QStringLiteral("VideoRAGRetriever::retrieve"),
+        [this](WorkflowState& state, NodeCallback done) {
+            const QString question = state.get("question").toString();
+            const QString videoId = state.get("video_id").toString();
+
+            if (!m_ragRetriever || videoId.isEmpty()) {
+                state.set("sufficiency", 1.0);
+                done(NodeResult{.nextRoute = {}, .success = true, .error = {}});
+                return;
+            }
+
+            VideoRAGRetriever::Constraints c;
+            c.videoId = videoId;
+
+            int64_t startMs = state.get("sample_start_ms").toLongLong();
+            int64_t endMs = state.get("sample_end_ms").toLongLong();
+            if (startMs > 0 && endMs > startMs) {
+                c.startMsGte = startMs;
+                c.endMsLte = endMs;
+            }
+
+            int topK = 5;
+            int qType = state.get("question_type").toInt();
+            if (qType == static_cast<int>(QuestionType::GlobalSummary))
+                topK = 8;
+            else if (qType == static_cast<int>(QuestionType::CurrentFrame))
+                topK = 3;
+            else if (qType == static_cast<int>(QuestionType::EntityQuery)) {
+                topK = 6;
+                c.preferPath = QStringLiteral("entity");
+            }
+
+            auto evidence = m_ragRetriever->retrieve(question, c, topK);
+
+            // 将检索结果格式化写入 state 的 video_context
+            QVariant ctxVar = state.get("video_context");
+            VideoContext videoCtx;
+            if (ctxVar.canConvert<VideoContext>())
+                videoCtx = ctxVar.value<VideoContext>();
+
+            QString evidenceText;
+            int idx = 1;
+            for (const auto& r : evidence) {
+                evidenceText += QString("## 证据 %1\n时间: %2ms-%3ms (来源: %4, 分数: %5)\n%6\n\n")
+                    .arg(idx)
+                    .arg(r.chunk.startMs).arg(r.chunk.endMs)
+                    .arg(r.hitPath)
+                    .arg(r.score, 0, 'f', 2)
+                    .arg(r.chunk.textContent.left(200));
+                ++idx;
+            }
+            videoCtx.retrievalEvidence = evidenceText;
+            state.set("video_context", QVariant::fromValue(videoCtx));
+
+            // 如果有证据，标记为充分
+            double sufficiency = evidence.isEmpty() ? 0.3 : 0.8;
+            state.set("sufficiency", sufficiency);
+
+            done(NodeResult{.nextRoute = {}, .success = true, .error = {}});
+        });
+
+    m_workflowFactory->registerFunctionHandler(
+        QStringLiteral("ReflectionEngine::check"),
+        [this](WorkflowState& state, NodeCallback done) {
+            const QString answer = state.get("answer").toString();
+
+            if (!m_reflection || answer.isEmpty()) {
+                state.set("confidence", 0.8);
+                done(NodeResult{.nextRoute = {}, .success = true, .error = {}});
+                return;
+            }
+
+            const QString videoPath = state.get("video_path").toString();
+            QSharedPointer<VideoRepresentation> repr;
+            if (m_videoAnalysis)
+                repr = m_videoAnalysis->representation(videoPath);
+
+            QVector<RetrievalResult> emptyEvidence;
+            auto rr = m_reflection->reflect(answer, emptyEvidence, repr);
+
+            state.set("confidence", static_cast<double>(rr.confidence));
+            if (!rr.fixSuggestion.isEmpty())
+                state.set("fix_suggestion", rr.fixSuggestion);
+
+            done(NodeResult{.nextRoute = {}, .success = true, .error = {}});
+        });
 
     m_workflowExecutor = std::make_unique<WorkflowExecutor>();
     m_workflowExecutor->setCheckpoint(m_workflowCheckpoint.get());

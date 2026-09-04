@@ -144,12 +144,31 @@ int ContextBudgetManager::truncateHistory(QJsonArray& history,
     // Step 1: 找到轮次边界
     QVector<QPair<int, int>> rounds = findRoundBoundaries(history);
 
-    // Step 2: 超过 maxHistoryRounds 的直接丢弃最早的
+    // Step 2: 识别尾部的 tool_calls 消息对（必须保护不被截断）
+    // 这些消息是 continueWithToolResults 刚追加的，不属于任何 user 轮次
+    int protectedTailStart = history.size(); // 默认无保护
+    if (!rounds.isEmpty()) {
+        int lastRoundEnd = rounds.last().second;
+        if (lastRoundEnd < history.size() - 1) {
+            // 最后一个轮次之后还有消息（assistant tool_calls + tool 结果）
+            protectedTailStart = lastRoundEnd + 1;
+        }
+    } else if (!history.isEmpty()) {
+        // 没有 user 消息开头的轮次 — 整个 history 可能都是 tool 消息对
+        // 检查是否全是 assistant/tool 消息
+        const QString firstRole = history.at(0).toObject()
+                                      .value(QStringLiteral("role")).toString();
+        if (firstRole == QLatin1String("assistant") || firstRole == QLatin1String("tool")) {
+            protectedTailStart = 0; // 全部保护
+        }
+    }
+
+    // Step 3: 超过 maxHistoryRounds 的直接丢弃最早的
     while (rounds.size() > m_config.maxHistoryRounds) {
         rounds.removeFirst();
     }
 
-    // Step 3: 从最早的轮次开始，先压缩 tool 结果
+    // Step 4: 从最早的轮次开始，先压缩 tool 结果
     auto compressRoundTools = [&](int roundIdx) {
         const auto& range = rounds.at(roundIdx);
         for (int i = range.first; i <= range.second; ++i) {
@@ -165,12 +184,24 @@ int ContextBudgetManager::truncateHistory(QJsonArray& history,
         }
     };
 
-    // 先压缩所有轮次的 tool 结果
     for (int r = 0; r < rounds.size(); ++r) {
         compressRoundTools(r);
     }
 
-    // Step 4: 重建历史只保留有效轮次
+    // 也压缩受保护尾部的 tool 结果
+    for (int i = protectedTailStart; i < history.size(); ++i) {
+        QJsonObject msg = history.at(i).toObject();
+        const QString role = msg.value(QStringLiteral("role")).toString();
+        if (role == QLatin1String("tool")) {
+            const QString content = msg.value(QStringLiteral("content")).toString();
+            if (content.size() > m_config.toolResultMaxChars) {
+                msg.insert(QStringLiteral("content"), compressToolContent(content));
+                history.replace(i, msg);
+            }
+        }
+    }
+
+    // Step 5: 重建历史 — 保留有效轮次 + 受保护的尾部
     QJsonArray trimmed;
     for (int r = 0; r < rounds.size(); ++r) {
         const auto& range = rounds.at(r);
@@ -178,10 +209,17 @@ int ContextBudgetManager::truncateHistory(QJsonArray& history,
             trimmed.append(history.at(i));
         }
     }
+    // 追加受保护的尾部（assistant tool_calls + tool 结果）
+    for (int i = protectedTailStart; i < history.size(); ++i) {
+        trimmed.append(history.at(i));
+    }
     history = trimmed;
 
-    // Step 5: 如果仍超预算，逐轮丢弃最早的
+    // Step 6: 如果仍超预算，逐轮丢弃最早的（但保留尾部受保护消息）
     int currentTokens = estimateTokens(history);
+    // 重新找轮次边界（因为重建后 index 变了）
+    rounds = findRoundBoundaries(history);
+
     while (currentTokens > availableBudget && rounds.size() > m_config.minHistoryRounds) {
         // 移除最早一轮
         const auto& firstRange = rounds.first();
@@ -190,7 +228,6 @@ int ContextBudgetManager::truncateHistory(QJsonArray& history,
             history.removeFirst();
         }
         rounds.removeFirst();
-        // 重算（偏移已变，但重新计算总 token 更准确）
         currentTokens = estimateTokens(history);
     }
 

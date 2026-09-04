@@ -1,5 +1,6 @@
 #include "workflow_executor.h"
 #include "workflow_checkpoint.h"
+#include "nodes/llm_node.h"
 
 #include <QMetaObject>
 #include <QDebug>
@@ -137,6 +138,16 @@ void WorkflowExecutor::executeNode(const QString& nodeId)
 
     // 保存断点
     saveCheckpoint();
+
+    // 如果是 LLMNode，设置流式输出回调
+    if (node->type() == QStringLiteral("llm")) {
+        auto* llmNode = dynamic_cast<LLMNode*>(node);
+        if (llmNode) {
+            llmNode->setStreamingCallback([this](const QString& chunk) {
+                emit streamingChunk(chunk);
+            });
+        }
+    }
 
     // 启动超时定时器
     if (node->timeoutMs() > 0) {

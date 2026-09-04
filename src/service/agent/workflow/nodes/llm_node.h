@@ -3,6 +3,7 @@
 #include "service/agent/workflow/workflow_node.h"
 
 #include <QStringList>
+#include <functional>
 
 class AgentService;
 class ToolOrchestrator;
@@ -38,6 +39,11 @@ public:
 
     int timeoutMs() const override { return m_config.timeout; }
     int maxRetries() const override { return 1; }
+    
+    /// 设置流式输出回调（由 WorkflowExecutor 调用）
+    void setStreamingCallback(std::function<void(const QString&)> callback) {
+        m_streamingCallback = std::move(callback);
+    }
 
 private:
     void executeWithTools(WorkflowState& state, NodeCallback done);
@@ -47,4 +53,5 @@ private:
     Config m_config;
     AgentService* m_agentService;
     ToolOrchestrator* m_orchestrator;
+    std::function<void(const QString&)> m_streamingCallback;
 };

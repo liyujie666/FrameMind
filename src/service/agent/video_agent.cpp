@@ -30,12 +30,13 @@ namespace {
 /// 用于跳过 QA 缓存、强制 tool_choice
 bool isPlayerOp(const QString& question)
 {
-    static const QRegularExpression re(
-        QStringLiteral(
-            "\\b(seek|跳转|跳到|播放|暂停|play|pause|快进|快退|"
-            "定位|跳|go\\s*to|jump\\s*to)\\b"),
+    static const QRegularExpression englishRe(
+        QStringLiteral("(?<![A-Za-z])(seek|play|pause|go\\s*to|jump\\s*to)(?![A-Za-z])"),
         QRegularExpression::CaseInsensitiveOption);
-    return re.match(question).hasMatch();
+    static const QRegularExpression chineseRe(
+        QStringLiteral("跳转|跳到|播放|暂停|快进|快退|定位"));
+    return englishRe.match(question).hasMatch()
+           || chineseRe.match(question).hasMatch();
 }
 
 bool requestsFreshAnalysis(const QString& question)
@@ -548,6 +549,33 @@ void VideoAgent::askViaWorkflow(const QString& conversationId,
             done(NodeResult{.nextRoute = {}, .success = true, .error = {}});
         });
 
+    // 从预设加载视频 QA 工作流，优先从资源文件加载，失败则尝试文件系统。
+    WorkflowGraph graph = m_workflowFactory->fromFile(
+        QStringLiteral(":/workflow/presets/video_qa.json"));
+    QString validateError;
+    if (!graph.validate(&validateError)) {
+        qWarning() << "[VideoAgent] Cannot load workflow from resources, trying filesystem...";
+        graph = m_workflowFactory->fromFile(
+            QStringLiteral("src/service/agent/workflow/presets/video_qa.json"));
+    }
+    if (!graph.validate(&validateError)) {
+        qWarning() << "[VideoAgent] Workflow graph invalid:" << validateError
+                   << "- falling back to legacy mode";
+        emit stageChanged(QStringLiteral("PERCEIVE"));
+        QSharedPointer<VideoRepresentation> repr;
+        if (m_analysis) repr = m_analysis->representation(m_activeVideoPath);
+        phasePerceive(question, repr, currentPlayerPosMs);
+        if (m_retriever && !m_activeVideoId.isEmpty()) {
+            VideoRAGRetriever::Constraints constraints;
+            constraints.videoId = m_activeVideoId;
+            constraints.currentPositionMs = currentPlayerPosMs;
+            if (repr) constraints.videoDurationMs = repr->metadata.durationMs;
+            m_retrievedEvidence = m_retriever->retrieve(question, constraints, 5);
+        }
+        phaseReasonAndAct(conversationId, question, userFrames, videoCtx);
+        return;
+    }
+
     // 构建初始 state
     WorkflowState state;
     state.set("question", question);
@@ -560,30 +588,6 @@ void VideoAgent::askViaWorkflow(const QString& conversationId,
         state.set("user_frames", QVariant::fromValue(userFrames));
     }
 
-    // 从预设加载视频 QA 工作流
-    WorkflowGraph graph = m_workflowFactory->fromFile(
-        QStringLiteral(":/workflow/presets/video_qa.json"));
-
-    QString validateError;
-    if (!graph.validate(&validateError)) {
-        // 验证失败，回退到传统模式
-        qWarning() << "[VideoAgent] Workflow graph invalid:" << validateError
-                   << "- falling back to legacy mode";
-        emit stageChanged(QStringLiteral("PERCEIVE"));
-        QSharedPointer<VideoRepresentation> repr;
-        if (m_analysis) repr = m_analysis->representation(m_activeVideoPath);
-        phasePerceive(question, repr, currentPlayerPosMs);
-        if (m_retriever && !m_activeVideoId.isEmpty()) {
-            VideoRAGRetriever::Constraints c;
-            c.videoId = m_activeVideoId;
-            c.currentPositionMs = currentPlayerPosMs;
-            if (repr) c.videoDurationMs = repr->metadata.durationMs;
-            m_retrievedEvidence = m_retriever->retrieve(question, c, 5);
-        }
-        phaseReasonAndAct(conversationId, question, userFrames, videoCtx);
-        return;
-    }
-
     // 设置 checkpoint
     QString workflowId = QUuid::createUuid().toString(QUuid::WithoutBraces);
     m_workflowExecutor->setWorkflowId(workflowId);
@@ -591,62 +595,46 @@ void VideoAgent::askViaWorkflow(const QString& conversationId,
         m_workflowExecutor->setCheckpoint(m_workflowCheckpoint);
     }
 
-    // 连接信号
+    // 使用上下文对象确保本次工作流的连接在完成或失败后自动断开。
+    auto* context = new QObject(this);
     const QString workflowVideoId = m_activeVideoId;
-    auto connCompleted = QObject::connect(
-        m_workflowExecutor, &WorkflowExecutor::workflowCompleted,
-        this, [this, conversationId, question, workflowVideoId](const WorkflowState& finalState) {
-            AgentAnswer result;
-            result.conversationId = conversationId;
-            result.question = question;
-            result.answer = finalState.get("answer").toString();
-            result.confidence = finalState.get("confidence").toFloat();
-            result.rounds = finalState.get("tool_rounds").toInt();
+    connect(m_workflowExecutor, &WorkflowExecutor::workflowCompleted,
+            context, [this, conversationId, question, workflowVideoId, context]
+            (const WorkflowState& finalState) {
+        AgentAnswer result;
+        result.conversationId = conversationId;
+        result.question = question;
+        result.answer = finalState.get(QStringLiteral("answer")).toString();
+        result.confidence = finalState.get(QStringLiteral("confidence")).toFloat();
+        result.rounds = finalState.get(QStringLiteral("tool_rounds")).toInt();
+        result.evidence = EvidenceComposer::fromJson(
+            finalState.artifact(QStringLiteral("retrieval_evidence")).toArray());
 
-            result.evidence = EvidenceComposer::fromJson(
-                finalState.artifact(QStringLiteral("retrieval_evidence")).toArray());
-            const QVector<int> sceneIds = evidenceSceneIds(result.evidence);
-            if (m_qaCache && !workflowVideoId.isEmpty()
-                && !sceneIds.isEmpty() && result.confidence >= 0.7f) {
-                m_qaCache->cache(workflowVideoId, question, result.answer,
-                                 result.confidence, sceneIds);
-            }
+        const QVector<int> sceneIds = evidenceSceneIds(result.evidence);
+        if (m_qaCache && !workflowVideoId.isEmpty()
+            && !sceneIds.isEmpty() && result.confidence >= 0.7f) {
+            m_qaCache->cache(workflowVideoId, question, result.answer,
+                             result.confidence, sceneIds);
+        }
 
-            finishAnswer(result);
-        });
-
-    auto connFailed = QObject::connect(
-        m_workflowExecutor, &WorkflowExecutor::workflowFailed,
-        this, [this](const QString& error) {
-            failWith(error);
-        });
-
-    auto connProgress = QObject::connect(
-        m_workflowExecutor, &WorkflowExecutor::streamingChunk,
-        this, [this](const QString& chunk) {
-            if (m_onProgress) m_onProgress(chunk);
-        });
-
-    auto connNode = QObject::connect(
-        m_workflowExecutor, &WorkflowExecutor::nodeEntered,
-        this, [this](const QString& nodeId) {
-            emit stageChanged(nodeId.toUpper());
-        });
-
-    // 工作流完成后断开信号
-    QObject::connect(m_workflowExecutor, &WorkflowExecutor::workflowCompleted,
-                     this, [connCompleted, connFailed, connProgress, connNode]() {
-        QObject::disconnect(connCompleted);
-        QObject::disconnect(connFailed);
-        QObject::disconnect(connProgress);
-        QObject::disconnect(connNode);
+        finishAnswer(result);
+        context->deleteLater();
     });
-    QObject::connect(m_workflowExecutor, &WorkflowExecutor::workflowFailed,
-                     this, [connCompleted, connFailed, connProgress, connNode]() {
-        QObject::disconnect(connCompleted);
-        QObject::disconnect(connFailed);
-        QObject::disconnect(connProgress);
-        QObject::disconnect(connNode);
+
+    connect(m_workflowExecutor, &WorkflowExecutor::workflowFailed,
+            context, [this, context](const QString& error) {
+        failWith(error);
+        context->deleteLater(); // 清理连接
+    });
+
+    connect(m_workflowExecutor, &WorkflowExecutor::streamingChunk,
+            context, [this](const QString& chunk) {
+        if (m_onProgress) m_onProgress(chunk);
+    });
+
+    connect(m_workflowExecutor, &WorkflowExecutor::nodeEntered,
+            context, [this](const QString& nodeId) {
+        emit stageChanged(nodeId.toUpper());
     });
 
     // 启动工作流

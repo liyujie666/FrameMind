@@ -57,6 +57,28 @@ void ToolOrchestrator::runQuery(
     m_userFrames = userFrames;
     m_videoCtx   = videoCtx;
     m_toolChoice = toolChoice;
+    m_activeTools = m_registry->allDefinitions();
+    if (toolChoice.isObject()) {
+        const QString requiredName = toolChoice.toObject()
+                                         .value(QStringLiteral("function")).toObject()
+                                         .value(QStringLiteral("name")).toString();
+        QJsonArray filteredTools;
+        for (const QJsonValue& value : std::as_const(m_activeTools)) {
+            const QJsonObject tool = value.toObject();
+            if (tool.value(QStringLiteral("function")).toObject()
+                    .value(QStringLiteral("name")).toString() == requiredName) {
+                filteredTools.append(tool);
+            }
+        }
+        if (filteredTools.isEmpty()) {
+            m_running = false;
+            if (onError) {
+                onError(QStringLiteral("请求的工具未注册: %1").arg(requiredName));
+            }
+            return;
+        }
+        m_activeTools = filteredTools;
+    }
     m_currentRound = 0;
     m_totalToolCalls = 0;
     m_streamingText.clear();
@@ -106,8 +128,7 @@ void ToolOrchestrator::startRound(int round)
 
     if (round == 0) {
         m_agent->sendMessageWithTools(m_convId, m_question, m_userFrames,
-                                        m_videoCtx, m_registry->allDefinitions(),
-                                        m_toolChoice);
+                                        m_videoCtx, m_activeTools, m_toolChoice);
     }
     // 后续轮次由 executeToolsThenContinue 触发（在 onAgentFinished 中）
 }
@@ -170,12 +191,6 @@ void ToolOrchestrator::onAgentFinished(const QString& convId,
         }
         m_totalToolCalls += calls.size();
 
-        // 保存 assistant tool_call 消息给下一轮回填
-        QJsonObject assistantMsg;
-        assistantMsg.insert(QStringLiteral("role"), QStringLiteral("assistant"));
-        assistantMsg.insert(QStringLiteral("content"), QJsonValue::Null);
-        assistantMsg.insert(QStringLiteral("tool_calls"), toolCalls);
-
         executeToolsThenContinue(calls, m_currentRound);
         return;
     }
@@ -212,7 +227,6 @@ void ToolOrchestrator::executeToolsThenContinue(
             pendingResults->append(QJsonObject{
                 { QStringLiteral("role"), QStringLiteral("tool") },
                 { QStringLiteral("tool_call_id"), c.id },
-                { QStringLiteral("name"), c.name },
                 { QStringLiteral("content"),
                   QString::fromUtf8(QJsonDocument(QJsonObject{
                       { QStringLiteral("error"), r.error } }).toJson(QJsonDocument::Compact)) } });
@@ -231,7 +245,6 @@ void ToolOrchestrator::executeToolsThenContinue(
                 QJsonObject toolMsg;
                 toolMsg.insert(QStringLiteral("role"), QStringLiteral("tool"));
                 toolMsg.insert(QStringLiteral("tool_call_id"), c.id);
-                toolMsg.insert(QStringLiteral("name"), c.name);
                 const QJsonDocument payload(result.success ? result.data
                                               : QJsonObject{{ QStringLiteral("error"), result.error }});
                 toolMsg.insert(QStringLiteral("content"),
@@ -252,7 +265,7 @@ void ToolOrchestrator::executeToolsThenContinue(
                         QJsonObject assistantEntry;
                         assistantEntry.insert(QStringLiteral("role"),
                                               QStringLiteral("assistant"));
-                        assistantEntry.insert(QStringLiteral("content"), QJsonValue::Null);
+                        assistantEntry.insert(QStringLiteral("content"), QString());
                         assistantEntry.insert(QStringLiteral("tool_calls"),
                                               m_lastAssistantToolCalls);
                         assistantMsg.append(assistantEntry);
@@ -262,7 +275,7 @@ void ToolOrchestrator::executeToolsThenContinue(
                     m_streamingText.clear();
                     m_agent->continueWithToolResults(
                         m_convId, assistantMsg, *pendingResults,
-                        m_registry->allDefinitions());
+                        m_activeTools);
                 }
             });
     }

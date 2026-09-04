@@ -1,20 +1,22 @@
 {
   "name": "video_qa",
   "description": "视频问答工作流：感知→检索→充分性判断→推理→反思→质量门控",
-  "maxIterations": 5,
+  "maxIterations": 3,
   "entry": "perceive",
   "nodes": [
     {
       "id": "perceive",
       "type": "function",
       "handler": "PerceptionStrategy::decide",
-      "timeout": 10000
+      "timeout": 10000,
+      "maxRetries": 0
     },
     {
       "id": "retrieve",
       "type": "function",
       "handler": "VideoRAGRetriever::retrieve",
-      "timeout": 30000
+      "timeout": 30000,
+      "maxRetries": 0
     },
     {
       "id": "sufficient",
@@ -35,12 +37,13 @@
       "id": "reflect",
       "type": "function",
       "handler": "ReflectionEngine::check",
-      "timeout": 15000
+      "timeout": 15000,
+      "maxRetries": 0
     },
     {
       "id": "quality_gate",
       "type": "condition",
-      "expression": "confidence >= 0.7"
+      "expression": "confidence >= 0.5"
     }
   ],
   "edges": [

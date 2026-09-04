@@ -317,11 +317,50 @@ void AgentService::continueWithToolResults(const QString& conversationId,
     for (const auto& v : assistantToolCallMsg) history.append(v);
     for (const auto& v : compressedToolMessages) history.append(v);
 
-    // === P0/P1: Token 预算截断 ===
+    // === Token 预算截断 ===
+    // 注意：不截断最近的 assistant tool_calls + tool 消息对，否则 API 会返回 400。
+    // 只对早期历史做截断（truncateHistory 已内置尾部保护）。
     const QString systemContent = ContextBudgetManager::buildStaticSystemPrompt()
                                   + ContextBudgetManager::buildDynamicSystemPrompt(m_activeCtx);
     const int systemTokens = m_budgetManager.estimateTextTokens(systemContent);
     applyBudgetTruncation(history, systemTokens, 0);
+
+    // 安全检查：确保截断后 history 中最后的 tool 消息有对应的 assistant tool_calls
+    // 如果截断导致消息对不完整，直接用原始消息构建请求
+    bool historyValid = true;
+    if (!history.isEmpty()) {
+        // 检查是否存在 tool 消息没有对应的 assistant tool_calls
+        for (int i = 0; i < history.size(); ++i) {
+            const QString role = history.at(i).toObject()
+                                     .value(QStringLiteral("role")).toString();
+            if (role == QLatin1String("tool")) {
+                // 往前找是否有 assistant tool_calls 消息
+                bool foundAssistant = false;
+                for (int j = i - 1; j >= 0; --j) {
+                    const QJsonObject msg = history.at(j).toObject();
+                    if (msg.value(QStringLiteral("role")).toString() == QLatin1String("assistant")
+                        && !msg.value(QStringLiteral("tool_calls")).toArray().isEmpty()) {
+                        foundAssistant = true;
+                        break;
+                    }
+                    if (msg.value(QStringLiteral("role")).toString() == QLatin1String("user"))
+                        break;
+                }
+                if (!foundAssistant) {
+                    historyValid = false;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (!historyValid) {
+        // 截断破坏了消息结构，重建最小历史：只保留当前轮的 tool 调用
+        qWarning() << "[AgentService] truncation broke tool message pairs, rebuilding minimal history";
+        history = QJsonArray();
+        for (const auto& v : assistantToolCallMsg) history.append(v);
+        for (const auto& v : compressedToolMessages) history.append(v);
+    }
 
     // 构造 messages
     QJsonArray messages;
