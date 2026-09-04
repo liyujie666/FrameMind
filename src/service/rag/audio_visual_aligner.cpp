@@ -49,6 +49,13 @@ AudioVisualAligner::AudioVisualAligner(QObject* parent)
 
 QVector<SpeechSegment> AudioVisualAligner::overlappingSpeechSegments(
     const Scene& scene,
+    const QVector<SpeechSegment>& segments) const
+{
+    return overlappingSpeechSegments(scene, segments, Limits{});
+}
+
+QVector<SpeechSegment> AudioVisualAligner::overlappingSpeechSegments(
+    const Scene& scene,
     const QVector<SpeechSegment>& segments,
     const Limits& limits) const
 {

@@ -12,6 +12,7 @@
 
 #include <QUuid>
 #include <QPointer>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QDebug>

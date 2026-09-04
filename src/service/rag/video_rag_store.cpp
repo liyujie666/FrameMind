@@ -2,6 +2,7 @@
 
 #include "infrastructure/databasemanager.h"
 
+#include <QThread>
 #include <QMutex>
 #include <QMutexLocker>
 #include <QJsonDocument>
@@ -602,4 +603,16 @@ QVector<EntityProfile> VideoRAGStore::listEntities(const QString& videoId) const
 
 // ================= 工具 =================
 
-float VideoRAGStore::cosineSimilarity(con
+float VideoRAGStore::cosineSimilarity(const std::vector<float>& a,
+                                       const std::vector<float>& b)
+{
+    if (a.size() != b.size() || a.empty()) return 0.0f;
+    float dot = 0.0f, normA = 0.0f, normB = 0.0f;
+    for (size_t i = 0; i < a.size(); ++i) {
+        dot   += a[i] * b[i];
+        normA += a[i] * a[i];
+        normB += b[i] * b[i];
+    }
+    const float denom = std::sqrt(normA) * std::sqrt(normB);
+    return denom > 0.0f ? dot / denom : 0.0f;
+}

@@ -252,7 +252,7 @@ QueryPlan VideoRAGRetriever::compileQueryPlan(
 
     const int64_t duration = constraints.videoDurationMs;
     if (plan.normalizedQuery.contains(QStringLiteral("开头"))
-        || plan.normalizedQuery.contains(QStringLiteral("一开始")) {
+        || plan.normalizedQuery.contains(QStringLiteral("一开始"))) {
         plan.startMs = 0;
         plan.endMs = duration > 0 ? qMin<int64_t>(duration, 15000) : 15000;
         plan.hasTemporalConstraint = true;
