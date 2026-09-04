@@ -53,6 +53,7 @@ void DatabaseManager::createTables()
         "  id TEXT PRIMARY KEY,"
         "  title TEXT NOT NULL DEFAULT '新对话',"
         "  video_path TEXT,"
+        "  video_id TEXT,"
         "  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,"
         "  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         // 消息表
@@ -98,6 +99,10 @@ void DatabaseManager::createTables()
     ensureColumn(QStringLiteral("recent_files"),
                  QStringLiteral("duration_ms"),
                  QStringLiteral("INTEGER NOT NULL DEFAULT 0"));
+    // 兼容升级：旧库可能没有 video_id；缺则 ALTER 加上
+    ensureColumn(QStringLiteral("conversations"),
+                 QStringLiteral("video_id"),
+                 QStringLiteral("TEXT"));
 }
 
 void DatabaseManager::ensureColumn(const QString& table,

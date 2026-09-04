@@ -54,13 +54,14 @@ QList<Conversation> ConversationService::getAllConversations()
     QList<Conversation> result;
     if (!m_db) return result;
     const auto rows = m_db->query(QStringLiteral(
-        "SELECT id, title, video_path, created_at, updated_at "
+        "SELECT id, title, video_path, video_id, created_at, updated_at "
         "FROM conversations ORDER BY updated_at DESC"));
     for (const auto& row : rows) {
         Conversation c;
         c.id = row.value(QStringLiteral("id")).toString();
         c.title = row.value(QStringLiteral("title")).toString();
         c.videoFilePath = row.value(QStringLiteral("video_path")).toString();
+        c.videoId = row.value(QStringLiteral("video_id")).toString();
         c.createdAt = row.value(QStringLiteral("created_at")).toDateTime();
         c.updatedAt = row.value(QStringLiteral("updated_at")).toDateTime();
         result.append(c);
@@ -68,19 +69,61 @@ QList<Conversation> ConversationService::getAllConversations()
     return result;
 }
 
-Conversation ConversationService::createConversation(const QString& videoPath)
+QList<Conversation> ConversationService::getConversationsByVideoId(const QString& videoId)
+{
+    QList<Conversation> result;
+    if (!m_db || videoId.isEmpty()) return result;
+    const auto rows = m_db->query(QStringLiteral(
+        "SELECT id, title, video_path, video_id, created_at, updated_at "
+        "FROM conversations WHERE video_id = ? ORDER BY updated_at DESC"),
+        { videoId });
+    for (const auto& row : rows) {
+        Conversation c;
+        c.id = row.value(QStringLiteral("id")).toString();
+        c.title = row.value(QStringLiteral("title")).toString();
+        c.videoFilePath = row.value(QStringLiteral("video_path")).toString();
+        c.videoId = row.value(QStringLiteral("video_id")).toString();
+        c.createdAt = row.value(QStringLiteral("created_at")).toDateTime();
+        c.updatedAt = row.value(QStringLiteral("updated_at")).toDateTime();
+        result.append(c);
+    }
+    return result;
+}
+
+Conversation ConversationService::getLatestConversationForVideo(const QString& videoId)
+{
+    Conversation result;
+    if (!m_db || videoId.isEmpty()) return result;
+    const auto rows = m_db->query(QStringLiteral(
+        "SELECT id, title, video_path, video_id, created_at, updated_at "
+        "FROM conversations WHERE video_id = ? ORDER BY updated_at DESC LIMIT 1"),
+        { videoId });
+    if (!rows.isEmpty()) {
+        const auto& row = rows.first();
+        result.id = row.value(QStringLiteral("id")).toString();
+        result.title = row.value(QStringLiteral("title")).toString();
+        result.videoFilePath = row.value(QStringLiteral("video_path")).toString();
+        result.videoId = row.value(QStringLiteral("video_id")).toString();
+        result.createdAt = row.value(QStringLiteral("created_at")).toDateTime();
+        result.updatedAt = row.value(QStringLiteral("updated_at")).toDateTime();
+    }
+    return result;
+}
+
+Conversation ConversationService::createConversation(const QString& videoPath, const QString& videoId)
 {
     Conversation c;
     c.id = newId();
     c.title = QStringLiteral("新对话");
     c.videoFilePath = videoPath;
+    c.videoId = videoId;
     c.createdAt = QDateTime::currentDateTime();
     c.updatedAt = c.createdAt;
     if (m_db) {
         m_db->exec(QStringLiteral(
-            "INSERT INTO conversations(id, title, video_path, created_at, updated_at) "
-            "VALUES(?, ?, ?, ?, ?)"),
-            { c.id, c.title, c.videoFilePath,
+            "INSERT INTO conversations(id, title, video_path, video_id, created_at, updated_at) "
+            "VALUES(?, ?, ?, ?, ?, ?)"),
+            { c.id, c.title, c.videoFilePath, c.videoId,
               c.createdAt.toString(Qt::ISODate),
               c.updatedAt.toString(Qt::ISODate) });
     }

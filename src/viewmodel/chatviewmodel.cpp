@@ -168,12 +168,41 @@ void ChatViewModel::setVideoAnalysisService(VideoAnalysisService* vas)
 void ChatViewModel::onVideoOpened(const QString& videoPath)
 {
     if (videoPath.isEmpty()) return;
+    
+    // 计算 videoId
+    const QString videoId = VideoIndexer::computeVideoId(videoPath);
+    
+    // 仅路径或ID变化时才处理
+    if (videoPath == m_activeVideoPath && videoId == m_activeVideoId) return;
+    
     // 仅路径变化时才清空 m_indexingPath，允许新视频触发一次索引。
     // 同一路径（重播场景）不清空，保留去重守卫，避免重复构建 RAG。
     if (videoPath != m_activeVideoPath) {
         m_indexingPath.clear();
     }
     m_activeVideoPath = videoPath;
+    m_activeVideoId = videoId;
+    
+    // 视频切换时加载或创建该视频的会话
+    if (!m_convService) return;
+    
+    // 查找该视频最近的会话
+    Conversation latestConv = m_convService->getLatestConversationForVideo(videoId);
+    
+    if (!latestConv.id.isEmpty()) {
+        // 找到了该视频的历史会话，切换过去
+        switchConversation(latestConv.id);
+    } else {
+        // 该视频没有会话记录，创建新会话
+        const Conversation newConv = m_convService->createConversation(videoPath, videoId);
+        m_currentConversationId = newConv.id;
+        m_assistantRow = -1;
+        m_cachedFrames.clear();
+        if (m_agentService) m_agentService->clearHistory(newConv.id);
+        m_messageModel->clear();
+        emit conversationChanged(m_currentConversationId);
+        emit conversationsChanged();
+    }
 }
 
 VideoContext ChatViewModel::getVideoContext() const
@@ -201,7 +230,7 @@ void ChatViewModel::ensureConversation()
         m_currentConversationId = newId();
         return;
     }
-    const Conversation c = m_convService->createConversation();
+    const Conversation c = m_convService->createConversation(m_activeVideoPath, m_activeVideoId);
     m_currentConversationId = c.id;
     if (m_agentService) m_agentService->clearHistory(c.id);
     emit conversationChanged(m_currentConversationId);
@@ -420,7 +449,7 @@ void ChatViewModel::setCollapsed(bool collapsed)
 void ChatViewModel::createNewConversation()
 {
     if (!m_convService) return;
-    const Conversation c = m_convService->createConversation();
+    const Conversation c = m_convService->createConversation(m_activeVideoPath, m_activeVideoId);
     m_currentConversationId = c.id;
     m_assistantRow = -1;
     m_cachedFrames.clear();

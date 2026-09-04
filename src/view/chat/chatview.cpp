@@ -13,6 +13,7 @@
 #include <QMenu>
 #include <QRegularExpression>
 #include <QScrollBar>
+#include <QFileInfo>
 #include <QPainter>
 #include <QPainterPath>
 
@@ -274,15 +275,78 @@ void ChatView::showConversationMenu()
     if (convs.isEmpty()) {
         menu.addAction(tr("（暂无历史会话）"))->setEnabled(false);
     } else {
+        // 按视频ID分组
+        QMap<QString, QList<Conversation>> groupedConvs;
         for (const auto& c : convs) {
-            QAction* act = menu.addAction(c.title.isEmpty() ? tr("新对话") : c.title);
-            act->setCheckable(true);
-            act->setChecked(c.id == curId);
-            const QString id = c.id;
-            connect(act, &QAction::triggered, this,
-                    [this, id]() { m_vm->switchConversation(id); });
+            const QString videoKey = c.videoId.isEmpty() 
+                ? QStringLiteral("__no_video__") 
+                : c.videoId;
+            groupedConvs[videoKey].append(c);
+        }
+
+        bool firstGroup = true;
+        for (auto it = groupedConvs.begin(); it != groupedConvs.end(); ++it) {
+            const QString& videoKey = it.key();
+            const QList<Conversation>& videoConvs = it.value();
+            
+            if (!firstGroup) {
+                menu.addSeparator();
+            }
+            firstGroup = false;
+
+            // 分组标题（显示视频文件名）
+            QString groupTitle;
+            if (videoKey == QStringLiteral("__no_video__")) {
+                groupTitle = tr("【无关联视频】");
+            } else if (!videoConvs.isEmpty() && !videoConvs.first().videoFilePath.isEmpty()) {
+                QFileInfo fi(videoConvs.first().videoFilePath);
+                groupTitle = tr("【%1】").arg(fi.fileName());
+            } else {
+                groupTitle = tr("【视频 %1】").arg(videoKey.left(8));
+            }
+            
+            QAction* groupHeader = menu.addAction(groupTitle);
+            groupHeader->setEnabled(false);
+            QFont headerFont = groupHeader->font();
+            headerFont.setBold(true);
+            groupHeader->setFont(headerFont);
+
+            // 该视频的会话列表
+            for (const auto& c : videoConvs) {
+                QString displayText = c.title.isEmpty() ? tr("新对话") : c.title;
+                
+                // 添加时间戳
+                if (c.updatedAt.isValid()) {
+                    const QDateTime now = QDateTime::currentDateTime();
+                    const qint64 secsDiff = c.updatedAt.secsTo(now);
+                    
+                    QString timeStr;
+                    if (secsDiff < 60) {
+                        timeStr = tr("刚刚");
+                    } else if (secsDiff < 3600) {
+                        timeStr = tr("%1分钟前").arg(secsDiff / 60);
+                    } else if (secsDiff < 86400) {
+                        timeStr = tr("%1小时前").arg(secsDiff / 3600);
+                    } else if (secsDiff < 604800) {
+                        timeStr = tr("%1天前").arg(secsDiff / 86400);
+                    } else {
+                        timeStr = c.updatedAt.toString(QStringLiteral("yyyy-MM-dd"));
+                    }
+                    displayText = QStringLiteral("  %1  (%2)").arg(displayText, timeStr);
+                } else {
+                    displayText = QStringLiteral("  %1").arg(displayText);
+                }
+                
+                QAction* act = menu.addAction(displayText);
+                act->setCheckable(true);
+                act->setChecked(c.id == curId);
+                const QString id = c.id;
+                connect(act, &QAction::triggered, this,
+                        [this, id]() { m_vm->switchConversation(id); });
+            }
         }
     }
+    
     menu.addSeparator();
     connect(menu.addAction(tr("➕ 新建对话")), &QAction::triggered,
             m_vm, &ChatViewModel::createNewConversation);

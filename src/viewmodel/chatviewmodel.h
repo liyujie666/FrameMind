@@ -94,6 +94,7 @@ private:
     ChatMessageListModel* m_messageModel = nullptr;
 
     QString m_activeVideoPath;
+    QString m_activeVideoId;
     QString m_indexingPath;    // 已触发索引的路径，避免 durationChanged 重复触发
 
     bool    m_streaming = false;

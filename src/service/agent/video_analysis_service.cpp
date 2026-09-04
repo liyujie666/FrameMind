@@ -189,11 +189,13 @@ void VideoAnalysisService::onVideoOpened(const QString& videoPath)
         // 先尝试加载已有索引；QA 缓存只能在其原始证据也仍存在时复用。
         m_ragStore->loadVideo(videoId);
         if (m_ragStore->hasIndexedContent(videoId)) {
+            qDebug() << "[VideoAnalysisService] 检测到已有RAG索引，跳过重复构建 | videoId:" << videoId;
             emit analysisProgress(100, tr("已加载持久化视频索引"));
             return;
         }
     }
     if (m_indexer) {
+        qDebug() << "[VideoAnalysisService] 未找到已有索引，开始构建RAG | videoId:" << videoId;
         m_indexer->startIndex(videoPath);
     }
 }
