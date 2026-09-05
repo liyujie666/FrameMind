@@ -29,6 +29,15 @@ public:
         int maxHistoryRounds = 20;         ///< 最多保留的对话轮次
         int toolResultMaxChars = 1500;     ///< 单个 tool 结果的最大字符数
         int toolResultSummaryChars = 300;  ///< 截断后保留的头尾字符
+        
+        // P1修复：Tool消息管理
+        int maxToolMessagesTotal = 30;     ///< 历史中最多保留的tool消息对数量
+        int toolMessageAggressiveCompressThreshold = 800;  ///< 超过此阈值时更激进压缩
+        int toolMessageAggressiveSummaryChars = 150;  ///< 激进压缩时保留的字符数
+        
+        // P0修复：对话摘要
+        int summaryThresholdRounds = 10;   ///< 超过此轮次数时触发摘要
+        bool enableConversationSummary = true;  ///< 是否启用对话摘要
     };
 
     explicit ContextBudgetManager(const Config& config = {});
@@ -46,6 +55,9 @@ public:
 
     /// 估算纯文本的 token 数
     int estimateTextTokens(const QString& text) const;
+    
+    /// P0修复：更精确的图片token估算（基于OpenAI GPT-4V计算规则）
+    int estimateImageTokens(int width, int height, const QString& detail = "auto") const;
 
     // ─── 历史截断 ───────────────────────────────────────────────
 
@@ -80,6 +92,9 @@ public:
 
     /// 压缩单条 tool 结果的 content
     QString compressToolContent(const QString& content) const;
+    
+    /// P1修复：更激进的压缩（用于早期轮次）
+    QString compressToolContentAggressive(const QString& content, int maxChars, int summaryChars) const;
 
     // ─── System Prompt 分层 ────────────────────────────────────
 
@@ -104,4 +119,13 @@ private:
 
     /// 从历史中找到轮次边界（user 消息为轮次开始）
     QVector<QPair<int, int>> findRoundBoundaries(const QJsonArray& history) const;
+    
+    /// P1修复：统计历史中的tool消息对数量
+    int countToolMessagePairs(const QJsonArray& history) const;
+    
+    /// P1修复：移除早期的tool消息对，保留用户问答
+    void removeEarlyToolMessages(QJsonArray& history, int targetRemoveCount) const;
+    
+    /// P0修复：生成早期轮次的对话摘要
+    QString summarizeEarlyRounds(const QJsonArray& history, int startIdx, int endIdx) const;
 };

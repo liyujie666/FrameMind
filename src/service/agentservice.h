@@ -117,6 +117,11 @@ private:
                                int systemTokens,
                                int currentUserTokens);
 
+    /// LRU 历史缓存管理
+    QJsonArray& getOrCreateHistory(const QString& conversationId);
+    void touchHistory(const QString& conversationId);
+    void evictLRUIfNeeded();
+
     NetworkClient*       m_network = nullptr;
     SettingsService*     m_settings = nullptr;
     LLMProviderService*  m_providers = nullptr;
@@ -126,6 +131,20 @@ private:
 
     // 每会话历史（不含 system；元素为 OpenAI message 对象）
     QHash<QString, QJsonArray> m_histories;
+
+    // LRU 历史管理（P0修复：防止内存泄漏）
+    struct HistoryEntry {
+        QJsonArray messages;
+        qint64 lastAccessTime;  // QDateTime::currentMSecsSinceEpoch()
+        
+        // P1修复：VideoContext静态部分缓存
+        QString cachedVideoSummary;
+        QString cachedSceneOverview;
+        QString cachedEntityContext;
+        QString cachedVideoId;  // 用于判断视频是否切换
+    };
+    QHash<QString, HistoryEntry> m_historiesLRU;
+    static constexpr int kMaxCachedConversations = 10;  // 最多缓存10个会话历史
 
     // 上下文预算管理
     ContextBudgetManager m_budgetManager;

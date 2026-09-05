@@ -1285,6 +1285,7 @@ VideoContext VideoAnalysisService::buildVideoContext(
     VideoContext ctx;
     if (!repr) return ctx;
 
+    ctx.videoId     = repr->metadata.filePath;  // P1修复：使用filePath作为唯一ID
     ctx.fileName    = repr->metadata.fileName;
     ctx.durationMs  = repr->metadata.durationMs;
     ctx.width       = repr->metadata.width;

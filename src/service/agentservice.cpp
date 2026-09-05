@@ -11,6 +11,7 @@
 #include <QUuid>
 #include <QDebug>
 #include <utility>
+#include <limits>
 
 namespace {
 constexpr int kMaxImagesPerRequest = 10;  // 架构防御：单次请求图片硬上限
@@ -91,11 +92,20 @@ QJsonObject AgentService::makeUserMessage(const QString& text,
         const QByteArray b64 = ImageProcessor::toBase64Jpeg(scaled, 80);
         const QString dataUri =
             QStringLiteral("data:image/jpeg;base64,") + QString::fromLatin1(b64);
-        content.append(QJsonObject{
-            { QStringLiteral("type"), QStringLiteral("image_url") },
-            { QStringLiteral("image_url"),
-              QJsonObject{ { QStringLiteral("url"), dataUri },
-                           { QStringLiteral("detail"), QStringLiteral("auto") } } } });
+        
+        // P0修复：添加图片尺寸信息用于精确token估算
+        QJsonObject imageContent;
+        imageContent.insert(QStringLiteral("type"), QStringLiteral("image_url"));
+        imageContent.insert(QStringLiteral("image_url"),
+            QJsonObject{ 
+                { QStringLiteral("url"), dataUri },
+                { QStringLiteral("detail"), QStringLiteral("auto") } 
+            });
+        // 添加尺寸元数据（不影响API调用，仅用于本地token估算）
+        imageContent.insert(QStringLiteral("width"), scaled.width());
+        imageContent.insert(QStringLiteral("height"), scaled.height());
+        
+        content.append(imageContent);
         ++count;
     }
     msg.insert(QStringLiteral("content"), content);
@@ -107,13 +117,51 @@ QJsonObject AgentService::buildRequestPayload(const QString& convId,
                                               const QList<QImage>& frames,
                                               const VideoContext& videoCtx)
 {
-    QJsonArray& history = m_histories[convId];
+    QJsonArray& history = getOrCreateHistory(convId);
+
+    // === P1修复：VideoContext静态部分复用 ===
+    // 检查当前会话是否已缓存了VideoContext静态部分
+    HistoryEntry& entry = m_historiesLRU[convId];
+    const bool videoChanged = (entry.cachedVideoId != videoCtx.videoId);
+    const bool needUpdateStaticContext = videoChanged 
+        || entry.cachedVideoSummary.isEmpty()
+        || entry.cachedSceneOverview != videoCtx.sceneOverview
+        || entry.cachedEntityContext != videoCtx.entityContext;
+    
+    QString dynamicPrompt;
+    if (needUpdateStaticContext) {
+        // 视频切换或首次，需要完整的动态部分
+        dynamicPrompt = ContextBudgetManager::buildDynamicSystemPrompt(videoCtx);
+        
+        // 缓存静态部分
+        entry.cachedVideoSummary = videoCtx.videoSummary;
+        entry.cachedSceneOverview = videoCtx.sceneOverview;
+        entry.cachedEntityContext = videoCtx.entityContext;
+        entry.cachedVideoId = videoCtx.videoId;
+        
+        qDebug() << "[AgentService] 更新VideoContext静态缓存"
+                 << "会话=" << convId
+                 << "视频切换=" << videoChanged
+                 << "摘要字符=" << videoCtx.videoSummary.size()
+                 << "场景概览字符=" << videoCtx.sceneOverview.size()
+                 << "实体上下文字符=" << videoCtx.entityContext.size();
+    } else {
+        // 复用缓存的静态部分，只注入动态部分（检索证据+当前位置）
+        VideoContext dynamicOnly;
+        dynamicOnly.retrievalEvidence = videoCtx.retrievalEvidence;
+        dynamicOnly.currentPositionMs = videoCtx.currentPositionMs;
+        // 保留缓存的静态部分（避免重复注入）
+        dynamicPrompt = ContextBudgetManager::buildDynamicSystemPrompt(dynamicOnly);
+        
+        qDebug() << "[AgentService] 复用VideoContext静态缓存"
+                 << "会话=" << convId
+                 << "只注入检索证据=" << videoCtx.retrievalEvidence.size() << "字符";
+    }
 
     // === System Prompt 分层构建 ===
     // 静态部分（角色/规则/格式）可被后端 Prompt Caching 命中
     // 动态部分（视频背景/证据）每次可能变化
     const QString staticPrompt = ContextBudgetManager::buildStaticSystemPrompt();
-    const QString dynamicPrompt = ContextBudgetManager::buildDynamicSystemPrompt(videoCtx);
     const QString fullSystemPrompt = staticPrompt + dynamicPrompt;
     const int systemTokens = m_budgetManager.estimateTextTokens(fullSystemPrompt);
 
@@ -206,7 +254,8 @@ void AgentService::sendMessage(const QString& conversationId,
         [this]() {
             m_streaming = false;
             // 记入历史
-            m_histories[m_currentConvId].append(QJsonObject{
+            QJsonArray& history = getOrCreateHistory(m_currentConvId);
+            history.append(QJsonObject{
                 { QStringLiteral("role"), QStringLiteral("assistant") },
                 { QStringLiteral("content"), m_accumulated } });
             ChatMessage msg;
@@ -231,7 +280,8 @@ void AgentService::stopGeneration()
     m_streaming = false;
 
     // 把已接收的部分作为最终结果落地（标记非流式）
-    m_histories[m_currentConvId].append(QJsonObject{
+    QJsonArray& history = getOrCreateHistory(m_currentConvId);
+    history.append(QJsonObject{
         { QStringLiteral("role"), QStringLiteral("assistant") },
         { QStringLiteral("content"), m_accumulated } });
     ChatMessage msg;
@@ -254,12 +304,19 @@ void AgentService::seedHistory(const QString& conversationId,
             { QStringLiteral("role"), ChatMessage::roleToString(m.role) },
             { QStringLiteral("content"), m.content } });
     }
+    
+    // 使用LRU缓存
+    evictLRUIfNeeded();
+    m_historiesLRU[conversationId] = { arr, QDateTime::currentMSecsSinceEpoch() };
+    
+    // 保持向后兼容
     m_histories.insert(conversationId, arr);
 }
 
 void AgentService::clearHistory(const QString& conversationId)
 {
     m_histories.remove(conversationId);
+    m_historiesLRU.remove(conversationId);
 }
 
 // ============================================================
@@ -333,7 +390,7 @@ void AgentService::continueWithToolResults(const QString& conversationId,
     m_budgetManager.compressToolResults(compressedToolMessages);
 
     // 把 assistant tool_calls 消息 + 压缩后的 tool 结果消息 追加到历史
-    QJsonArray& history = m_histories[conversationId];
+    QJsonArray& history = getOrCreateHistory(conversationId);
     for (const auto& v : assistantToolCallMsg) history.append(v);
     for (const auto& v : compressedToolMessages) history.append(v);
 
@@ -465,7 +522,8 @@ void AgentService::sendStreamWithTools(const QString& convId,
                     || m_pendingFinishReason == QLatin1String("length")
                     || (m_pendingFinishReason != QLatin1String("tool_calls")
                         && !m_accumulated.isEmpty()))) {
-                m_histories[m_currentConvId].append(QJsonObject{
+                QJsonArray& history = getOrCreateHistory(m_currentConvId);
+                history.append(QJsonObject{
                     { QStringLiteral("role"), QStringLiteral("assistant") },
                     { QStringLiteral("content"), m_accumulated } });
             }
@@ -500,5 +558,74 @@ void AgentService::applyBudgetTruncation(QJsonArray& history,
         qDebug() << "[AgentService] 历史消息已截断"
                  << "截断前Token数=" << before << "截断后Token数=" << after
                  << "剩余消息数=" << history.size();
+    }
+}
+
+// ============================================================
+// LRU 历史缓存管理（P0修复：防止内存泄漏）
+// ============================================================
+
+QJsonArray& AgentService::getOrCreateHistory(const QString& conversationId)
+{
+    // 检查LRU缓存中是否存在
+    auto it = m_historiesLRU.find(conversationId);
+    if (it != m_historiesLRU.end()) {
+        // 更新访问时间
+        it->lastAccessTime = QDateTime::currentMSecsSinceEpoch();
+        // 同步到旧的m_histories（向后兼容）
+        m_histories[conversationId] = it->messages;
+        return it->messages;
+    }
+
+    // 不存在，创建新条目前先检查是否需要淘汰
+    evictLRUIfNeeded();
+
+    // 创建新的历史条目
+    HistoryEntry entry;
+    entry.messages = QJsonArray();
+    entry.lastAccessTime = QDateTime::currentMSecsSinceEpoch();
+    m_historiesLRU[conversationId] = entry;
+    m_histories[conversationId] = entry.messages;
+
+    return m_historiesLRU[conversationId].messages;
+}
+
+void AgentService::touchHistory(const QString& conversationId)
+{
+    auto it = m_historiesLRU.find(conversationId);
+    if (it != m_historiesLRU.end()) {
+        it->lastAccessTime = QDateTime::currentMSecsSinceEpoch();
+    }
+}
+
+void AgentService::evictLRUIfNeeded()
+{
+    if (m_historiesLRU.size() < kMaxCachedConversations) {
+        return;
+    }
+
+    // 找到最久未使用的条目
+    QString oldestConvId;
+    qint64 oldestTime = std::numeric_limits<qint64>::max();
+
+    for (auto it = m_historiesLRU.begin(); it != m_historiesLRU.end(); ++it) {
+        // 跳过当前正在流式处理的会话
+        if (it.key() == m_currentConvId && m_streaming) {
+            continue;
+        }
+        
+        if (it->lastAccessTime < oldestTime) {
+            oldestTime = it->lastAccessTime;
+            oldestConvId = it.key();
+        }
+    }
+
+    if (!oldestConvId.isEmpty()) {
+        qDebug() << "[AgentService] LRU淘汰会话历史"
+                 << "会话ID=" << oldestConvId
+                 << "缓存数=" << m_historiesLRU.size()
+                 << "→" << (m_historiesLRU.size() - 1);
+        m_historiesLRU.remove(oldestConvId);
+        m_histories.remove(oldestConvId);
     }
 }
