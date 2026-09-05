@@ -31,6 +31,7 @@ void OneShotVlmChannel::enqueue(const QString& systemPrompt,
                                 std::function<void(const QString&)> onDone)
 {
     if (!m_agent) {
+        qWarning() << "[OneShotVlmChannel] Agent 为空，无法处理请求";
         if (onDone) onDone({});
         return;
     }
@@ -54,6 +55,11 @@ void OneShotVlmChannel::enqueue(const QString& systemPrompt,
     } else {
         m_pending.append(std::move(request));
     }
+    
+    qDebug() << "[OneShotVlmChannel] 加入队列, 优先级:" << (priority == Priority::Interactive ? "交互" : "后台")
+             << "队列长度:" << m_pending.size()
+             << "是否运行中:" << m_running;
+    
     startNext();
 }
 
@@ -80,6 +86,9 @@ void OneShotVlmChannel::startNext()
 
     m_active = m_pending.takeFirst();
     m_running = true;
+    qDebug() << "[OneShotVlmChannel] 开始处理 VLM 请求, convId:" << m_active.conversationId 
+             << "帧数:" << m_active.frames.size() 
+             << "优先级:" << (m_active.priority == Priority::Interactive ? "交互" : "后台");
     const QString requestText = m_active.systemPrompt + QStringLiteral("\n\n")
         + m_active.userText;
     m_agent->sendMessage(m_active.conversationId, requestText, m_active.frames, {});
@@ -89,10 +98,18 @@ void OneShotVlmChannel::finishActive(const QString& content)
 {
     if (!m_running) return;
 
+    qDebug() << "[OneShotVlmChannel] 完成 VLM 请求, convId:" << m_active.conversationId 
+             << "内容长度:" << content.length()
+             << "是否丢弃:" << m_active.discardResult
+             << "队列剩余:" << m_pending.size();
+
     Request completed = std::move(m_active);
     m_active = {};
     m_running = false;
     if (m_agent) m_agent->clearHistory(completed.conversationId);
-    if (!completed.discardResult && completed.onDone) completed.onDone(content);
+    if (!completed.discardResult && completed.onDone) {
+        qDebug() << "[OneShotVlmChannel] 调用完成回调";
+        completed.onDone(content);
+    }
     startNext();
 }

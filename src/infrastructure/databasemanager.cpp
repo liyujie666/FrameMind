@@ -81,6 +81,20 @@ void DatabaseManager::createTables()
         "  path TEXT PRIMARY KEY,"
         "  last_opened DATETIME DEFAULT CURRENT_TIMESTAMP,"
         "  duration_ms INTEGER NOT NULL DEFAULT 0)",
+        // 视频元数据表
+        "CREATE TABLE IF NOT EXISTS video_metadata ("
+        "  video_id TEXT PRIMARY KEY,"
+        "  video_path TEXT NOT NULL,"
+        "  video_summary TEXT,"
+        "  index_level INTEGER NOT NULL DEFAULT 0,"
+        "  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+        // 场景描述表
+        "CREATE TABLE IF NOT EXISTS scene_descriptions ("
+        "  video_id TEXT NOT NULL,"
+        "  scene_id INTEGER NOT NULL,"
+        "  description TEXT,"
+        "  visual_description TEXT,"
+        "  PRIMARY KEY (video_id, scene_id))",
         // 索引
         "CREATE INDEX IF NOT EXISTS idx_messages_conv "
         "  ON messages(conversation_id, timestamp)",
@@ -103,6 +117,10 @@ void DatabaseManager::createTables()
     ensureColumn(QStringLiteral("conversations"),
                  QStringLiteral("video_id"),
                  QStringLiteral("TEXT"));
+    // 兼容升级：添加 elapsed_ms 字段用于记录消息耗时
+    ensureColumn(QStringLiteral("messages"),
+                 QStringLiteral("elapsed_ms"),
+                 QStringLiteral("INTEGER NOT NULL DEFAULT 0"));
 }
 
 void DatabaseManager::ensureColumn(const QString& table,
@@ -167,4 +185,75 @@ QList<QVariantMap> DatabaseManager::query(const QString& sql, const QVariantList
         rows.append(row);
     }
     return rows;
+}
+
+bool DatabaseManager::saveVideoMetadata(const QString& videoId,
+                                        const QString& videoPath,
+                                        const QString& summary,
+                                        int indexLevel)
+{
+    return exec(QStringLiteral(
+        "INSERT INTO video_metadata (video_id, video_path, video_summary, index_level, updated_at) "
+        "VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP) "
+        "ON CONFLICT(video_id) DO UPDATE SET "
+        "  video_path = excluded.video_path, "
+        "  video_summary = excluded.video_summary, "
+        "  index_level = excluded.index_level, "
+        "  updated_at = CURRENT_TIMESTAMP"),
+        {videoId, videoPath, summary, indexLevel});
+}
+
+bool DatabaseManager::saveSceneDescription(const QString& videoId,
+                                           int sceneId,
+                                           const QString& description,
+                                           const QString& visualDescription)
+{
+    return exec(QStringLiteral(
+        "INSERT INTO scene_descriptions (video_id, scene_id, description, visual_description) "
+        "VALUES (?, ?, ?, ?) "
+        "ON CONFLICT(video_id, scene_id) DO UPDATE SET "
+        "  description = excluded.description, "
+        "  visual_description = excluded.visual_description"),
+        {videoId, sceneId, description, visualDescription});
+}
+
+QString DatabaseManager::loadVideoSummary(const QString& videoId)
+{
+    const auto rows = query(
+        QStringLiteral("SELECT video_summary FROM video_metadata WHERE video_id = ?"),
+        {videoId});
+    if (rows.isEmpty()) return {};
+    return rows.first().value(QStringLiteral("video_summary")).toString();
+}
+
+QMap<int, QString> DatabaseManager::loadSceneDescriptions(const QString& videoId)
+{
+    QMap<int, QString> result;
+    const auto rows = query(
+        QStringLiteral("SELECT scene_id, description FROM scene_descriptions WHERE video_id = ?"),
+        {videoId});
+    for (const auto& row : rows) {
+        const int sceneId = row.value(QStringLiteral("scene_id")).toInt();
+        const QString desc = row.value(QStringLiteral("description")).toString();
+        if (!desc.isEmpty()) {
+            result.insert(sceneId, desc);
+        }
+    }
+    return result;
+}
+
+QMap<int, QString> DatabaseManager::loadSceneVisualDescriptions(const QString& videoId)
+{
+    QMap<int, QString> result;
+    const auto rows = query(
+        QStringLiteral("SELECT scene_id, visual_description FROM scene_descriptions WHERE video_id = ?"),
+        {videoId});
+    for (const auto& row : rows) {
+        const int sceneId = row.value(QStringLiteral("scene_id")).toInt();
+        const QString desc = row.value(QStringLiteral("visual_description")).toString();
+        if (!desc.isEmpty()) {
+            result.insert(sceneId, desc);
+        }
+    }
+    return result;
 }

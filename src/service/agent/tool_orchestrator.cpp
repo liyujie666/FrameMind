@@ -226,6 +226,19 @@ void ToolOrchestrator::onAgentFinished(const QString& convId,
 {
     if (convId != m_convId || !m_running) return;
 
+    qDebug() << "[ToolOrchestrator] 收到模型响应"
+             << "会话=" << convId
+             << "轮次=" << m_currentRound
+             << "finish_reason=" << finishReason
+             << "tool_calls数量=" << toolCalls.size()
+             << "文本内容长度=" << textContent.size();
+    
+    // 如果模型返回了文本但没有工具调用，打印文本内容前100字符用于诊断
+    if (toolCalls.isEmpty() && !textContent.isEmpty()) {
+        const QString preview = textContent.left(100);
+        qDebug() << "[ToolOrchestrator] 模型返回了纯文本（前100字符）:" << preview;
+    }
+
     // 只要服务端返回了工具调用，就必须优先执行工具；部分兼容接口会同时
     // 把 finish_reason 错误地标成 stop。不能仅依据 finish_reason 判断流程结束。
     if (!toolCalls.isEmpty()) {
@@ -253,16 +266,26 @@ void ToolOrchestrator::onAgentFinished(const QString& convId,
             if (c.isValid()) calls.append(c);
         }
         if (calls.isEmpty()) {
-            abortWithError(QStringLiteral("模型返回了无法解析的工具调用，播放器未执行操作"));
+            abortWithError(QStringLiteral("模型返回了无法解析的工具调用"));
             return;
         }
 
         if (m_totalToolCalls + calls.size() > MAX_TOOL_CALLS_PER_ANSWER) {
             const int allow = MAX_TOOL_CALLS_PER_ANSWER - m_totalToolCalls;
             if (allow <= 0) {
-                abortWithError(QStringLiteral("已达到工具调用上限，播放器操作未完成"));
+                qWarning() << "[ToolOrchestrator] 达到工具调用上限"
+                           << "总调用数=" << m_totalToolCalls
+                           << "上限=" << MAX_TOOL_CALLS_PER_ANSWER
+                           << "轮次=" << m_currentRound;
+                abortWithError(QStringLiteral("已达到工具调用上限（%1次），操作被终止。\n"
+                                              "提示：这通常是因为问题范围过大，建议缩小搜索范围或使用更具体的关键词。")
+                                   .arg(MAX_TOOL_CALLS_PER_ANSWER));
                 return;
             }
+            qWarning() << "[ToolOrchestrator] 接近工具调用上限，截断工具列表"
+                       << "已调用=" << m_totalToolCalls
+                       << "本轮请求=" << calls.size()
+                       << "允许=" << allow;
             calls.resize(allow);
         }
         m_totalToolCalls += calls.size();
@@ -316,6 +339,14 @@ void ToolOrchestrator::onAgentError(const QString& convId, const QString& error)
 void ToolOrchestrator::executeToolsThenContinue(
     const QVector<ToolCall>& calls, int round)
 {
+    // 检查工具调用预算
+    if (m_totalToolCalls >= MAX_TOOL_CALLS_PER_ANSWER * 0.8) {
+        qWarning() << "[ToolOrchestrator] 工具调用接近上限"
+                   << "已使用=" << m_totalToolCalls
+                   << "上限=" << MAX_TOOL_CALLS_PER_ANSWER
+                   << "使用率=" << (m_totalToolCalls * 100 / MAX_TOOL_CALLS_PER_ANSWER) << "%";
+    }
+
     // 顺序执行（简化；后续可并行独立工具）
     auto pendingResults = QSharedPointer<QJsonArray>::create();
     auto executed       = QSharedPointer<int>::create(0);

@@ -17,6 +17,7 @@ class VideoRAGStore;
 class PlayerService;
 class EmbeddingService;
 class AudioVisualAligner;
+class DatabaseManager;
 
 /**
  * 视频分析主服务（架构 §3.3.2 / agent-core-design.md §3.2 REPRESENT）。
@@ -36,6 +37,7 @@ public:
                                   VideoIndexer*     indexer,
                                   VideoRAGStore*   ragStore,
                                   PlayerService*   player,
+                                  DatabaseManager* db,
                                   QObject*         parent = nullptr);
 
     void setEmbeddingService(EmbeddingService* e) { m_embedder = e; }
@@ -152,13 +154,22 @@ private:
                     const QString& cancellationKey,
                     std::function<void(const QString&)> onDone);
 
+    /// 检测视频类型（基于首个场景的关键帧）
+    void detectVideoType(QSharedPointer<VideoRepresentation> repr,
+                         std::function<void()> onDone);
+
     OneShotVlmChannel*  m_vlmChannel = nullptr;
     VideoIndexer*       m_indexer  = nullptr;
     VideoRAGStore*      m_ragStore = nullptr;
     PlayerService*      m_player   = nullptr;
     EmbeddingService*   m_embedder = nullptr;
     AudioVisualAligner* m_aligner  = nullptr;
+    DatabaseManager*    m_db       = nullptr;
     QString             m_backgroundVideoId;
+    
+    // 视频类型缓存（videoId -> 类型字符串）
+    QHash<QString, QString> m_videoTypeCache;
+    
 };
 
 #endif // FRAMEMIND_VIDEO_ANALYSIS_SERVICE_H
