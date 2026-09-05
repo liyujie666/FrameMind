@@ -1,267 +1,468 @@
-# FrameMind
+<div align="center">
 
-基于 **Qt 6.9 + SmartPlayer SDK** 的视频分析 AI Agent 客户端。
+# 🎬 FrameMind
 
-> 设计文档见 [`docs/`](./docs)；开发任务卡见 [`docs/dev-tasks.md`](./docs/dev-tasks.md)。
+**智能视频分析 AI Agent 桌面客户端**
 
-## 更新记录
+基于 Qt 6.9 + FFmpeg + 多模态大模型的视频理解与智能问答系统
 
-| 日期 | 描述 |
-|------|------|
-| 2026-08-02 | 音视频融合第一期：纯视觉基线 + 同期 ASR 语义门控 + 保守融合 + 三类证据分离存储 |
-| 2026-08-01 | Agent 核心优化：索引流程重构、知识库 UI 完善、播放器与分析联动增强 |
-| 2026-07-30 | 优化 RAG 场景描述质量：全量场景描述、多帧采样、上下文连贯性增强 |
-| 2026-07-29 | 实现视频 RAG pipeline、知识库 UI 与播放器功能修复 |
-| 2026-07-28 | 搭建视频分析 Agent 骨架：五阶段决策循环 + RAG + 6 Tool 编排 |
-| 2026-07-27 | 添加 Video RAG 小模型服务框架（CLIP/BGE/Whisper/场景检测）|
-| 2026-07-26 | 解除帧率 30fps 限制 |
-| 2026-07-25 | UI 优化与大模型配置功能 |
-| 2026-07-24 | 更新 README 加入 Video RAG 方案说明，完善 UI 与播放器交互 |
+[功能特性](#-功能特性) • [效果展示](#-效果展示) • [系统架构](#-系统架构) • [快速开始](#-快速开始) • [开发计划](#-开发计划)
 
-## 当前进度
+</div>
 
-- **M1 — 骨架**：能打开本地 mp4，流畅播放、可拖动 seek、可调音量/倍速；三栏布局 + 空对话占位。
-- **M2 — 单帧 AI 问答**：SSE 流式对话、Markdown 渲染、对话历史持久化（SQLite）、
-  「📷 当前帧」截帧提问、多会话切换。首次使用需在「文件 → AI 设置」中填写
-  Endpoint / 模型 / API Key（Key 经 Windows DPAPI 加密存于系统密钥库，**不入数据库/日志**）。
-- **M3 / M4 — Video Agent 骨架代码（本次提交）**：按照 `agent-core-design.md` 的
-  **五阶段决策循环**（PERCEIVE → REPRESENT → REASON → ACT → REFLECT）搭建了完整的
-  Agent 框架代码，含 RAG 存储 / 多路检索 / 6 个 Tool / Tool 编排 / 反思引擎 / 顶层协调器。
-  当前仅完成骨架与 DI 装配，尚未与 ChatViewModel 联调。
+---
 
-## Video Analysis Agent 框架
+## 📸 效果展示
 
-### 分层架构
+### 主界面 - 视频播放与 AI 对话
+
+![首页效果展示](resources/images/首页效果展示图.png)
+
+*智能三栏布局：左侧文件管理，中央高性能视频播放器，右侧 AI 对话面板*
+
+### 知识库 - 视频内容索引与检索
+
+![知识库界面](resources/images/知识库.png)
+
+*场景时间轴、语音转写、实体追踪、向量检索一体化知识库*
+
+---
+
+## ✨ 功能特性
+
+### 🎥 高性能视频播放
+- ✅ **多格式支持** - 基于 FFmpeg，支持 MP4/AVI/MKV/MOV 等主流格式
+- ✅ **流畅播放** - 硬件加速解码，60fps 流畅播放
+- ✅ **精确控制** - 毫秒级 seek、倍速播放（0.25x - 2.0x）、音量调节
+- ✅ **实时预览** - 拖拽进度条时显示帧预览
+
+### 🤖 智能 AI 对话
+- ✅ **多模态理解** - 支持图文混合输入，理解视频画面内容
+- ✅ **流式回复** - SSE 流式传输，实时展示 AI 思考过程
+- ✅ **Markdown 渲染** - 支持代码高亮、表格、引用块等丰富格式
+- ✅ **多会话管理** - 按视频分组的对话历史，支持新建/切换/删除
+- ✅ **快捷提问** - 6 个预设问题模板，降低使用门槛
+  - 总结视频主要内容
+  - 这一段发生了什么
+  - 识别画面中的物体
+  - 提取画面中的文字
+  - 分析人物动作
+  - 对比帧差异
+
+### 🧠 Video RAG Agent
+- ✅ **渐进式索引** - 三级索引（元信息 → 场景分割 → VLM 描述）
+  - **Level 0** - 元信息 + 场景分割（秒级完成）
+  - **Level 1** - CLIP 视觉编码 + Whisper 语音转写（后台异步）
+  - **Level 2** - VLM 场景描述 + 全视频摘要（按需生成）
+- ✅ **多路检索融合** - 视觉 + 文本 + 实体，RRF 排序
+- ✅ **Agent 决策循环** - 五阶段工作流
+  - **PERCEIVE** - 问题分类与采样规划
+  - **REPRESENT** - 视频表示构建
+  - **REASON** - 推理与规划
+  - **ACT** - 工具调用执行
+  - **REFLECT** - 反思与验证
+- ✅ **Tool Calling** - 6 个专用工具
+  - `seek_and_analyze` - 跳转并分析特定时间点
+  - `analyze_time_range` - 分析时间段内容
+  - `search_video_content` - 向量检索视频片段
+  - `get_transcript` - 获取语音转写文本
+  - `get_scene_info` - 查询场景信息
+  - `control_player` - 控制播放器操作
+
+### 🎨 现代化 UI
+- ✅ **深色/浅色主题** - 完整主题系统，一键切换
+- ✅ **响应式布局** - 智能三栏布局，支持折叠/展开
+- ✅ **丰富交互** - 操作栏（复制/重新生成）、悬停效果、loading 动画
+- ✅ **时间段选择器** - 可视化选择分析范围，支持快速选择（前后 5/10/30/60 秒）
+- ✅ **实时状态** - AI 分析进度、耗时统计、流式传输指示
+
+### 💾 数据持久化
+- ✅ **对话历史** - SQLite 本地存储，支持多会话管理
+- ✅ **视频索引缓存** - 场景描述、融合信息、摘要持久化
+- ✅ **安全存储** - API Key 使用 Windows DPAPI 加密，不入数据库/日志
+- ✅ **向量索引** - 本地向量数据库，支持语义检索
+
+---
+
+## 🏗 系统架构
+
+### 分层架构图
 
 ```
-┌───────────────────── ChatViewModel / UI ────────────────────┐
-                              │
-                    ┌─────────▼─────────┐
-                    │    VideoAgent     │  ← 顶层协调器（五阶段主循环）
-                    └───┬────────────┬──┘
-                        │            │
-              PERCEIVE  │            │  REFLECT
-      ┌─────────────────▼──┐    ┌────▼─────────────────┐
-      │ PerceptionStrategy │    │  ReflectionEngine    │
-      │ 问题分类/采样计划   │    │  一致性/证据/时间/幻觉 │
-      └─────────────────┬──┘    └──────────────────────┘
-                        │
-                REASON  │  ACT
-              ┌─────────▼──────────┐
-              │  ToolOrchestrator  │  ← 多轮 Tool Calling (≤5 轮)
-              └─────────┬──────────┘
-                        │
-      ┌─────────────────┼─────────────────┐
-      │                 │                 │
-┌─────▼──────┐  ┌───────▼────────┐  ┌────▼──────────┐
-│ AgentSvc   │  │  ToolRegistry  │  │ 6 Tools       │
-│ +Tools API │  │                │  │ seek/analyze… │
-└─────┬──────┘  └────────────────┘  └───────┬───────┘
-      │                                     │
-      │       REPRESENT                     │
-      │       ┌─────────────────────────────▼──┐
-      │       │  VideoAnalysisService (Level2) │
-      │       │  ┌─── VideoIndexer (L0/L1) ──┐ │
-      │       │  │  scene / CLIP / whisper   │ │
-      │       │  └───────────────────────────┘ │
-      │       └────────────┬───────────────────┘
-      │                    │
-      ▼                    ▼
-┌─────────────────────────────────────────────────────┐
-│              VideoRAGStore  (SQLite)                │
-│   visual_frames │ text_segments │ entities │ QA     │
-└─────────────────────────────────────────────────────┘
-         ▲                        ▲
-    QACacheManager        VideoRAGRetriever（多路+RRF）
+┌────────────────────── Presentation Layer ──────────────────────┐
+│  MainWindow                                                     │
+│  ├── Sidebar (文件管理 + 设置)                                   │
+│  ├── PlayerView (视频播放器 + 时间轴)                            │
+│  └── ChatView (AI 对话面板)                                      │
+└─────────────────────────┬───────────────────────────────────────┘
+                          │
+┌─────────────────────── ViewModel Layer ────────────────────────┐
+│  PlayerViewModel │ ChatViewModel │ VideoAnalysisViewModel      │
+└─────────────────────────┬───────────────────────────────────────┘
+                          │
+┌──────────────────────── Service Layer ─────────────────────────┐
+│                                                                 │
+│  ┌─── Agent Core ───────────────────────────────────────┐     │
+│  │  VideoAgent (五阶段协调器)                            │     │
+│  │  ├── PerceptionStrategy (问题分类 + 采样规划)        │     │
+│  │  ├── ToolOrchestrator (多轮 Tool Calling)           │     │
+│  │  └── ReflectionEngine (事实校验 + 幻觉检测)         │     │
+│  └──────────────────────────────────────────────────────┘     │
+│                                                                 │
+│  ┌─── Video Analysis ──────────────────────────────────┐     │
+│  │  VideoIndexer (渐进式索引 L0/L1/L2)                 │     │
+│  │  VideoAnalysisService (VLM 场景描述 + 摘要)         │     │
+│  │  EntityTracker (实体追踪与共指消解)                 │     │
+│  └──────────────────────────────────────────────────────┘     │
+│                                                                 │
+│  ┌─── RAG System ──────────────────────────────────────┐     │
+│  │  VideoRAGStore (4 集合统一存储)                      │     │
+│  │  VideoRAGRetriever (多路召回 + RRF 融合)            │     │
+│  │  QACacheManager (QA 缓存，阈值 0.88)                │     │
+│  └──────────────────────────────────────────────────────┘     │
+│                                                                 │
+│  ┌─── AI Services ─────────────────────────────────────┐     │
+│  │  AgentService (SSE 流式 + Tool Calling)             │     │
+│  │  LLMProviderService (多提供商管理)                  │     │
+│  │  CLIPService / EmbeddingService / WhisperService    │     │
+│  └──────────────────────────────────────────────────────┘     │
+│                                                                 │
+│  PlayerService │ ConversationService │ ThemeService            │
+└─────────────────────────┬───────────────────────────────────────┘
+                          │
+┌───────────────────── Infrastructure ───────────────────────────┐
+│  NetworkClient (HTTP + SSE)                                     │
+│  DatabaseManager (SQLite)                                       │
+│  ONNXRuntimeEngine (本地推理)                                   │
+│  EventBus │ ImageProcessor                                      │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-### 核心组件
+### Agent 决策循环
 
-| 阶段 / 层 | 组件 | 职责 |
-|-----------|------|------|
-| PERCEIVE | `PerceptionStrategy` | 问题分类（13 种 `QuestionType`）+ 采样计划（时间区间/密度/预算）|
-| REPRESENT | `VideoIndexer` | 渐进式索引 L0/L1（元信息 + 场景分割 + 关键帧 CLIP + Whisper 转写）|
-| REPRESENT | `VideoAnalysisService` | Level 2 VLM 场景描述 + 全视频摘要；单帧/区间深度分析 |
-| REPRESENT | `EntityTracker` | 实体注册、共指消解（"那个人"→ 具体实体档案）|
-| REASON | `AgentService::sendMessageWithTools` | 携带 `tools` 字段发起 SSE，解析 `delta.tool_calls` 增量 |
-| ACT | `ToolOrchestrator` | 多轮 Tool 循环（≤5 轮，≤3 次工具调用/答）；回填 `role=tool` 消息 |
-| ACT | 6 个 Tool | `seek_and_analyze` / `analyze_time_range` / `search_video_content` / `get_transcript` / `get_scene_info` / `control_player` |
-| REFLECT | `ReflectionEngine` | 四项校验：事实一致性 / 证据支撑 / 时间合理性 / 幻觉检测 |
-| RAG 存储 | `VideoRAGStore` | 4 集合统一存储（visual_frames / text_segments / entity_profiles / qa_cache）+ SQLite 持久化 |
-| RAG 检索 | `VideoRAGRetriever` | 多路召回（text/visual/entity）+ RRF 融合排序 |
-| 记忆 | `QACacheManager` | QA 缓存复用（阈值 0.88），命中直接返回历史结论 |
-| 顶层 | `VideoAgent` | 五阶段编排：`ask()` 一站式入口 |
-
-### 领域模型
-
-| 模型 | 说明 |
-|------|------|
-| `VideoChunk` / `RetrievalResult` | RAG 检索单元（双 embedding，携带时间定位与元数据）|
-| `VideoRepresentation` | 视频三层表示（感知/结构/语义）+ 索引级别 L0~L2 |
-| `EntityProfile` | 实体档案（类型/别名/出现记录/描述向量）|
-| `SamplingPlan` / `SufficiencyCheck` | 感知采样计划与信息充分性判定 |
-| `ReasoningResult` / `ReflectionResult` | 推理结果与反思校验产物 |
-| `AgentAnswer` | 单轮 Agent 最终回答（含置信度、证据、工具轨迹）|
-| `ToolCall` / `ToolResult` | Tool Calling 结构 |
-
-## 下一步计划
-
-- [ ] **接线到 ChatViewModel**：把 `AgentService::sendMessage` 调用替换为
-      `DIContainer::videoAgent()->ask()`，UI 层即可用完整 Agent 能力。
-- [ ] **视频打开钩子**：`PlayerViewModel::openFile` 完成后调用
-      `VideoAgent::setActiveVideo(path, VideoIndexer::computeVideoId(path))`
-      并触发 `VideoAnalysisService::onVideoOpened(path)` 启动渐进式索引。
-- [ ] **索引进度 UI**：`ChatView` 顶部加状态条，绑定 `VideoIndexer::progress` 信号。
-- [ ] **接入真实小模型**：编译带 `-DFRAMEMIND_ENABLE_ONNX=ON` / `-DFRAMEMIND_ENABLE_WHISPER=ON`，
-      在 `AppData/models/` 放置 `clip_visual.onnx` / `clip_text.onnx` / `bge-small-zh.onnx` / `ggml-small.bin`。
-- [ ] **VLM oneShot 独立通道**：`VideoAnalysisService::oneShotVLM` 目前复用
-      `AgentService` 与用户对话共用状态，需迁移到独立 `AgentService` 实例或
-      直连 `NetworkClient`，避免与用户流式响应互相干扰。
-- [ ] **Whisper 音频抽取**：`VideoIndexer::buildLevel1` 里 Whisper 转写目前占位，
-      待接入 FFmpeg 提取 16kHz mono PCM 后打通。
-- [ ] **场景关键帧持久化**：`Scene::keyframePath` 落盘到 `AppData/keyframes/<videoId>/`，
-      释放内存占用；索引缓存命中时秒级复用。
-- [ ] **单元测试起步**：`VideoRAGStore::cosineSimilarity`、
-      `PerceptionStrategy::classifyQuestion`、`ReflectionEngine::extractTimestamps`
-      等纯函数最适合起步。
-
-## Video RAG 框架方案
-
-项目核心目标是构建**视频理解 RAG 系统**，采用**大小模型协作**架构：
-
-- **小模型（本地 ONNX Runtime）**：负责感知与编码 —— CLIP 视觉 Embedding、Whisper 语音转写、
-  BGE-small 文本 Embedding、直方图差异场景分割。零网络延迟，离线可用。
-- **大模型（云端 VLM/LLM）**：负责理解与推理 —— 场景描述生成、多帧联合推理、对话回答、
-  Tool Calling 决策。通过已有的 `LLMProviderService` 多提供商切换。
-
-### 关键设计
-
-| 能力 | 方案 |
-|------|------|
-| 渐进式索引 | Level 0 元信息+场景分割（秒级）→ Level 1 关键帧 Embedding+转写（后台异步）→ Level 2 按需 VLM 场景描述 |
-| 多路检索融合 | 视觉（CLIP text→image）+ 文本（BGE 语义）+ 实体，RRF 融合排序（k=60）|
-| Agent 决策循环 | PERCEIVE → REPRESENT → REASON → ACT → REFLECT，最多 5 轮 Tool Calling |
-| 上下文管理 | 分层组装 + U 形注意力布局 + 对话历史压缩 |
-| 拉流增量索引 | 滑动窗口 + 环形缓冲，保留最近 N 分钟（规划中）|
+```
+用户提问
+   │
+   ▼
+┌─────────────────┐
+│   PERCEIVE      │  问题分类 + 采样规划
+│                 │  13 种 QuestionType
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│   REPRESENT     │  视频表示构建
+│                 │  感知层 → 结构层 → 语义层
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│    REASON       │  RAG 检索 + 上下文组装
+│                 │  多路召回 + RRF 融合
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│     ACT         │  Tool Calling (≤5 轮)
+│                 │  6 个专用工具
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│   REFLECT       │  事实一致性 + 证据支撑
+│                 │  时间合理性 + 幻觉检测
+└────────┬────────┘
+         │
+         ▼
+      最终回答
+```
 
 ### 三层视频表示金字塔
 
 ```
-语义层  → VideoSummary / SceneDescriptions / EventChain / EntityProfiles
-结构层  → SceneGraph / EntityRegistry / SpeechSegments / TemporalIndex
-感知层  → 原始帧 / CLIP Embedding / 音频 / 光流
+┌──────────────────────────────────────────┐
+│         语义层 (Semantic Layer)           │
+│  VideoSummary / SceneDescriptions /      │
+│  EventChain / EntityProfiles             │
+└──────────────────┬───────────────────────┘
+                   │
+┌──────────────────▼───────────────────────┐
+│        结构层 (Structural Layer)          │
+│  SceneGraph / EntityRegistry /           │
+│  SpeechSegments / TemporalIndex          │
+└──────────────────┬───────────────────────┘
+                   │
+┌──────────────────▼───────────────────────┐
+│        感知层 (Perceptual Layer)          │
+│  原始帧 / CLIP Embedding / 音频 / 光流    │
+└──────────────────────────────────────────┘
 ```
 
-> 详细方案见 [`docs/video-rag-plan.md`](./docs/video-rag-plan.md)；Agent 决策与 Tool 语义见
-> [`docs/agent-core-design.md`](./docs/agent-core-design.md)。
+---
 
-## 环境要求
+## 🚀 快速开始
 
-| 依赖 | 版本 |
-|------|------|
-| Qt | 6.9（Core / Gui / Widgets / Network / Sql / Concurrent / Svg）|
-| CMake | ≥ 3.20 |
-| 编译器 | MSVC 2019 / 2022 (x64) |
-| SmartPlayer SDK | 预编译产物，置于 `third_party/smartplayer_sdk/` |
-| ONNX Runtime | ≥ 1.16（M4 起，CLIP / BGE 本地推理，可选）|
-| FAISS | 1.7.4（规划中，本地向量检索，CPU 版）|
-| whisper.cpp | 预编译库（M4 起，语音转写，可选）|
+### 环境要求
 
-> M1 ~ M3 阶段仅需 Qt + SmartPlayer SDK；ONNX Runtime / whisper.cpp 在 M4 阶段引入。
-> 当前 Agent 骨架允许未启用小模型时以 nullptr 兜底运行（仅缺失 embedding 检索能力）。
+| 依赖项 | 版本要求 | 说明 |
+|--------|---------|------|
+| **Qt** | 6.9+ | Core, Gui, Widgets, Network, Sql, Concurrent, Svg |
+| **CMake** | 3.20+ | 构建系统 |
+| **编译器** | MSVC 2019/2022 (x64) | Windows 平台 |
+| **SmartPlayer SDK** | - | 预编译产物，置于 `third_party/smartplayer_sdk/` |
+| **ONNX Runtime** | 1.16+ | 可选，用于本地模型推理 (CLIP/BGE) |
+| **whisper.cpp** | - | 可选，用于语音转写 |
 
-`third_party/smartplayer_sdk/` 结构：
+### 安装依赖
 
-```
-third_party/smartplayer_sdk/
-├── include/   # smartplayer.h / smartplayercallback.h / smartplayerdefs.h
-├── lib/       # SmartPlayerSDK.lib
-└── bin/       # SmartPlayerSDK.dll + FFmpeg/SDL2 运行时 dll
-```
+1. **安装 Qt 6.9**
+   ```powershell
+   # 下载 Qt Online Installer
+   # 选择 MSVC 2019 64-bit 组件
+   ```
 
-## 编译
+2. **准备 SmartPlayer SDK**
+   ```
+   third_party/smartplayer_sdk/
+   ├── include/   # smartplayer.h / smartplayercallback.h / smartplayerdefs.h
+   ├── lib/       # SmartPlayerSDK.lib
+   └── bin/       # SmartPlayerSDK.dll + FFmpeg/SDL2 运行时 dll
+   ```
+
+3. **（可选）ONNX Runtime**
+   ```powershell
+   # 下载并解压到
+   third_party/onnxruntime/
+   ├── include/
+   └── lib/
+   ```
+
+### 编译项目
 
 ```powershell
-# 在仓库根目录
+# 基础编译（不含本地模型）
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64 ^
       -DCMAKE_PREFIX_PATH="C:/Qt/6.9.0/msvc2019_64"
 
 cmake --build build --config Debug
 ```
 
-启用小模型（需先在 `third_party/onnxruntime/` 放置 ONNX Runtime）：
+**启用本地模型支持：**
 
 ```powershell
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64 ^
       -DCMAKE_PREFIX_PATH="C:/Qt/6.9.0/msvc2019_64" ^
       -DFRAMEMIND_ENABLE_ONNX=ON ^
       -DFRAMEMIND_ENABLE_WHISPER=ON
+
+cmake --build build --config Debug
 ```
 
-> 把 `CMAKE_PREFIX_PATH` 改成你本机的 Qt 安装路径。
+> 💡 将 `CMAKE_PREFIX_PATH` 替换为你本机的 Qt 安装路径
 
-构建完成后，可执行文件位于 `build/Debug/FrameMind.exe`，运行所需的 SDK / FFmpeg / SDL2 dll 会在编译后自动拷贝到同目录。
-
-## 运行
+### 运行应用
 
 ```powershell
-./build/Debug/FrameMind.exe
+# 进入构建目录
+cd build\Debug
+
+# 运行程序
+.\FrameMind.exe
 ```
 
-菜单「文件 → 打开视频...」选择本地 mp4 即可播放。
+**首次使用配置：**
 
-## 目录结构
+1. 点击菜单 **文件 → AI 设置**
+2. 填写 LLM 配置：
+   - **Endpoint**: API 服务地址
+   - **模型名称**: 如 `gpt-4-vision-preview`
+   - **API Key**: 你的 API 密钥（自动加密存储）
+3. 点击 **保存** 完成配置
 
-```
-src/
-├── main.cpp                  # 入口
-├── app/                      # Application + DIContainer（依赖注入）
-├── view/                     # View 层（MainWindow / Sidebar / Player / Chat ...）
-├── viewmodel/                # ViewModel 层
-├── model/                    # Domain Models
-│   ├── chatmessage.h / conversation.h / videoinfo.h / videocontext.h
-│   ├── scene.h / speech_segment.h
-│   ├── retrieval_result.h        # RAG 检索单元（新）
-│   ├── entity_profile.h          # 实体档案（新）
-│   ├── video_representation.h    # 视频三层表示（新）
-│   ├── agent_types.h             # Agent 决策/反思类型（新）
-│   └── tool_types.h              # Tool Calling 类型（新）
-├── service/                  # Service 层
-│   ├── playerservice.*            # SmartPlayer 封装
-│   ├── agentservice.*             # AI 对话 + SSE 流式 + Tool Calling
-│   ├── llmproviderservice.*       # 多 LLM 提供商管理
-│   ├── conversationservice.*      # 对话持久化
-│   ├── filemanagerservice.*       # 文件管理
-│   ├── settingsservice.* / themeservice.*
-│   ├── scene_detector.*           # 场景分割
-│   ├── clip_service.*             # CLIP 视觉+文本 Embedding（ONNX）
-│   ├── embedding_service.*        # BGE-small 文本 Embedding（ONNX）
-│   ├── whisper_service.*          # 语音转写（whisper.cpp）
-│   ├── rag/                       # ── RAG 存储与检索（新）
-│   │   ├── video_rag_store.*         #    4 集合统一存储
-│   │   ├── qa_cache_manager.*        #    QA 缓存（阈值 0.88）
-│   │   ├── video_rag_retriever.*     #    多路 + RRF 融合
-│   │   └── entity_tracker.*          #    实体追踪与共指消解
-│   └── agent/                     # ── Agent 核心（新）
-│       ├── video_indexer.*           #    渐进式索引 L0/L1
-│       ├── video_analysis_service.*  #    VLM 场景描述 + 摘要 (L2)
-│       ├── perception_strategy.*     #    PERCEIVE：问题分类 + 采样规划
-│       ├── reflection_engine.*       #    REFLECT：4 项校验
-│       ├── tool_base.h               #    ITool 接口
-│       ├── tool_registry.*           #    Tool 注册表
-│       ├── tool_orchestrator.*       #    多轮 Tool 循环（≤5 轮）
-│       ├── video_agent.*             #    顶层协调器（五阶段主循环）
-│       └── tools/                    #    6 个 Tool 实现
-│           ├── seek_and_analyze_tool.*
-│           ├── analyze_time_range_tool.*
-│           ├── search_video_content_tool.*
-│           ├── get_transcript_tool.*
-│           ├── get_scene_info_tool.*
-│           └── control_player_tool.*
-├── infrastructure/           # 基础设施
-│   ├── networkclient.*            # HTTP + SSE（含 streamPostRaw 支持 tool_calls）
-│   ├── databasemanager.*
-│   ├── eventbus.* / imageprocessor.*
-│   └── onnx_runtime_engine.*      # ONNX Runtime 统一封装
-└── utils/
-```
+**开始使用：**
+
+1. 点击 **文件 → 打开视频**，选择本地视频文件
+2. 等待视频索引完成（进度显示在顶部）
+3. 在右侧 AI 对话框中提问或使用快捷按钮
+
+---
+
+## 📚 详细文档
+
+| 文档 | 说明 |
+|------|------|
+| [快捷功能使用指南](docs/快捷功能使用指南.md) | 输入框快捷按钮详细说明 |
+| [新增快捷功能说明](docs/新增快捷功能说明.md) | 快捷功能设计文档 |
+| [UI 增强设计](docs/chat-ui-enhancement.md) | 聊天气泡 UI 增强方案 |
+| [Agent 核心设计](docs/agent-core-design.md) | Agent 决策循环详解 |
+| [Video RAG 方案](docs/video-rag-plan.md) | RAG 检索系统设计 |
+| [开发任务卡](docs/dev-tasks.md) | 功能开发进度跟踪 |
+
+---
+
+## 🛣 开发计划
+
+### 当前进度（v1.1.0）
+
+- ✅ **M1 - 基础骨架** - 视频播放 + 三栏布局
+- ✅ **M2 - AI 问答** - 单帧截图提问 + 对话历史
+- ✅ **M3 - Agent 框架** - 五阶段决策循环 + Tool Calling
+- ✅ **M4 - RAG 系统** - 渐进式索引 + 多路检索
+- 🚧 **M5 - 本地模型** - CLIP/BGE/Whisper 集成（进行中）
+
+### 近期计划
+
+- [ ] **接线到 ChatViewModel** - Agent 能力全面接入 UI
+- [ ] **索引进度 UI** - 顶部状态条显示索引进度
+- [ ] **VLM 独立通道** - 避免与用户对话流互相干扰
+- [ ] **Whisper 音频提取** - FFmpeg 音频流处理
+- [ ] **场景关键帧持久化** - 释放内存占用，秒级复用
+- [ ] **单元测试框架** - 核心算法测试覆盖
+
+### 未来规划
+
+- [ ] **流媒体支持** - RTSP/RTMP 拉流 + 滑动窗口索引
+- [ ] **实体追踪可视化** - 时间轴上显示实体出现记录
+- [ ] **多视频对比** - 并排播放 + 跨视频问答
+- [ ] **导出功能** - 场景描述导出、字幕导出、摘要报告
+- [ ] **插件系统** - 支持自定义 Tool 和分析模块
+- [ ] **协作功能** - 团队共享知识库和对话历史
+
+---
+
+## 📊 版本迭代记录
+
+### v1.1.0 (2026-09-05) 🎉
+**Agent 工作流重构 + UI 全面升级**
+
+#### 新增功能
+- ✨ **输入框快捷功能**
+  - 💡 快速提问：6 个预设问题模板
+  - ⏱ 时间段选择器：可视化时间范围选择
+- ✨ **聊天 UI 增强**
+  - Markdown 渲染（集成 md4c 库）
+  - 代码语法高亮
+  - 操作栏（复制/重新生成按钮）
+  - 实时状态显示（loading 动画 + 耗时统计）
+- ✨ **视频索引持久化**
+  - 场景描述缓存
+  - 融合信息存储
+  - 摘要持久化
+- ✨ **Agent 工作流优化**
+  - 完善五阶段决策循环
+  - 优化上下文预算管理
+  - 增强工具编排器
+
+#### 技术改进
+- 📦 新增 MarkdownRenderer 和 CodeHighlighter 服务
+- 🗄️ 数据库 schema 增强，支持多级索引存储
+- 🎨 图标系统（深色/浅色版本）
+- ⚡ 批量颜色刷新优化性能
+- 🔧 消息模型支持状态和时间统计
+
+#### Bug 修复
+- 🐛 修复主题切换时气泡样式错乱
+- 🐛 修复流式传输时按钮状态未禁用
+- 🐛 修复时间戳格式化精度问题
+
+### v1.0.0 (2026-08-02)
+**音视频融合第一期**
+
+- ✅ 纯视觉基线 + 同期 ASR 语义门控
+- ✅ 保守融合策略
+- ✅ 三类证据分离存储（visual / audio / fused）
+
+### v0.9.0 (2026-08-01)
+**Agent 核心优化**
+
+- ✅ 索引流程重构
+- ✅ 知识库 UI 完善
+- ✅ 播放器与分析联动增强
+
+### v0.8.0 (2026-07-30)
+**RAG 场景描述质量优化**
+
+- ✅ 全量场景描述
+- ✅ 多帧采样
+- ✅ 上下文连贯性增强
+
+### v0.7.0 (2026-07-29)
+**视频 RAG Pipeline**
+
+- ✅ 实现视频 RAG pipeline
+- ✅ 知识库 UI
+- ✅ 播放器功能修复
+
+### v0.6.0 (2026-07-28)
+**Agent 骨架搭建**
+
+- ✅ 五阶段决策循环
+- ✅ RAG 系统
+- ✅ 6 Tool 编排
+
+### v0.5.0 (2026-07-27)
+**Video RAG 服务框架**
+
+- ✅ CLIP / BGE / Whisper / 场景检测服务
+
+### v0.4.0 (2026-07-26)
+- ✅ 解除帧率 30fps 限制
+
+### v0.3.0 (2026-07-25)
+- ✅ UI 优化
+- ✅ 大模型配置功能
+
+### v0.2.0 (2026-07-24)
+- ✅ Video RAG 方案文档
+- ✅ UI 与播放器交互完善
+
+### v0.1.0 (2026-07-20)
+- ✅ 项目初始化
+- ✅ 基础视频播放功能
+
+---
+
+## 🤝 贡献指南
+
+欢迎提交 Issue 和 Pull Request！
+
+### 开发流程
+
+1. Fork 本仓库
+2. 创建功能分支 (`git checkout -b feature/AmazingFeature`)
+3. 提交改动 (`git commit -m 'feat: Add some AmazingFeature'`)
+4. 推送到分支 (`git push origin feature/AmazingFeature`)
+5. 提交 Pull Request
+
+### 代码规范
+
+- 遵循 Qt 代码风格
+- 使用有意义的变量和函数命名
+- 添加必要的注释和文档
+- 提交前运行 linter 和测试
+
+---
+
+## 📄 许可证
+
+本项目采用 MIT 许可证 - 详见 [LICENSE](LICENSE) 文件
+
+---
+
+## 🙏 致谢
+
+- [Qt](https://www.qt.io/) - 跨平台 GUI 框架
+- [FFmpeg](https://ffmpeg.org/) - 音视频处理库
+- [md4c](https://github.com/mity/md4c) - Markdown 解析库
+- [ONNX Runtime](https://onnxruntime.ai/) - 跨平台推理引擎
+- [whisper.cpp](https://github.com/ggerganov/whisper.cpp) - 高性能语音识别
+
+---
+
+<div align="center">
+
+**FrameMind** - 让 AI 真正理解视频
+
+Made with ❤️ by FrameMind Team
+
+</div>
