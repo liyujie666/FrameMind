@@ -4,16 +4,17 @@
 #include <QScrollArea>
 #include <QList>
 
-class ChatMessageListModel;
-class ChatBubbleWidget;
-class ThemeService;
 class QVBoxLayout;
-class QWidget;
+class ChatBubbleWidget;
+class ChatMessageListModel;
+class ThemeService;
+class MarkdownRenderer;
 
 /**
- * 可滚动消息列表（M2-T6）。模型驱动：监听 ChatMessageListModel 的
- * rowsInserted / dataChanged / modelReset 维护气泡 widget。
- * 仅在已贴底时自动滚动到底部。
+ * 聊天消息列表视图（增强版）。
+ * 使用 QScrollArea + 垂直布局管理气泡 widget。
+ * 数据从 ChatMessageListModel 读取；流式更新时通过 model 信号刷新。
+ * 支持 Markdown → HTML 渲染。
  */
 class ChatMessageList : public QScrollArea {
     Q_OBJECT
@@ -22,12 +23,16 @@ public:
 
     void setModel(ChatMessageListModel* model);
     void setThemeService(ThemeService* theme);
-
-    /// 主题变更时批量刷新所有气泡颜色（不重建 widget）
+    void setMarkdownRenderer(MarkdownRenderer* renderer);
     void refreshBubbleColors();
 
 signals:
     void linkActivated(const QString& href);
+    void copyRequested(const QString& content);
+    void regenerateRequested();
+
+protected:
+    void resizeEvent(QResizeEvent* event) override;
 
 private:
     void rebuildAll();
@@ -35,12 +40,15 @@ private:
     void updateRow(int row);
     bool isAtBottom() const;
     void scrollToBottom();
+    void updateElapsedTime(int row);
 
-    ChatMessageListModel*     m_model = nullptr;
-    ThemeService*             m_theme = nullptr;
-    QWidget*                  m_container = nullptr;
-    QVBoxLayout*              m_layout = nullptr;
-    QList<ChatBubbleWidget*>  m_bubbles;
+    QWidget*                   m_container = nullptr;
+    QVBoxLayout*               m_layout = nullptr;
+    ChatMessageListModel*      m_model = nullptr;
+    ThemeService*              m_theme = nullptr;
+    MarkdownRenderer*          m_renderer = nullptr;
+    QList<ChatBubbleWidget*>   m_bubbles;
+    QMap<int, QTimer*>         m_elapsedTimers;  // 每行的计时器
 };
 
 #endif // FRAMEMIND_CHATMESSAGELIST_H
