@@ -104,6 +104,14 @@ void ChatMessageList::updateActionBarIcons(int row)
             btn->setIcon(QIcon(QStringLiteral(":/icons/replay") + iconSuffix));
         }
     }
+
+    // timer 图标位于气泡下方的操作栏中，是 QLabel 而不是按钮。
+    if (QLabel* timerLabel = wrapper->findChild<QLabel*>(
+            QStringLiteral("finalElapsedIcon_%1").arg(row))) {
+        timerLabel->setPixmap(QPixmap(QStringLiteral(":/icons/timer") + iconSuffix)
+                                  .scaled(12, 12, Qt::KeepAspectRatio,
+                                          Qt::SmoothTransformation));
+    }
 }
 
 void ChatMessageList::refreshBubbleColorsProgressive()
@@ -444,6 +452,7 @@ void ChatMessageList::appendRow(int row)
             : QStringLiteral(":/icons/timer_dark.png");
         
         elapsedLabel->setPixmap(QPixmap(timerIcon).scaled(12, 12, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        elapsedLabel->setObjectName(QStringLiteral("finalElapsedIcon_%1").arg(row));
         elapsedLabel->setStyleSheet(QStringLiteral("QLabel { background:transparent; }"));
         actionLayout->addWidget(elapsedLabel);
         
