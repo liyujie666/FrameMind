@@ -13,6 +13,8 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
+#include <QEvent>
+#include <QTimer>
 
 // ---- 可点击场景卡片 ----
 // 继承 QWidget 而非 QFrame，完全自绘，避免 QSS 系统绘制覆盖自定义背景色
@@ -88,6 +90,20 @@ TimelineTabWidget::TimelineTabWidget(QWidget* parent)
     m_scroll->setFrameShape(QFrame::NoFrame);
     m_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+
+    connect(m_scroll->verticalScrollBar(), &QScrollBar::sliderPressed,
+            this, [this]() { m_userScrolling = true; });
+    connect(m_scroll->verticalScrollBar(), &QScrollBar::sliderReleased,
+            this, [this]() {
+                if (!m_scrollResetTimer) {
+                    m_scrollResetTimer = new QTimer(this);
+                    m_scrollResetTimer->setSingleShot(true);
+                    connect(m_scrollResetTimer, &QTimer::timeout, this,
+                            [this]() { m_userScrolling = false; });
+                }
+                m_scrollResetTimer->start(3000);
+            });
+    m_scroll->viewport()->installEventFilter(this);
 
     m_container = new QWidget(m_scroll);
     m_container->setAttribute(Qt::WA_StyledBackground, false);
@@ -176,7 +192,7 @@ void TimelineTabWidget::onSceneDescribed(int sceneId, const QString& description
             }
         }
     }
-    lbl->setText(displayText.left(100));
+    lbl->setText(displayText);
     lbl->setVisible(true);
 }
 
@@ -203,7 +219,7 @@ void TimelineTabWidget::onSceneFused(int sceneId, const SceneFusion& fusion)
                                     QString::number(fusion.confidence, 'f', 2));
         }
     }
-    label->setText(displayText.left(240));
+    label->setText(displayText);
     label->setVisible(true);
 }
 
@@ -383,10 +399,25 @@ void TimelineTabWidget::updateHighlight(int64_t posMs)
         card->setHighlighted(active);
 
         // 自动滚动到活跃卡片
-        if (active) {
+        if (active && !m_userScrolling) {
             m_scroll->ensureWidgetVisible(card, 0, 20);
         }
     }
+}
+
+bool TimelineTabWidget::eventFilter(QObject* obj, QEvent* event)
+{
+    if (obj == m_scroll->viewport() && event->type() == QEvent::Wheel) {
+        m_userScrolling = true;
+        if (!m_scrollResetTimer) {
+            m_scrollResetTimer = new QTimer(this);
+            m_scrollResetTimer->setSingleShot(true);
+            connect(m_scrollResetTimer, &QTimer::timeout, this,
+                    [this]() { m_userScrolling = false; });
+        }
+        m_scrollResetTimer->start(3000);
+    }
+    return QWidget::eventFilter(obj, event);
 }
 
 // static

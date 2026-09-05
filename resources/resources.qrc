@@ -61,5 +61,11 @@
         <file>icons/loading_dark.gif</file>
         <file>icons/replay_dark.png</file>
         <file>icons/replay_light.png</file>
+        <file alias="workflow/presets/video_qa.json">../src/service/agent/workflow/presets/video_qa.json</file>
+        <file alias="workflow/presets/video_summary.json">../src/service/agent/workflow/presets/video_summary.json</file>
+        <file>icons/copy_dark.png</file>
+        <file>icons/copy_light.png</file>
+        <file>icons/timer_dark.png</file>
+        <file>icons/timer_light.png</file>
     </qresource>
 </RCC>

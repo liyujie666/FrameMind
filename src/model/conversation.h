@@ -10,6 +10,7 @@ struct Conversation {
     QString   id;
     QString   title = QStringLiteral("新对话");
     QString   videoFilePath;
+    QString   videoId;
     QDateTime createdAt;
     QDateTime updatedAt;
 };

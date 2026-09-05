@@ -18,7 +18,9 @@ public:
     explicit ConversationService(DatabaseManager* db, QObject* parent = nullptr);
 
     QList<Conversation> getAllConversations();
-    Conversation        createConversation(const QString& videoPath = {});
+    QList<Conversation> getConversationsByVideoId(const QString& videoId);
+    Conversation        getLatestConversationForVideo(const QString& videoId);
+    Conversation        createConversation(const QString& videoPath = {}, const QString& videoId = {});
     void                deleteConversation(const QString& convId);
     void                updateTitle(const QString& convId, const QString& title);
 

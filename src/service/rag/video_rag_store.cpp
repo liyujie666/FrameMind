@@ -2,6 +2,7 @@
 
 #include "infrastructure/databasemanager.h"
 
+#include <QThread>
 #include <QMutex>
 #include <QMutexLocker>
 #include <QJsonDocument>
@@ -9,6 +10,8 @@
 #include <QJsonArray>
 #include <QDateTime>
 #include <QDebug>
+#include <QRegularExpression>
+#include <QSet>
 #include <algorithm>
 #include <cmath>
 
@@ -64,6 +67,46 @@ VideoChunk::ChunkType chunkTypeFromString(const QString& s)
     if (s == QLatin1String("scene_audio"))    return VideoChunk::SceneAudio;
     if (s == QLatin1String("scene_fused"))    return VideoChunk::SceneFused;
     return VideoChunk::SceneSummary;
+}
+
+QSet<QString> lexicalTerms(const QString& text)
+{
+    const QString normalized = text.toLower().simplified();
+    QSet<QString> terms;
+    static const QRegularExpression asciiWords(QStringLiteral(R"([a-z0-9_]+)"));
+    auto iterator = asciiWords.globalMatch(normalized);
+    while (iterator.hasNext()) terms.insert(iterator.next().captured());
+
+    QString cjk;
+    for (const QChar character : normalized) {
+        if (character.isLetterOrNumber() && character.unicode() >= 0x2E80) {
+            cjk.append(character);
+        } else {
+            cjk.append(QLatin1Char(' '));
+        }
+    }
+    const QStringList runs = cjk.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    for (const QString& run : runs) {
+        if (run.size() == 1) {
+            terms.insert(run);
+        } else {
+            for (int index = 0; index < run.size() - 1; ++index) {
+                terms.insert(run.mid(index, 2));
+            }
+        }
+    }
+    return terms;
+}
+
+float lexicalScore(const QSet<QString>& queryTerms, const QString& content)
+{
+    if (queryTerms.isEmpty()) return 0.0f;
+    const QSet<QString> documentTerms = lexicalTerms(content);
+    int matches = 0;
+    for (const QString& term : queryTerms) {
+        if (documentTerms.contains(term)) ++matches;
+    }
+    return static_cast<float>(matches) / static_cast<float>(queryTerms.size());
 }
 } // namespace
 
@@ -191,6 +234,19 @@ void VideoRAGStore::loadVideo(const QString& videoId)
     emit videoIndexLoaded(videoId, count);
 }
 
+bool VideoRAGStore::hasIndexedContent(const QString& videoId) const
+{
+    QMutexLocker lock(&d->mtx);
+    for (const Collection collection : {VisualFrames, TextSegments}) {
+        const auto chunks = d->inMemory.constFind(collection);
+        if (chunks == d->inMemory.constEnd()) continue;
+        for (auto it = chunks->constBegin(); it != chunks->constEnd(); ++it) {
+            if (it.value().videoId == videoId) return true;
+        }
+    }
+    return false;
+}
+
 void VideoRAGStore::invalidateVideo(const QString& videoId)
 {
     {
@@ -227,6 +283,16 @@ void VideoRAGStore::cleanupStale(int maxAgeDays)
 bool VideoRAGStore::insertChunk(Collection col, const VideoChunk& chunk)
 {
     if (!chunk.isValid()) return false;
+    // DatabaseManager 的 SQLite 连接属于主线程。Level-1 索引在工作线程运行时，
+    // 统一封送到 Store 所在线程完成内存与 SQLite 的原子写入。
+    if (QThread::currentThread() != thread()) {
+        bool inserted = false;
+        const VideoChunk copy = chunk;
+        QMetaObject::invokeMethod(this, [this, col, copy, &inserted]() {
+            inserted = insertChunk(col, copy);
+        }, Qt::BlockingQueuedConnection);
+        return inserted;
+    }
     {
         QMutexLocker lock(&d->mtx);
         d->inMemory[col][chunk.chunkId] = chunk;
@@ -313,9 +379,24 @@ QVector<QPair<VideoChunk, float>> VideoRAGStore::search(Collection col,
 
         // 过滤
         if (!filter.videoId.isEmpty() && c.videoId != filter.videoId) continue;
-        if (filter.startMsGte >= 0 && c.startMs < filter.startMsGte) continue;
-        if (filter.endMsLte >= 0 && c.endMs > filter.endMsLte) continue;
+        if (filter.timeMatchMode == Filter::Overlaps) {
+            if (filter.startMsGte >= 0 && c.endMs <= filter.startMsGte) continue;
+            if (filter.endMsLte >= 0 && c.startMs >= filter.endMsLte) continue;
+        }
+        if (filter.timeMatchMode == Filter::FullyContained) {
+            if (filter.startMsGte >= 0 && c.startMs < filter.startMsGte) continue;
+            if (filter.endMsLte >= 0 && c.endMs > filter.endMsLte) continue;
+        }
         if (static_cast<int>(filter.chunkType) >= 0 && c.chunkType != filter.chunkType) continue;
+
+        // 向量空间由模型 ID/版本而非维度定义；未声明身份的旧 chunk 只在调用方
+        // 未要求模型隔离时兼容检索，升级后的路径不会静默混用它们。
+        const QString modelId = c.metadata.value(QStringLiteral("embedding_model_id")).toString();
+        const QString modelVersion = c.metadata.value(QStringLiteral("embedding_version")).toString();
+        if (!filter.expectedEmbeddingModelId.isEmpty()
+            && modelId != filter.expectedEmbeddingModelId) continue;
+        if (!filter.expectedEmbeddingVersion.isEmpty()
+            && modelVersion != filter.expectedEmbeddingVersion) continue;
 
         // 选择用哪个向量
         const std::vector<float>& target =
@@ -333,6 +414,50 @@ QVector<QPair<VideoChunk, float>> VideoRAGStore::search(Collection col,
               [](const auto& a, const auto& b) { return a.second > b.second; });
     if (results.size() > topK) results.resize(topK);
 
+    return results;
+}
+
+QVector<QPair<VideoChunk, float>> VideoRAGStore::searchLexical(
+    Collection col, const QString& query, const Filter& filter, int topK)
+{
+    QVector<QPair<VideoChunk, float>> results;
+    if (query.trimmed().isEmpty() || topK <= 0) return results;
+    const QSet<QString> queryTerms = lexicalTerms(query);
+    if (queryTerms.isEmpty()) return results;
+
+    QMutexLocker lock(&d->mtx);
+    const auto collection = d->inMemory.constFind(col);
+    if (collection == d->inMemory.constEnd()) return results;
+
+    results.reserve(collection->size());
+    for (auto it = collection->constBegin(); it != collection->constEnd(); ++it) {
+        const VideoChunk& chunk = it.value();
+        if (!filter.videoId.isEmpty() && chunk.videoId != filter.videoId) continue;
+        if (filter.timeMatchMode == Filter::Overlaps) {
+            if (filter.startMsGte >= 0 && chunk.endMs <= filter.startMsGte) continue;
+            if (filter.endMsLte >= 0 && chunk.startMs >= filter.endMsLte) continue;
+        } else {
+            if (filter.startMsGte >= 0 && chunk.startMs < filter.startMsGte) continue;
+            if (filter.endMsLte >= 0 && chunk.endMs > filter.endMsLte) continue;
+        }
+        if (static_cast<int>(filter.chunkType) >= 0 && chunk.chunkType != filter.chunkType) continue;
+
+        const float score = lexicalScore(queryTerms, chunk.textContent);
+        if (score < filter.minScore || score <= 0.0f) continue;
+        results.append({chunk, score});
+    }
+
+    std::sort(results.begin(), results.end(),
+              [](const auto& left, const auto& right) {
+                  if (!qFuzzyCompare(left.second + 1.0f, right.second + 1.0f)) {
+                      return left.second > right.second;
+                  }
+                  if (left.first.startMs != right.first.startMs) {
+                      return left.first.startMs < right.first.startMs;
+                  }
+                  return left.first.chunkId < right.first.chunkId;
+              });
+    if (results.size() > topK) results.resize(topK);
     return results;
 }
 
@@ -361,6 +486,14 @@ QVector<VideoChunk> VideoRAGStore::listChunks(Collection col, const QString& vid
 bool VideoRAGStore::upsertEntity(const EntityProfile& entity)
 {
     if (!entity.isValid() || !d->db) return false;
+    if (QThread::currentThread() != thread()) {
+        bool stored = false;
+        const EntityProfile copy = entity;
+        QMetaObject::invokeMethod(this, [this, copy, &stored]() {
+            stored = upsertEntity(copy);
+        }, Qt::BlockingQueuedConnection);
+        return stored;
+    }
 
     QJsonArray aliasesArr;
     for (const auto& a : entity.aliases) aliasesArr.append(a);
@@ -382,7 +515,7 @@ bool VideoRAGStore::upsertEntity(const EntityProfile& entity)
         appearArr.append(o);
     }
 
-    return d->db->exec(
+    const bool stored = d->db->exec(
         QStringLiteral(
             "INSERT OR REPLACE INTO rag_entities "
             "(entity_id, video_id, entity_type, primary_description, "
@@ -397,6 +530,23 @@ bool VideoRAGStore::upsertEntity(const EntityProfile& entity)
             QString::fromUtf8(QJsonDocument(appearArr).toJson(QJsonDocument::Compact)),
             embeddingToBlob(entity.descriptionEmbedding)
         });
+    if (!stored) return false;
+
+    // EntityProfiles 是检索 collection；实体表承担持久化档案，chunk 承担 RAG 向量召回。
+    VideoChunk chunk;
+    chunk.chunkId = QStringLiteral("entity:") + entity.videoId + QLatin1Char(':') + entity.id;
+    chunk.videoId = entity.videoId;
+    chunk.startMs = entity.firstAppearMs() < 0 ? 0 : entity.firstAppearMs();
+    chunk.endMs = entity.lastAppearMs() < chunk.startMs
+        ? chunk.startMs + 1 : entity.lastAppearMs() + 1;
+    chunk.chunkType = VideoChunk::Event;
+    chunk.textContent = entity.primaryDescription;
+    chunk.textEmbedding = entity.descriptionEmbedding;
+    chunk.metadata.insert(QStringLiteral("entity_id"), entity.id);
+    chunk.metadata.insert(QStringLiteral("entity_type"), EntityProfile::typeToString(entity.type));
+    chunk.metadata.insert(QStringLiteral("embedding_model_id"), QStringLiteral("bge_text"));
+    chunk.metadata.insert(QStringLiteral("embedding_version"), QStringLiteral("passage_v2"));
+    return insertChunk(EntityProfiles, chunk);
 }
 
 QVector<EntityProfile> VideoRAGStore::listEntities(const QString& videoId) const
@@ -453,15 +603,16 @@ QVector<EntityProfile> VideoRAGStore::listEntities(const QString& videoId) const
 
 // ================= 工具 =================
 
-float VideoRAGStore::cosineSimilarity(const std::vector<float>& a, const std::vector<float>& b)
+float VideoRAGStore::cosineSimilarity(const std::vector<float>& a,
+                                       const std::vector<float>& b)
 {
-    if (a.empty() || a.size() != b.size()) return 0.0f;
-    double dot = 0.0, na = 0.0, nb = 0.0;
+    if (a.size() != b.size() || a.empty()) return 0.0f;
+    float dot = 0.0f, normA = 0.0f, normB = 0.0f;
     for (size_t i = 0; i < a.size(); ++i) {
-        dot += static_cast<double>(a[i]) * b[i];
-        na  += static_cast<double>(a[i]) * a[i];
-        nb  += static_cast<double>(b[i]) * b[i];
+        dot   += a[i] * b[i];
+        normA += a[i] * a[i];
+        normB += b[i] * b[i];
     }
-    if (na <= 0.0 || nb <= 0.0) return 0.0f;
-    return static_cast<float>(dot / (std::sqrt(na) * std::sqrt(nb)));
+    const float denom = std::sqrt(normA) * std::sqrt(normB);
+    return denom > 0.0f ? dot / denom : 0.0f;
 }

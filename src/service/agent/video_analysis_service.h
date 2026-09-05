@@ -11,12 +11,13 @@
 #include "model/videocontext.h"
 #include "model/audio_visual_relation.h"
 
-class AgentService;
+class OneShotVlmChannel;
 class VideoIndexer;
 class VideoRAGStore;
 class PlayerService;
 class EmbeddingService;
 class AudioVisualAligner;
+class DatabaseManager;
 
 /**
  * 视频分析主服务（架构 §3.3.2 / agent-core-design.md §3.2 REPRESENT）。
@@ -32,10 +33,11 @@ class AudioVisualAligner;
 class VideoAnalysisService : public QObject {
     Q_OBJECT
 public:
-    explicit VideoAnalysisService(AgentService*    agent,
-                                  VideoIndexer*    indexer,
+    explicit VideoAnalysisService(OneShotVlmChannel* vlmChannel,
+                                  VideoIndexer*     indexer,
                                   VideoRAGStore*   ragStore,
                                   PlayerService*   player,
+                                  DatabaseManager* db,
                                   QObject*         parent = nullptr);
 
     void setEmbeddingService(EmbeddingService* e) { m_embedder = e; }
@@ -144,18 +146,30 @@ private:
                             const QString& evidenceType,
                             const QString& text);
 
-    /// 借助 AgentService 走一次一次性（非流式）VLM 调用
+    /// 经专属串行通道发起一次一次性 VLM 调用，不占用用户问答流。
     void oneShotVLM(const QString& sysPrompt,
                     const QString& userText,
                     const QList<QImage>& frames,
+                    bool interactive,
+                    const QString& cancellationKey,
                     std::function<void(const QString&)> onDone);
 
-    AgentService*       m_agent    = nullptr;
+    /// 检测视频类型（基于首个场景的关键帧）
+    void detectVideoType(QSharedPointer<VideoRepresentation> repr,
+                         std::function<void()> onDone);
+
+    OneShotVlmChannel*  m_vlmChannel = nullptr;
     VideoIndexer*       m_indexer  = nullptr;
     VideoRAGStore*      m_ragStore = nullptr;
     PlayerService*      m_player   = nullptr;
     EmbeddingService*   m_embedder = nullptr;
     AudioVisualAligner* m_aligner  = nullptr;
+    DatabaseManager*    m_db       = nullptr;
+    QString             m_backgroundVideoId;
+    
+    // 视频类型缓存（videoId -> 类型字符串）
+    QHash<QString, QString> m_videoTypeCache;
+    
 };
 
 #endif // FRAMEMIND_VIDEO_ANALYSIS_SERVICE_H

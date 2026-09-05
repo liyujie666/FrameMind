@@ -36,7 +36,7 @@ class ToolOrchestrator : public QObject {
     Q_OBJECT
 public:
     static constexpr int MAX_ROUNDS = 5;
-    static constexpr int MAX_TOOL_CALLS_PER_ANSWER = 3;
+    static constexpr int MAX_TOOL_CALLS_PER_ANSWER = 10;
 
     explicit ToolOrchestrator(AgentService* agent,
                                ToolRegistry* registry,
@@ -64,10 +64,12 @@ public:
                    std::function<void(const QString&)> onError,
                    const QJsonValue& toolChoice = QStringLiteral("auto"));
 
+    void runPlayerCommand(const QString& question,
+                          std::function<void(const QString&)> onDone,
+                          std::function<void(const QString&)> onError);
+
     /// 中断当前 Agent 循环
     void cancel();
-
-    /// 是否有正在跑的循环
     bool isRunning() const { return m_running; }
 
 signals:
@@ -86,6 +88,7 @@ private slots:
 private:
     void startRound(int round);
     void executeToolsThenContinue(const QVector<ToolCall>& calls, int round);
+    QVector<ToolCall> fallbackPlayerCalls() const;
     void finishWithAnswer(const QString& answer);
     void abortWithError(const QString& err);
 
@@ -104,6 +107,7 @@ private:
     QString      m_streamingText;
     QVector<ToolResult> m_toolTrace;
     QJsonArray   m_lastAssistantToolCalls;
+    QJsonArray   m_activeTools;
     QJsonValue   m_toolChoice = QJsonValue(QStringLiteral("auto"));
 
     // 回调

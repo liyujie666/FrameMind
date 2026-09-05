@@ -20,6 +20,7 @@ class ClipService;
 class EmbeddingService;
 class WhisperService;
 class VideoRAGStore;
+class DatabaseManager;
 
 /**
  * 视频渐进式索引流水线（agent-core-design.md §5.2 / video-rag-plan.md 3.1）。
@@ -61,6 +62,7 @@ public:
     explicit VideoIndexer(PlayerService* player,
                           SceneDetector* sceneDetector,
                           VideoRAGStore* ragStore,
+                          DatabaseManager* db,
                           QObject* parent = nullptr);
     ~VideoIndexer() override;
 
@@ -131,6 +133,7 @@ private:
     PlayerService*    m_player     = nullptr;
     SceneDetector*    m_sceneDet   = nullptr;
     VideoRAGStore*    m_ragStore   = nullptr;
+    DatabaseManager*  m_db         = nullptr;
     ClipService*      m_clip       = nullptr;
     EmbeddingService* m_embedder   = nullptr;
     WhisperService*   m_whisper    = nullptr;

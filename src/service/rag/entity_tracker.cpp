@@ -43,11 +43,22 @@ void EntityTracker::reload(const QString& videoId)
 // 匹配 & 注册
 // ============================================================
 
-std::vector<float> EntityTracker::encodeDesc(const QString& desc) const
+std::vector<float> EntityTracker::encodeQuery(const QString& desc) const
 {
 #ifdef FRAMEMIND_HAS_ONNXRUNTIME
     if (m_embedder && m_embedder->isReady()) {
-        return m_embedder->embed(desc);
+        return m_embedder->embedQuery(desc);
+    }
+#endif
+    (void)desc;
+    return {};
+}
+
+std::vector<float> EntityTracker::encodePassage(const QString& desc) const
+{
+#ifdef FRAMEMIND_HAS_ONNXRUNTIME
+    if (m_embedder && m_embedder->isReady()) {
+        return m_embedder->embedPassage(desc);
     }
 #endif
     (void)desc;
@@ -63,7 +74,7 @@ QString EntityTracker::generateEntityId(EntityProfile::EntityType type) const
 std::optional<EntityProfile> EntityTracker::findMatching(
     const QString& videoId, const QString& description) const
 {
-    const auto embQuery = encodeDesc(description);
+    const auto embQuery = encodeQuery(description);
     if (embQuery.empty()) return std::nullopt;
 
     const auto& list = m_cache.value(videoId);
@@ -115,7 +126,7 @@ QString EntityTracker::registerEntity(const QString& videoId,
     e.videoId = videoId;
     e.type    = type;
     e.primaryDescription = description;
-    e.descriptionEmbedding = encodeDesc(description);
+    e.descriptionEmbedding = encodePassage(description);
 
     EntityAppearance ap;
     ap.sceneId     = sceneId;
@@ -147,7 +158,7 @@ std::optional<EntityProfile> EntityTracker::resolveReference(
     static const QRegularExpression endRe(QStringLiteral(u"(结尾的?|最后的?|结束的?)"));
 
     auto pickBestBySim = [this, &userReference, &list]() -> std::optional<EntityProfile> {
-        const auto emb = encodeDesc(userReference);
+        const auto emb = encodeQuery(userReference);
         if (emb.empty()) return std::nullopt;
         float bestSim = -1.0f;
         int   bestIdx = -1;

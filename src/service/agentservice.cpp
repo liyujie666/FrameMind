@@ -14,19 +14,6 @@
 
 namespace {
 constexpr int kMaxImagesPerRequest = 10;  // 架构防御：单次请求图片硬上限
-
-QString formatPositionMs(int64_t ms)
-{
-    const int h = static_cast<int>(ms / 3600000);
-    const int m = static_cast<int>((ms % 3600000) / 60000);
-    const int sec = static_cast<int>((ms % 60000) / 1000);
-    if (h > 0)
-        return QStringLiteral("%1:%2:%3")
-                   .arg(h)
-                   .arg(m, 2, 10, QChar('0'))
-                   .arg(sec, 2, 10, QChar('0'));
-    return QStringLiteral("%1:%2").arg(m).arg(sec, 2, 10, QChar('0'));
-}
 } // namespace
 
 AgentService::AgentService(NetworkClient* network,
@@ -71,46 +58,9 @@ void AgentService::setEndpoint(const QString& endpoint)
 
 QString AgentService::buildSystemPrompt(const VideoContext& ctx)
 {
-    QString prompt = QStringLiteral(
-        "你是一个专业的视频内容分析智能体。你能理解用户提供的视频画面与问题。\n"
-        "# 工具使用规则（最高优先级）\n"
-        "- 当用户要求任何播放器操作（跳转/seek/播放/暂停）时，"
-          "你必须调用 control_player 工具来执行，绝对不能只用文字描述操作结果\n"
-        "- 工具调用完成后只需一句话确认（如「已跳转到第10秒」），不要附加分析\n"
-        "- 查询视频内容时优先调用工具检索，不要凭记忆直接回答\n"
-        "# 行为准则\n"
-        "- 严格按照用户的实际问题作答，不要主动展开用户未要求的内容\n"
-        "- 下方「视频背景信息」仅作为内部参考，不可在回答中原文复述或主动总结\n"
-        "# 回答格式\n"
-        "- 使用 Markdown 格式\n"
-        "- 引用时间点使用 [mm:ss] 或 [hh:mm:ss] 格式（如 [01:23]）\n"
-        "- 不确定的内容明确标注\"推测\"或\"可能\"\n");
-
-    if (!ctx.isEmpty()) {
-        prompt += QStringLiteral("\n# 视频背景信息（仅供参考，禁止原文输出）\n");
-        if (!ctx.fileName.isEmpty())
-            prompt += QStringLiteral("- 文件名: %1\n").arg(ctx.fileName);
-        if (ctx.durationMs > 0)
-            prompt += QStringLiteral("- 总时长(ms): %1\n").arg(ctx.durationMs);
-        if (ctx.width > 0 && ctx.height > 0)
-            prompt += QStringLiteral("- 分辨率: %1x%2\n").arg(ctx.width).arg(ctx.height);
-        if (!ctx.videoSummary.isEmpty())
-            prompt += QStringLiteral("\n## 视频摘要（背景参考，不可主动输出）\n%1\n")
-                          .arg(ctx.videoSummary);
-        if (!ctx.sceneOverview.isEmpty())
-            prompt += QStringLiteral("\n# 视频结构（场景时间轴，仅供参考）\n%1\n")
-                          .arg(ctx.sceneOverview);
-        if (ctx.currentPositionMs > 0)
-            prompt += QStringLiteral("\n# 当前播放位置\n%1\n")
-                          .arg(formatPositionMs(ctx.currentPositionMs));
-        if (!ctx.retrievalEvidence.isEmpty())
-            prompt += QStringLiteral(
-                "\n# 当前问题的检索证据\n"
-                "以下内容来自视频索引，仅可作为回答依据，不要把证据元数据当成事实。\n"
-                "若证据不足以回答，可调用工具补充检索。\n%1\n")
-                          .arg(ctx.retrievalEvidence);
-    }
-    return prompt;
+    // 向后兼容：委托给 ContextBudgetManager 的分层构建
+    return ContextBudgetManager::buildStaticSystemPrompt()
+           + ContextBudgetManager::buildDynamicSystemPrompt(ctx);
 }
 
 QJsonObject AgentService::makeUserMessage(const QString& text,
@@ -159,15 +109,29 @@ QJsonObject AgentService::buildRequestPayload(const QString& convId,
 {
     QJsonArray& history = m_histories[convId];
 
+    // === System Prompt 分层构建 ===
+    // 静态部分（角色/规则/格式）可被后端 Prompt Caching 命中
+    // 动态部分（视频背景/证据）每次可能变化
+    const QString staticPrompt = ContextBudgetManager::buildStaticSystemPrompt();
+    const QString dynamicPrompt = ContextBudgetManager::buildDynamicSystemPrompt(videoCtx);
+    const QString fullSystemPrompt = staticPrompt + dynamicPrompt;
+    const int systemTokens = m_budgetManager.estimateTextTokens(fullSystemPrompt);
+
+    // 当前 user 消息（同时记入历史）
+    const QJsonObject userMsg = makeUserMessage(text, frames);
+    const int currentUserTokens = m_budgetManager.estimateMessageTokens(userMsg);
+
+    // === Token 预算截断 ===
+    applyBudgetTruncation(history, systemTokens, currentUserTokens);
+
+    // 组装 messages
     QJsonArray messages;
     messages.append(QJsonObject{
         { QStringLiteral("role"), QStringLiteral("system") },
-        { QStringLiteral("content"), buildSystemPrompt(videoCtx) } });
+        { QStringLiteral("content"), fullSystemPrompt } });
     for (const auto& v : std::as_const(history)) {
         messages.append(v);
     }
-    // 当前 user 消息（同时记入历史）
-    const QJsonObject userMsg = makeUserMessage(text, frames);
     messages.append(userMsg);
     history.append(userMsg);
 
@@ -176,13 +140,14 @@ QJsonObject AgentService::buildRequestPayload(const QString& convId,
     payload.insert(QStringLiteral("stream"), true);
     payload.insert(QStringLiteral("messages"), messages);
 
-    qDebug() << "[AgentService] buildRequestPayload"
-             << "conv=" << convId
-             << "historyMsgs=" << history.size()
-             << "images=" << frames.size()
-             << "promptChars=" << buildSystemPrompt(videoCtx).size()
-             << "evidenceChars=" << videoCtx.retrievalEvidence.size()
-             << "sceneOverviewChars=" << videoCtx.sceneOverview.size();
+    qDebug() << "[AgentService] 构建模型请求"
+             << "会话=" << convId
+             << "历史消息数=" << history.size()
+             << "图片数=" << frames.size()
+             << "系统提示词Token数=" << systemTokens
+             << "历史Token数=" << m_budgetManager.estimateTokens(history)
+             << "证据字符数=" << videoCtx.retrievalEvidence.size()
+             << "场景概览字符数=" << videoCtx.sceneOverview.size();
 
     if (m_settings) {
         bool ok = false;
@@ -327,6 +292,26 @@ void AgentService::sendMessageWithTools(const QString& conversationId,
     if (!tools.isEmpty()) {
         payload.insert(QStringLiteral("tools"), tools);
         payload.insert(QStringLiteral("tool_choice"), toolChoice);
+        
+        // 调试日志：输出工具定义
+        qDebug() << "[AgentService] 发送工具调用请求"
+                 << "会话=" << conversationId
+                 << "工具数量=" << tools.size()
+                 << "tool_choice=" << QJsonDocument(toolChoice.toObject()).toJson(QJsonDocument::Compact);
+        
+        // 输出每个工具的名称
+        QStringList toolNames;
+        for (const auto& toolValue : tools) {
+            const QJsonObject tool = toolValue.toObject();
+            const QString toolName = tool.value(QStringLiteral("function"))
+                                         .toObject()
+                                         .value(QStringLiteral("name"))
+                                         .toString();
+            if (!toolName.isEmpty()) {
+                toolNames.append(toolName);
+            }
+        }
+        qDebug() << "[AgentService] 可用工具列表:" << toolNames.join(", ");
     }
     sendStreamWithTools(conversationId, payload);
 }
@@ -343,16 +328,65 @@ void AgentService::continueWithToolResults(const QString& conversationId,
     applyActiveProvider();
     m_network->setAuthToken(m_apiKey);
 
-    // 把 assistant tool_calls 消息 + tool 结果消息 追加到历史
+    // === P0: 压缩 tool 结果体积 ===
+    QJsonArray compressedToolMessages = toolMessages;
+    m_budgetManager.compressToolResults(compressedToolMessages);
+
+    // 把 assistant tool_calls 消息 + 压缩后的 tool 结果消息 追加到历史
     QJsonArray& history = m_histories[conversationId];
     for (const auto& v : assistantToolCallMsg) history.append(v);
-    for (const auto& v : toolMessages) history.append(v);
+    for (const auto& v : compressedToolMessages) history.append(v);
+
+    // === Token 预算截断 ===
+    // 注意：不截断最近的 assistant tool_calls + tool 消息对，否则 API 会返回 400。
+    // 只对早期历史做截断（truncateHistory 已内置尾部保护）。
+    const QString systemContent = ContextBudgetManager::buildStaticSystemPrompt()
+                                  + ContextBudgetManager::buildDynamicSystemPrompt(m_activeCtx);
+    const int systemTokens = m_budgetManager.estimateTextTokens(systemContent);
+    applyBudgetTruncation(history, systemTokens, 0);
+
+    // 安全检查：确保截断后 history 中最后的 tool 消息有对应的 assistant tool_calls
+    // 如果截断导致消息对不完整，直接用原始消息构建请求
+    bool historyValid = true;
+    if (!history.isEmpty()) {
+        // 检查是否存在 tool 消息没有对应的 assistant tool_calls
+        for (int i = 0; i < history.size(); ++i) {
+            const QString role = history.at(i).toObject()
+                                     .value(QStringLiteral("role")).toString();
+            if (role == QLatin1String("tool")) {
+                // 往前找是否有 assistant tool_calls 消息
+                bool foundAssistant = false;
+                for (int j = i - 1; j >= 0; --j) {
+                    const QJsonObject msg = history.at(j).toObject();
+                    if (msg.value(QStringLiteral("role")).toString() == QLatin1String("assistant")
+                        && !msg.value(QStringLiteral("tool_calls")).toArray().isEmpty()) {
+                        foundAssistant = true;
+                        break;
+                    }
+                    if (msg.value(QStringLiteral("role")).toString() == QLatin1String("user"))
+                        break;
+                }
+                if (!foundAssistant) {
+                    historyValid = false;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (!historyValid) {
+        // 截断破坏了消息结构，重建最小历史：只保留当前轮的 tool 调用
+        qWarning() << "[AgentService] truncation broke tool message pairs, rebuilding minimal history";
+        history = QJsonArray();
+        for (const auto& v : assistantToolCallMsg) history.append(v);
+        for (const auto& v : compressedToolMessages) history.append(v);
+    }
 
     // 构造 messages
     QJsonArray messages;
     messages.append(QJsonObject{
         { QStringLiteral("role"), QStringLiteral("system") },
-        { QStringLiteral("content"), buildSystemPrompt(m_activeCtx) } });
+        { QStringLiteral("content"), systemContent } });
     for (const auto& v : std::as_const(history)) messages.append(v);
 
     QJsonObject payload;
@@ -426,19 +460,20 @@ void AgentService::sendStreamWithTools(const QString& convId,
             m_streaming = false;
             // tool_calls 轮次的 assistant 消息由 continueWithToolResults 回填；
             // stop/length 时在此写入最终 assistant 文本，保证多轮历史闭环。
-            if (m_pendingFinishReason == QLatin1String("stop")
-                || m_pendingFinishReason == QLatin1String("length")
-                || (m_pendingFinishReason != QLatin1String("tool_calls")
-                    && !m_accumulated.isEmpty())) {
+            if (m_pendingToolCalls.isEmpty()
+                && (m_pendingFinishReason == QLatin1String("stop")
+                    || m_pendingFinishReason == QLatin1String("length")
+                    || (m_pendingFinishReason != QLatin1String("tool_calls")
+                        && !m_accumulated.isEmpty()))) {
                 m_histories[m_currentConvId].append(QJsonObject{
                     { QStringLiteral("role"), QStringLiteral("assistant") },
                     { QStringLiteral("content"), m_accumulated } });
             }
-            qDebug() << "[AgentService] streamDone"
-                     << "conv=" << m_currentConvId
-                     << "finish=" << m_pendingFinishReason
-                     << "toolCalls=" << m_pendingToolCalls.size()
-                     << "answerChars=" << m_accumulated.size();
+            qDebug() << "[AgentService] 模型流式响应结束"
+                     << "会话=" << m_currentConvId
+                     << "结束原因=" << m_pendingFinishReason
+                     << "工具调用数=" << m_pendingToolCalls.size()
+                     << "回答字符数=" << m_accumulated.size();
             emit responseFinishedWithTools(m_currentConvId,
                                             m_pendingToolCalls,
                                             m_pendingFinishReason,
@@ -449,4 +484,21 @@ void AgentService::sendStreamWithTools(const QString& convId,
             m_streaming = false;
             emit responseError(m_currentConvId, err);
         });
+}
+
+// ============================================================
+// Token 预算管理
+// ============================================================
+
+void AgentService::applyBudgetTruncation(QJsonArray& history,
+                                          int systemTokens,
+                                          int currentUserTokens)
+{
+    const int before = m_budgetManager.estimateTokens(history);
+    const int after = m_budgetManager.truncateHistory(history, systemTokens, currentUserTokens);
+    if (before != after) {
+        qDebug() << "[AgentService] 历史消息已截断"
+                 << "截断前Token数=" << before << "截断后Token数=" << after
+                 << "剩余消息数=" << history.size();
+    }
 }

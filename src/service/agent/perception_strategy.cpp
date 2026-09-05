@@ -19,19 +19,19 @@ QuestionType PerceptionStrategy::classifyQuestion(const QString& q) const
     // 关键词分类：命中优先级从高到低
     struct Rule { QuestionType type; const char* pattern; };
     static const Rule rules[] = {
-        { QuestionType::CurrentFrame,        u8"(当前|现在|这一帧|眼前|画面里现在)" },
-        { QuestionType::TemporalLocalization, u8"(什么时候|何时|多少秒|哪一段|哪个时间点|第几分钟)" },
-        { QuestionType::Counting,             u8"(几个|多少个|几次|多少次|出现了几)" },
-        { QuestionType::CausalReasoning,      u8"(为什么|为何|是因为|导致|原因)" },
-        { QuestionType::Counterfactual,       u8"(如果|假如|要是)" },
-        { QuestionType::Comparison,           u8"(区别|不同|对比|相比)" },
-        { QuestionType::TemporalOrder,        u8"(之前|之后|先|后|顺序)" },
-        { QuestionType::Duration,             u8"(持续|多久|多长时间)" },
-        { QuestionType::EntityQuery,          u8"(那个|谁|什么人|穿|戴|是谁)" },
-        { QuestionType::SpatialQuery,         u8"(左边|右边|上面|下面|角落|画面.*角)" },
-        { QuestionType::ActionRecognition,    u8"(在做什么|干什么|动作)" },
-        { QuestionType::GlobalSummary,        u8"(讲什么|讲了什么|大意|总结|概括|主题)" },
-        { QuestionType::DetailDescription,    u8"(详细描述|具体描述|细节)" },
+        { QuestionType::CurrentFrame,        "(当前|现在|这一帧|眼前|画面里现在)" },
+        { QuestionType::TemporalLocalization, "(什么时候|何时|多少秒|哪一段|哪个时间点|第几分钟)" },
+        { QuestionType::Counting,             "(几个|多少个|几次|多少次|出现了几)" },
+        { QuestionType::CausalReasoning,      "(为什么|为何|是因为|导致|原因)" },
+        { QuestionType::Counterfactual,       "(如果|假如|要是)" },
+        { QuestionType::Comparison,           "(区别|不同|对比|相比)" },
+        { QuestionType::TemporalOrder,        "(之前|之后|先|后|顺序)" },
+        { QuestionType::Duration,             "(持续|多久|多长时间)" },
+        { QuestionType::EntityQuery,          "(那个|谁|什么人|穿|戴|是谁)" },
+        { QuestionType::SpatialQuery,         "(左边|右边|上面|下面|角落|画面.*角)" },
+        { QuestionType::ActionRecognition,    "(在做什么|干什么|动作)" },
+        { QuestionType::GlobalSummary,        "(讲什么|讲了什么|大意|总结|概括|主题)" },
+        { QuestionType::DetailDescription,    "(详细描述|具体描述|细节)" },
     };
     for (const auto& r : rules) {
         QRegularExpression re(QString::fromUtf8(r.pattern));

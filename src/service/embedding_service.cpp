@@ -58,44 +58,100 @@ bool EmbeddingService::initialize(const QString& modelPath)
                    << "| model:" << (ok ? "OK" : "FAIL")
                    << "| vocab:" << (ok2 ? "OK" : "FAIL");
     }
-    return ok;
+    return ok && ok2;
 }
 
 bool EmbeddingService::isReady() const
 {
-    return m_engine->isLoaded();
+    return m_engine && m_engine->isLoaded() && m_tokenizer && m_tokenizer->isLoaded();
+}
+
+std::vector<float> EmbeddingService::embedQuery(const QString& text)
+{
+    return embedInternal(text, true);
+}
+
+std::vector<float> EmbeddingService::embedPassage(const QString& text)
+{
+    return embedInternal(text, false);
 }
 
 std::vector<float> EmbeddingService::embed(const QString& text)
 {
-    if (!m_engine->isLoaded() || text.isEmpty()) {
+    return embedQuery(text);
+}
+
+std::vector<float> EmbeddingService::embedInternal(const QString& text, bool queryMode)
+{
+    if (!isReady() || text.isEmpty()) {
         return {};
     }
 
-    // BGE 检索时需要为查询添加前缀
-    // 对于 passages（入库的文本）不需要前缀
-    // 这里统一用查询前缀；入库时调用方可传 raw text
-    QString prefixed = QStringLiteral("为这个句子生成表示以用于检索相关文章：") + text;
+    // BGE 的检索指令仅适用于查询；入库 passage 保持原文，以维持正确的非对称检索空间。
+    const QString encodedText = queryMode
+        ? QStringLiteral("为这个句子生成表示以用于检索相关文章：") + text
+        : text;
 
     // 1. Tokenize
-    auto inputIds = tokenize(prefixed);
+    auto inputIds = tokenize(encodedText);
     if (inputIds.empty()) return {};
 
     auto attentionMask = buildAttentionMask(inputIds);
     std::vector<int64_t> tokenTypeIds(MAX_SEQ_LEN, 0);  // 单句模式全 0
+    const std::vector<int64_t> shape = {1, MAX_SEQ_LEN};
 
-    // 2. 构造输入 tensors
-    std::vector<int64_t> shape = {1, MAX_SEQ_LEN};
-
-    auto inputIdsTensor = m_engine->createTensor(inputIds.data(), shape);
-    auto attnMaskTensor = m_engine->createTensor(attentionMask.data(), shape);
-    auto tokenTypeTensor = m_engine->createTensor(tokenTypeIds.data(), shape);
-
-    // 3. 推理
+    // 模型输入按名称绑定；不同导出器的输入顺序可能不同，且 token_type_ids 可能不存在。
+    const auto& inputNames = m_engine->inputNames();
     std::vector<Ort::Value> inputs;
-    inputs.push_back(std::move(inputIdsTensor));
-    inputs.push_back(std::move(attnMaskTensor));
-    inputs.push_back(std::move(tokenTypeTensor));
+    inputs.reserve(inputNames.size());
+    
+    // 首先检查模型需要哪些输入
+    bool hasInputIds = false;
+    bool hasAttentionMask = false;
+    bool hasTokenTypeIds = false;
+    QStringList unsupportedInputs;
+    
+    for (const auto& inputName : inputNames) {
+        const QString name = QString::fromStdString(inputName);
+        if (name == QLatin1String("input_ids")) {
+            hasInputIds = true;
+        } else if (name == QLatin1String("attention_mask")) {
+            hasAttentionMask = true;
+        } else if (name == QLatin1String("token_type_ids")) {
+            hasTokenTypeIds = true;
+        } else {
+            unsupportedInputs.append(name);
+        }
+    }
+    
+    // 如果有不支持的输入，警告但继续
+    if (!unsupportedInputs.isEmpty()) {
+        qWarning() << "[EmbeddingService] 模型包含未知输入（将跳过）:" << unsupportedInputs.join(", ");
+    }
+    
+    // 检查必需的输入是否存在
+    if (!hasInputIds) {
+        qWarning() << "[EmbeddingService] 模型缺少必需的 input_ids 输入";
+        return {};
+    }
+    
+    // 按照模型期望的顺序构建输入
+    for (const auto& inputName : inputNames) {
+        const QString name = QString::fromStdString(inputName);
+        if (name == QLatin1String("input_ids")) {
+            inputs.push_back(m_engine->createTensor(inputIds.data(), shape));
+        } else if (name == QLatin1String("attention_mask")) {
+            inputs.push_back(m_engine->createTensor(attentionMask.data(), shape));
+        } else if (name == QLatin1String("token_type_ids")) {
+            inputs.push_back(m_engine->createTensor(tokenTypeIds.data(), shape));
+        }
+        // 不支持的输入直接跳过，不添加到 inputs 中
+    }
+    
+    if (inputs.empty()) {
+        qWarning() << "[EmbeddingService] 没有构建任何有效输入";
+        return {};
+    }
 
     std::vector<Ort::Value> outputs;
     m_engine->run(inputs, outputs);
@@ -153,26 +209,9 @@ std::vector<int64_t> EmbeddingService::tokenize(const QString& text)
         return m_tokenizer->encode(text, MAX_SEQ_LEN);
     }
 
-    // 降级：tokenizer 未加载时用字符级编码（质量差，但不崩溃）
-    qWarning() << "[EmbeddingService] tokenizer 未加载，使用降级编码";
-    std::vector<int64_t> tokens(MAX_SEQ_LEN, 0);
-    constexpr int64_t CLS_TOKEN = 101;
-    constexpr int64_t SEP_TOKEN = 102;
-
-    tokens[0] = CLS_TOKEN;
-    int pos = 1;
-    for (const QChar& ch : text) {
-        if (pos >= MAX_SEQ_LEN - 1) break;
-        uint32_t cp = ch.unicode();
-        if (cp < 0x4E00) {
-            tokens[pos] = static_cast<int64_t>(cp);
-        } else {
-            tokens[pos] = static_cast<int64_t>(cp - 0x4E00 + 1000);
-        }
-        ++pos;
-    }
-    tokens[pos] = SEP_TOKEN;
-    return tokens;
+    // 初始化已将 tokenizer 设为必要条件；此处只保留安全失败路径。
+    qWarning() << "[EmbeddingService] tokenizer 未加载，拒绝生成 embedding";
+    return {};
 }
 
 std::vector<int64_t> EmbeddingService::buildAttentionMask(

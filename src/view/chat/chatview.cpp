@@ -5,6 +5,7 @@
 #include "viewmodel/chatviewmodel.h"
 #include "viewmodel/chatmessagelistmodel.h"
 #include "service/themeservice.h"
+#include "service/markdownrenderer.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -13,6 +14,7 @@
 #include <QMenu>
 #include <QRegularExpression>
 #include <QScrollBar>
+#include <QFileInfo>
 #include <QPainter>
 #include <QPainterPath>
 
@@ -24,6 +26,9 @@ ChatView::ChatView(QWidget* parent)
     // 顶层自绘圆角卡片，禁止子 widget 的样式表污染
     setAttribute(Qt::WA_StyledBackground, false);
     setAutoFillBackground(false);
+
+    // 创建 Markdown 渲染器（稍后设置 ThemeService）
+    m_renderer = new MarkdownRenderer(nullptr);
 
     // 默认暗色配色（未接入 ThemeService 时的 fallback）
     m_bgColor            = QColor("#1E1E2E");
@@ -72,6 +77,7 @@ ChatView::ChatView(QWidget* parent)
     // ---- 消息列表 ----
     m_messageList = new ChatMessageList(this);
     m_messageList->setAttribute(Qt::WA_StyledBackground, false);
+    m_messageList->setMarkdownRenderer(m_renderer);
     if (m_messageList->viewport()) {
         m_messageList->viewport()->setAutoFillBackground(false);
         m_messageList->viewport()->setAttribute(Qt::WA_StyledBackground, false);
@@ -79,6 +85,10 @@ ChatView::ChatView(QWidget* parent)
     layout->addWidget(m_messageList, 1);
     connect(m_messageList, &ChatMessageList::linkActivated,
             this, &ChatView::onLinkActivated);
+    connect(m_messageList, &ChatMessageList::regenerateRequested,
+            this, [this]() {
+                if (m_vm) m_vm->regenerateLastResponse();
+            });
 
     // ---- 输入区 ----
     m_inputWidget = new ChatInputWidget(this);
@@ -94,7 +104,11 @@ void ChatView::setThemeService(ThemeService* theme)
     m_theme = theme;
 
     // 传播到子组件
-    if (m_messageList) m_messageList->setThemeService(theme);
+    if (m_renderer) m_renderer->setThemeService(theme);
+    if (m_messageList) {
+        m_messageList->setThemeService(theme);
+        m_messageList->setMarkdownRenderer(m_renderer);
+    }
     if (m_inputWidget) m_inputWidget->setThemeService(theme);
 
     if (m_theme) {
@@ -109,8 +123,14 @@ void ChatView::onThemeChanged()
 {
     applyThemeColors();
 
+    // 更新 Markdown 渲染器的主题
+    if (m_renderer) m_renderer->setThemeService(m_theme);
+
     // 批量刷新气泡颜色（不重建 widget，避免布局抖动）
-    if (m_messageList) m_messageList->refreshBubbleColors();
+    if (m_messageList) {
+        m_messageList->setMarkdownRenderer(m_renderer);
+        m_messageList->refreshBubbleColors();
+    }
     if (m_inputWidget) m_inputWidget->setThemeService(m_theme);
 
     update();
@@ -217,9 +237,26 @@ void ChatView::setViewModel(ChatViewModel* vm)
     m_messageList->setModel(m_vm->messageModel());
 
     connect(m_inputWidget, &ChatInputWidget::sendRequested, this,
-            [this](const QString& text, bool withFrame) {
-                if (withFrame) m_vm->sendMessageWithCurrentFrame(text);
-                else           m_vm->sendMessage(text);
+            [this](const QString& text, bool withFrames) {
+                if (withFrames) m_vm->sendMessageWithCachedFrame(text);
+                else m_vm->sendMessage(text);
+            });
+    connect(m_inputWidget, &ChatInputWidget::currentFrameRequested,
+            m_vm, &ChatViewModel::requestCurrentFrame);
+    connect(m_inputWidget, &ChatInputWidget::timeRangeRequested,
+            this, [this](int64_t startMs, int64_t endMs) {
+                // 可以在这里添加批量获取时间段内关键帧的逻辑
+                // 暂时先发出信号，让上层决定如何处理
+                Q_UNUSED(startMs);
+                Q_UNUSED(endMs);
+            });
+    connect(m_inputWidget, &ChatInputWidget::frameRemoved,
+            m_vm, &ChatViewModel::removeFrameFromCache);
+    connect(m_inputWidget, &ChatInputWidget::allFramesCleared,
+            m_vm, &ChatViewModel::clearAllCachedFrames);
+    connect(m_vm, &ChatViewModel::currentFrameReady,
+            this, [this](const QImage& frame, int64_t timestampMs) {
+                m_inputWidget->addFrame(frame, timestampMs);
             });
     connect(m_inputWidget, &ChatInputWidget::stopRequested,
             m_vm, &ChatViewModel::stopGeneration);
@@ -264,15 +301,78 @@ void ChatView::showConversationMenu()
     if (convs.isEmpty()) {
         menu.addAction(tr("（暂无历史会话）"))->setEnabled(false);
     } else {
+        // 按视频ID分组
+        QMap<QString, QList<Conversation>> groupedConvs;
         for (const auto& c : convs) {
-            QAction* act = menu.addAction(c.title.isEmpty() ? tr("新对话") : c.title);
-            act->setCheckable(true);
-            act->setChecked(c.id == curId);
-            const QString id = c.id;
-            connect(act, &QAction::triggered, this,
-                    [this, id]() { m_vm->switchConversation(id); });
+            const QString videoKey = c.videoId.isEmpty() 
+                ? QStringLiteral("__no_video__") 
+                : c.videoId;
+            groupedConvs[videoKey].append(c);
+        }
+
+        bool firstGroup = true;
+        for (auto it = groupedConvs.begin(); it != groupedConvs.end(); ++it) {
+            const QString& videoKey = it.key();
+            const QList<Conversation>& videoConvs = it.value();
+            
+            if (!firstGroup) {
+                menu.addSeparator();
+            }
+            firstGroup = false;
+
+            // 分组标题（显示视频文件名）
+            QString groupTitle;
+            if (videoKey == QStringLiteral("__no_video__")) {
+                groupTitle = tr("【无关联视频】");
+            } else if (!videoConvs.isEmpty() && !videoConvs.first().videoFilePath.isEmpty()) {
+                QFileInfo fi(videoConvs.first().videoFilePath);
+                groupTitle = tr("【%1】").arg(fi.fileName());
+            } else {
+                groupTitle = tr("【视频 %1】").arg(videoKey.left(8));
+            }
+            
+            QAction* groupHeader = menu.addAction(groupTitle);
+            groupHeader->setEnabled(false);
+            QFont headerFont = groupHeader->font();
+            headerFont.setBold(true);
+            groupHeader->setFont(headerFont);
+
+            // 该视频的会话列表
+            for (const auto& c : videoConvs) {
+                QString displayText = c.title.isEmpty() ? tr("新对话") : c.title;
+                
+                // 添加时间戳
+                if (c.updatedAt.isValid()) {
+                    const QDateTime now = QDateTime::currentDateTime();
+                    const qint64 secsDiff = c.updatedAt.secsTo(now);
+                    
+                    QString timeStr;
+                    if (secsDiff < 60) {
+                        timeStr = tr("刚刚");
+                    } else if (secsDiff < 3600) {
+                        timeStr = tr("%1分钟前").arg(secsDiff / 60);
+                    } else if (secsDiff < 86400) {
+                        timeStr = tr("%1小时前").arg(secsDiff / 3600);
+                    } else if (secsDiff < 604800) {
+                        timeStr = tr("%1天前").arg(secsDiff / 86400);
+                    } else {
+                        timeStr = c.updatedAt.toString(QStringLiteral("yyyy-MM-dd"));
+                    }
+                    displayText = QStringLiteral("  %1  (%2)").arg(displayText, timeStr);
+                } else {
+                    displayText = QStringLiteral("  %1").arg(displayText);
+                }
+                
+                QAction* act = menu.addAction(displayText);
+                act->setCheckable(true);
+                act->setChecked(c.id == curId);
+                const QString id = c.id;
+                connect(act, &QAction::triggered, this,
+                        [this, id]() { m_vm->switchConversation(id); });
+            }
         }
     }
+    
     menu.addSeparator();
     connect(menu.addAction(tr("➕ 新建对话")), &QAction::triggered,
             m_vm, &ChatViewModel::createNewConversation);

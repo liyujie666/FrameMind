@@ -32,12 +32,18 @@ class VideoRAGRetriever;
 class EntityTracker;
 class AudioVisualAligner;
 class VideoIndexer;
+class OneShotVlmChannel;
 class VideoAnalysisService;
 class PerceptionStrategy;
 class ReflectionEngine;
 class ToolRegistry;
 class ToolOrchestrator;
 class VideoAgent;
+
+// Workflow Engine
+class WorkflowExecutor;
+class WorkflowFactory;
+class WorkflowCheckpoint;
 
 // Analysis ViewModel (分析面板)
 class VideoAnalysisViewModel;
@@ -94,16 +100,24 @@ public:
     VideoAnalysisViewModel* videoAnalysisVM() const;
     KnowledgeViewModel*     knowledgeVM() const;
 
+    // ---- Workflow Engine ----
+    WorkflowExecutor*     workflowExecutor() const;
+    WorkflowFactory*      workflowFactory() const;
+    WorkflowCheckpoint*   workflowCheckpoint() const;
+
 private:
     EventBus*        m_eventBus = nullptr;        // 不持有所有权
     DatabaseManager* m_db = nullptr;              // 不持有所有权（单例）
 
     std::unique_ptr<NetworkClient>       m_network;
+    std::unique_ptr<NetworkClient>       m_vlmNetwork;
     std::unique_ptr<SettingsService>     m_settingsService;
     std::unique_ptr<ThemeService>       m_themeService;
     std::unique_ptr<PlayerService>      m_playerService;
     std::unique_ptr<LLMProviderService> m_providerService;
     std::unique_ptr<AgentService>       m_agentService;
+    std::unique_ptr<AgentService>       m_vlmAgentService;
+    std::unique_ptr<OneShotVlmChannel>  m_oneShotVlmChannel;
     std::unique_ptr<ConversationService> m_convService;
     std::unique_ptr<FileManagerService> m_fileService;
 
@@ -128,8 +142,13 @@ private:
     std::unique_ptr<PerceptionStrategy>   m_perception;
     std::unique_ptr<ReflectionEngine>     m_reflection;
     std::unique_ptr<ToolRegistry>         m_toolRegistry;
-    std::unique_ptr<ToolOrchestrator>     m_toolOrchestrator;
+    std::unique_ptr<ToolOrchestrator>m_toolOrchestrator;
     std::unique_ptr<VideoAgent>           m_videoAgent;
+
+    // Workflow Engine
+    std::unique_ptr<WorkflowExecutor>     m_workflowExecutor;
+    std::unique_ptr<WorkflowFactory>      m_workflowFactory;
+    std::unique_ptr<WorkflowCheckpoint>   m_workflowCheckpoint;
 
     std::unique_ptr<PlayerViewModel>        m_playerVM;
     std::unique_ptr<ChatViewModel>          m_chatVM;
