@@ -70,7 +70,13 @@ struct RetrievalResult {
 
     bool operator<(const RetrievalResult& other) const
     {
-        return score > other.score;     // 逆序：分数大的在前
+        // 逆序：分数大的在前；同分时按时间和 chunk ID 稳定排序，避免 QHash
+        // 遍历顺序影响 RRF 输入及最终生成证据。
+        if (!qFuzzyCompare(score + 1.0f, other.score + 1.0f)) {
+            return score > other.score;
+        }
+        if (chunk.startMs != other.chunk.startMs) return chunk.startMs < other.chunk.startMs;
+        return chunk.chunkId < other.chunk.chunkId;
     }
 };
 

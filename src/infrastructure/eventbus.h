@@ -24,6 +24,30 @@ public:
     // ---- 发布方法（公开） ----
     void notifyVideoOpened(const QString& filePath) { emit videoOpened(filePath); }
     void requestSeek(int64_t posMs) { emit seekToPosition(posMs); }
+    void requestSeekWithResult(int64_t posMs, const QString& requestId)
+    {
+        emit seekToPositionWithResult(posMs, requestId);
+    }
+    void requestPlayerActionWithResult(const QString& action,
+                                       const QString& requestId)
+    {
+        emit playerActionRequested(action, requestId);
+    }
+    void notifySeekCompleted(const QString& requestId, bool success,
+                             int64_t actualPosMs, const QString& error)
+    {
+        emit seekCompleted(requestId, success, actualPosMs, error);
+        emit playerActionCompleted(QStringLiteral("seek"), requestId, success,
+                                   actualPosMs, error);
+    }
+    void notifyPlayerActionCompleted(const QString& action,
+                                     const QString& requestId,
+                                     bool success,
+                                     int64_t actualPosMs,
+                                     const QString& error)
+    {
+        emit playerActionCompleted(action, requestId, success, actualPosMs, error);
+    }
     void requestFrameForAI(int64_t posMs) { emit frameForAIRequested(posMs); }
     void provideScreenshotForAI(const QImage& frame, int64_t tsMs)
     {
@@ -35,6 +59,13 @@ signals:
     void videoOpened(const QString& filePath);
     /// AI / 时间线 请求跳转到指定时间点
     void seekToPosition(int64_t posMs);
+    void seekToPositionWithResult(int64_t posMs, const QString& requestId);
+    void playerActionRequested(const QString& action, const QString& requestId);
+    void seekCompleted(const QString& requestId, bool success,
+                       int64_t actualPosMs, const QString& error);
+    void playerActionCompleted(const QString& action, const QString& requestId,
+                               bool success, int64_t actualPosMs,
+                               const QString& error);
     /// 请求对指定时间点截帧用于 AI（-1 表示当前帧）
     void frameForAIRequested(int64_t posMs);
     /// 截帧回包给 AI

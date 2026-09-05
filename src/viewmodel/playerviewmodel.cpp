@@ -5,7 +5,8 @@
 #include "model/videoinfo.h"
 
 #include <QDebug>
-
+#include <QTimer>
+#include <QFutureWatcher>
 PlayerViewModel::PlayerViewModel(PlayerService* playerService,
                                  EventBus* eventBus,
                                  QObject* parent)
@@ -23,19 +24,21 @@ void PlayerViewModel::connectService()
     // PlayerService → VM（SDK 线程信号经 QueuedConnection 投递到主线程）
     connect(m_playerService, &PlayerService::positionChanged, this,
             [this](int64_t pos) {
-                // Seek 冷却期间完全忽略外部位置回调，
-                // 避免 QueuedConnection 队列中残留的旧位置信号导致进度条回跳
+                // Seek 冷却期间完全忽略外部位置回调，避免队列中残留的旧位置信号导致进度条回跳
                 if (m_seeking) {
                     if (!m_seekTimer.hasExpired(kSeekCooldownMs)) return;
                     m_seeking = false;
 
-                    // 暂停状态 seek 修复：seek 落地后恢复暂停或触发 play
-                    if (m_pauseAfterSeek) {
-                        m_pauseAfterSeek = false;
-                        m_playerService->pause();
-                    } else if (m_pendingPlay) {
-                        m_pendingPlay = false;
-                        m_playerService->play();
+                    // Requests with a completion id are finalized by pollSeekResult,
+                    // which verifies the SDK's actual position before changing state.
+                    if (m_pendingSeekRequestId.isEmpty()) {
+                        if (m_pauseAfterSeek) {
+                            m_pauseAfterSeek = false;
+                            m_playerService->pause();
+                        } else if (m_pendingPlay) {
+                            m_pendingPlay = false;
+                            m_playerService->play();
+                        }
                     }
                 }
                 if (m_position == pos) return;
@@ -108,17 +111,35 @@ void PlayerViewModel::connectService()
     if (m_eventBus) {
         connect(m_eventBus, &EventBus::seekToPosition,
                 this, &PlayerViewModel::seekToTimestamp);
+        connect(m_eventBus, &EventBus::seekToPositionWithResult,
+                this, &PlayerViewModel::seekToTimestampWithResult);
+        connect(m_eventBus, &EventBus::playerActionRequested,
+                this, &PlayerViewModel::executePlayerAction);
         connect(m_eventBus, &EventBus::frameForAIRequested,
                 this, &PlayerViewModel::captureFrameForAI);
     }
 }
 
-void PlayerViewModel::captureFrameForAI(int64_t /*posMs*/)
+void PlayerViewModel::captureFrameForAI(int64_t posMs)
 {
     if (!m_playerService || !m_eventBus) return;
-    // M2 仅支持「当前帧」：直接取最近解码帧（captureFrameAt 在 M3 实现）
-    const QImage frame = m_playerService->lastDecodedFrame();
-    m_eventBus->provideScreenshotForAI(frame, m_position);
+
+    const QString videoPath = m_playerService->videoInfo().filePath;
+    const int64_t targetMs = posMs >= 0 ? posMs : m_position;
+    if (videoPath.isEmpty()) {
+        m_eventBus->provideScreenshotForAI(m_playerService->lastDecodedFrame(), m_position);
+        return;
+    }
+
+    auto* watcher = new QFutureWatcher<QImage>(this);
+    connect(watcher, &QFutureWatcher<QImage>::finished, this,
+            [this, watcher, targetMs]() {
+        QImage frame = watcher->result();
+        if (frame.isNull()) frame = m_playerService->lastDecodedFrame();
+        m_eventBus->provideScreenshotForAI(frame, targetMs);
+        watcher->deleteLater();
+    });
+    watcher->setFuture(m_playerService->captureFrameAt(videoPath, targetMs, 2000));
 }
 
 void PlayerViewModel::openFile(const QString& filePath)
@@ -155,13 +176,16 @@ void PlayerViewModel::seek(int64_t posMs)
     m_seeking = true;
     m_seekTarget = posMs;
     m_seekTimer.start();
+    m_pendingPlay = false;
+    m_pauseAfterSeek = false;
     m_position = posMs;
     emit positionChanged(posMs);
 
-    // SDK 在 Paused 状态下 seek 会损坏音频管道（seek 后音频静默且无法恢复）。
-    // 解决方式：先 play() 让 SDK 进入 Running 状态，seek 完成后再 pause() 回来。
-    // m_pauseAfterSeek 标志由 positionChanged 冷却期结束时消费。
-    if (m_state == PlayerState::Paused) {
+    // The SDK requires a running pipeline for reliable seeks.
+    if (m_state == PlayerState::Stopped) {
+        m_pendingPlay = true;
+        m_playerService->play();
+    } else if (m_state == PlayerState::Paused) {
         m_pauseAfterSeek = true;
         m_playerService->play();
     }
@@ -199,6 +223,118 @@ void PlayerViewModel::seekToTimestamp(int64_t posMs)
     seek(posMs);
 }
 
+void PlayerViewModel::seekToTimestampWithResult(int64_t posMs,const QString& requestId)
+{
+    if (!m_playerService || !m_eventBus || requestId.isEmpty()) {
+        if (m_eventBus && !requestId.isEmpty()) {
+            m_eventBus->notifySeekCompleted(
+                requestId, false, 0, QStringLiteral("播放器服务不可用"));
+        }
+        return;
+    }
+    if (m_playerService->videoInfo().filePath.isEmpty()) {
+        m_eventBus->notifySeekCompleted(
+            requestId, false, 0, QStringLiteral("当前没有已打开的视频"));
+        return;
+    }
+    if (m_pendingSeekRequestId.isEmpty()) {
+        m_pendingSeekRequestId = requestId;
+    } else {
+        m_eventBus->notifySeekCompleted(
+            m_pendingSeekRequestId, false, m_playerService->position(),
+            QStringLiteral("seek 请求被新的播放器操作替代"));
+        m_pendingSeekRequestId = requestId;
+    }
+    seek(posMs);
+    pollSeekResult(requestId, 0);
+}
+
+void PlayerViewModel::executePlayerAction(const QString& action,
+                                           const QString& requestId)
+{
+    if (!m_playerService || !m_eventBus || requestId.isEmpty()) {
+        if (m_eventBus && !requestId.isEmpty()) {
+            m_eventBus->notifyPlayerActionCompleted(
+                action, requestId, false, 0, QStringLiteral("播放器服务不可用"));
+        }
+        return;
+    }
+    if (m_playerService->videoInfo().filePath.isEmpty()) {
+        m_eventBus->notifyPlayerActionCompleted(
+            action, requestId, false, 0, QStringLiteral("当前没有已打开的视频"));
+        return;
+    }
+    if (action == QLatin1String("seek")) {
+        m_eventBus->notifyPlayerActionCompleted(
+            action, requestId, false, m_playerService->position(),
+            QStringLiteral("seek 必须通过 seekToPositionWithResult 调用"));
+        return;
+    }
+    if (action != QLatin1String("play") && action != QLatin1String("pause")) {
+        m_eventBus->notifyPlayerActionCompleted(
+            action, requestId, false, m_playerService->position(),
+            QStringLiteral("未知播放器操作: %1").arg(action));
+        return;
+    }
+
+    if (action == QLatin1String("play")) m_playerService->play();
+    else m_playerService->pause();
+    pollPlayerActionResult(action, requestId, 0);
+}
+
+void PlayerViewModel::pollSeekResult(const QString& requestId, int attempt)
+{
+    if (!m_eventBus || !m_playerService || m_pendingSeekRequestId != requestId) return;
+    const int64_t actual = m_playerService->position();
+    if (qAbs(actual - m_seekTarget) <= kSeekToleranceMs) {
+        m_pendingSeekRequestId.clear();
+        m_seeking = false;
+        if (m_pauseAfterSeek) {
+            m_pauseAfterSeek = false;
+            m_playerService->pause();
+        } else if (m_pendingPlay) {
+            m_pendingPlay = false;
+            m_playerService->play();
+        }
+        m_eventBus->notifySeekCompleted(requestId, true, actual, {});
+        return;
+    }
+    if (attempt >= kSeekPollAttempts) {
+        m_pendingSeekRequestId.clear();
+        m_seeking = false;
+        m_eventBus->notifySeekCompleted(
+            requestId, false, actual, QStringLiteral("播放器未确认到达目标位置"));
+        return;
+    }
+    QTimer::singleShot(kSeekPollIntervalMs, this,
+                       [this, requestId, attempt] { pollSeekResult(requestId, attempt + 1); });
+}
+
+void PlayerViewModel::pollPlayerActionResult(const QString& action,
+                                               const QString& requestId,
+                                               int attempt)
+{
+    if (!m_eventBus || !m_playerService) return;
+    const bool playing = m_playerService->state() == PlayerState::Playing;
+    const bool paused = m_playerService->state() == PlayerState::Paused;
+    const bool reached = action == QLatin1String("play") ? playing : paused;
+    if (reached) {
+        m_eventBus->notifyPlayerActionCompleted(action, requestId, true,
+                                                m_playerService->position(), {});
+        return;
+    }
+    if (attempt >= kSeekPollAttempts) {
+        m_eventBus->notifyPlayerActionCompleted(
+            action, requestId, false, m_playerService->position(),
+            QStringLiteral("播放器未确认执行 %1").arg(action));
+        return;
+    }
+    QTimer::singleShot(kSeekPollIntervalMs, this,
+                       [this, action, requestId, attempt] {
+                           pollPlayerActionResult(action, requestId, attempt + 1);
+                       });
+}
+
 void PlayerViewModel::seekAndPlay(int64_t posMs)
 {
     if (!m_playerService) return;
@@ -213,12 +349,7 @@ void PlayerViewModel::seekAndPlay(int64_t posMs)
     // 清除可能残留的 pause 意图：seekAndPlay 目标是播放，不需要 seek 后恢复暂停
     m_pauseAfterSeek = false;
 
-    if (m_state == PlayerState::Stopped) {
-        // Stopped 状态下 seek() 内部不会自动 play，用 pendingPlay 在冷却期后触发
-        m_pendingPlay = true;
-    }
-    // Paused 状态：seek() 内部会 play→seek，m_pauseAfterSeek=false 保证不会 pause 回去
-    // Playing 状态：seek() 直接 seek，SDK 继续播放，无需额外处理
-
+    // seek() 在 Stopped 状态会主动启动播放，在 Paused 状态会临时恢复运行。
+    // 因此这里不再额外设置可能与普通 seek 串扰的 pendingPlay 标志。
     seek(posMs);
 }

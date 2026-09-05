@@ -1,8 +1,11 @@
 #include "service/agent/video_indexer.h"
 
 #include "service/playerservice.h"
+#include "service/agent/frame_extractor.h"
 #include "service/scene_detector.h"
 #include "service/rag/video_rag_store.h"
+#include "service/rag/speech_segmenter.h"
+#include "infrastructure/databasemanager.h"
 
 #ifdef FRAMEMIND_HAS_ONNXRUNTIME
 #  include "service/clip_service.h"
@@ -20,6 +23,7 @@
 #include <QStandardPaths>
 #include <QMutexLocker>
 #include <QDebug>
+#include <algorithm>
 
 namespace {
 // TransNetV2 模式：每秒 1 帧密集采样；回退模式（无模型）：每 10s 一帧
@@ -40,16 +44,48 @@ int computeSampleCount(int64_t durationMs, bool dense)
     const int count = static_cast<int>(durationMs / 1000 / kSparseSamplePerSec);
     return std::clamp(count, kMinSampleCount, kMaxSparseSample);
 }
+
+void assignRepresentativeFrames(QVector<Scene>& scenes,
+                                const QVector<QImage>& frames,
+                                const QVector<int64_t>& timestamps)
+{
+    constexpr int kMaxFramesPerScene = 3;
+    for (Scene& scene : scenes) {
+        QVector<int> candidates;
+        for (int i = 0; i < frames.size() && i < timestamps.size(); ++i) {
+            if (scene.contains(timestamps.at(i))) candidates.append(i);
+        }
+        if (candidates.isEmpty()) continue;
+
+        const QVector<int> selected = {
+            candidates.first(), candidates.at(candidates.size() / 2), candidates.last()
+        };
+        for (const int index : selected) {
+            if (scene.representativeFrames.size() >= kMaxFramesPerScene) break;
+            if (!scene.representativeFrames.isEmpty()
+                && scene.representativeFrames.last().ptsMs == timestamps.at(index)) {
+                continue;
+            }
+            SceneFrame frame;
+            frame.requestedMs = timestamps.at(index);
+            frame.ptsMs = timestamps.at(index);
+            frame.image = frames.at(index);
+            scene.representativeFrames.append(std::move(frame));
+        }
+    }
+}
 } // namespace
 
 VideoIndexer::VideoIndexer(PlayerService* player,
                            SceneDetector* sceneDetector,
                            VideoRAGStore* ragStore,
+                           DatabaseManager* db,
                            QObject* parent)
     : QObject(parent)
     , m_player(player)
     , m_sceneDet(sceneDetector)
     , m_ragStore(ragStore)
+    , m_db(db)
 {
     m_pool.setMaxThreadCount(2);
 }
@@ -211,10 +247,86 @@ QSharedPointer<VideoRepresentation> VideoIndexer::representation(
     const QString& videoPath) const
 {
     QMutexLocker l(&m_reprMutex);
-    if (videoPath.isEmpty()) {
-        return m_repr.value(m_currentPath);
+    const QString path = videoPath.isEmpty() ? m_currentPath : videoPath;
+
+    if (m_repr.contains(path)) return m_repr.value(path);
+    if (!m_db || !m_ragStore || path.isEmpty()) return nullptr;
+
+    const QString videoId = computeVideoId(path);
+    m_ragStore->loadVideo(videoId);
+    const auto chunks = m_ragStore->listChunks(VideoRAGStore::TextSegments, videoId);
+
+    const QMap<int, VideoChunk> sceneChunks = [&chunks]() {
+        QMap<int, VideoChunk> result;
+        for (const VideoChunk& chunk : chunks) {
+            if (chunk.chunkType != VideoChunk::SceneSummary) continue;
+            const int sceneId = chunk.metadata.value(QStringLiteral("scene_id")).toInt();
+            if (sceneId < 0 || result.contains(sceneId)) continue;
+            result.insert(sceneId, chunk);
+        }
+        return result;
+    }();
+
+    auto repr = QSharedPointer<VideoRepresentation>::create();
+    repr->videoId = videoId;
+    repr->metadata.filePath = path;
+    repr->metadata.fileName = QFileInfo(path).fileName();
+
+    for (auto it = sceneChunks.constBegin(); it != sceneChunks.constEnd(); ++it) {
+        const VideoChunk& chunk = it.value();
+        Scene scene;
+        scene.id = it.key();
+        scene.startMs = chunk.startMs;
+        scene.endMs = chunk.endMs;
+        scene.keyframePath = chunk.keyframePath;
+        scene.visualDescription = chunk.textContent;
+        repr->scenes.append(scene);
     }
-    return m_repr.value(videoPath);
+    std::sort(repr->scenes.begin(), repr->scenes.end(),
+              [](const Scene& a, const Scene& b) {
+                  if (a.startMs != b.startMs) return a.startMs < b.startMs;
+                  return a.id < b.id;
+              });
+
+    for (const VideoChunk& chunk : chunks) {
+        if (chunk.chunkType != VideoChunk::SpeechSegment) continue;
+        SpeechSegment segment;
+        segment.startMs = chunk.startMs;
+        segment.endMs = chunk.endMs;
+        segment.text = chunk.textContent;
+        if (segment.isValid()) repr->speechSegments.append(segment);
+    }
+    std::sort(repr->speechSegments.begin(), repr->speechSegments.end(),
+              [](const SpeechSegment& a, const SpeechSegment& b) {
+                  return a.startMs < b.startMs;
+              });
+
+    repr->videoSummary = m_db->loadVideoSummary(videoId);
+    repr->sceneDescriptions = m_db->loadSceneDescriptions(videoId);
+    repr->sceneVisualDescriptions = m_db->loadSceneVisualDescriptions(videoId);
+    for (Scene& scene : repr->scenes) {
+        scene.description = repr->sceneDescriptions.value(scene.id);
+        if (scene.description.isEmpty()) scene.description = scene.visualDescription;
+        scene.fusedDescription = scene.description;
+    }
+
+    if (repr->scenes.isEmpty() && repr->speechSegments.isEmpty()) return nullptr;
+    repr->metadata.durationMs = 0;
+    for (const Scene& scene : repr->scenes) {
+        repr->metadata.durationMs = qMax(repr->metadata.durationMs, scene.endMs);
+    }
+    repr->level = (repr->videoSummary.isEmpty() && repr->sceneDescriptions.isEmpty())
+        ? VideoRepresentation::Level1 : VideoRepresentation::Level2;
+
+    const_cast<QHash<QString, QSharedPointer<VideoRepresentation>>&>(m_repr).insert(path, repr);
+
+    qDebug() << "[VideoIndexer] 从数据库加载视频表示"
+             << "videoId=" << videoId
+             << "场景数=" << repr->scenes.size()
+             << "语音段数=" << repr->speechSegments.size()
+             << "摘要长度=" << repr->videoSummary.size()
+             << "场景描述数=" << repr->sceneDescriptions.size();
+    return repr;
 }
 
 // ============================================================
@@ -257,6 +369,7 @@ void VideoIndexer::buildLevel0(QSharedPointer<VideoRepresentation> repr,
         if (!frames.isEmpty()) single.keyframe = frames.first();
         repr->scenes.append(single);
     }
+    assignRepresentativeFrames(repr->scenes, frames, timestamps);
 
     if (!isTaskCurrent(taskId, repr->videoId)) return;
 
@@ -290,54 +403,72 @@ void VideoIndexer::buildLevel1(QSharedPointer<VideoRepresentation> repr,
     } else {
         emit progress(40, StageKeyframeEncode, tr("编码关键帧 CLIP 向量"));
 
-        std::vector<QImage> keyframes;
-        QVector<int> keyframeSceneIndexes;
-        keyframes.reserve(repr->scenes.size());
-        keyframeSceneIndexes.reserve(repr->scenes.size());
+        std::vector<QImage> representativeImages;
+        QVector<QPair<int, int>> frameReferences; // (sceneIndex, representativeFrameIndex)
         for (int sceneIndex = 0; sceneIndex < repr->scenes.size(); ++sceneIndex) {
             if (!isTaskCurrent(taskId, repr->videoId)) return;
-            const Scene& scene = repr->scenes[sceneIndex];
-            if (!scene.keyframe.isNull()) {
-                keyframes.push_back(scene.keyframe);
-                keyframeSceneIndexes.append(sceneIndex);
+            Scene& scene = repr->scenes[sceneIndex];
+            if (scene.representativeFrames.isEmpty() && !scene.keyframe.isNull()) {
+                SceneFrame fallback;
+                fallback.requestedMs = scene.keyframeMs;
+                fallback.ptsMs = scene.keyframeMs;
+                fallback.imagePath = scene.keyframePath;
+                fallback.image = scene.keyframe;
+                scene.representativeFrames.append(std::move(fallback));
+            }
+            for (int frameIndex = 0; frameIndex < scene.representativeFrames.size(); ++frameIndex) {
+                const SceneFrame& frame = scene.representativeFrames.at(frameIndex);
+                if (frame.image.isNull()) continue;
+                representativeImages.push_back(frame.image);
+                frameReferences.append({sceneIndex, frameIndex});
             }
         }
 
-        if (!keyframes.empty()) {
-            const auto embeddings = m_clip->encodeImages(keyframes);
-            // 写入 RAG store: visual_frames
+        if (!representativeImages.empty()) {
+            const auto embeddings = m_clip->encodeImages(representativeImages);
             const int embeddingCount = qMin(
-                keyframeSceneIndexes.size(), static_cast<int>(embeddings.size()));
+                frameReferences.size(), static_cast<int>(embeddings.size()));
             for (int embeddingIndex = 0; embeddingIndex < embeddingCount; ++embeddingIndex) {
                 if (!isTaskCurrent(taskId, repr->videoId)) return;
-                const Scene& s = repr->scenes[keyframeSceneIndexes[embeddingIndex]];
+                const auto [sceneIndex, frameIndex] = frameReferences.at(embeddingIndex);
+                const Scene& scene = repr->scenes.at(sceneIndex);
+                const SceneFrame& frame = scene.representativeFrames.at(frameIndex);
 
-                VideoChunk c;
-                c.chunkId = makeChunkId(
+                VideoChunk chunk;
+                chunk.chunkId = makeChunkId(
                     repr->videoId, VideoChunk::FrameDesc,
-                    s.startMs, s.endMs, QString::number(s.id));
-                c.videoId = repr->videoId;
-                c.startMs = s.startMs;
-                c.endMs   = s.endMs;
-                c.chunkType = VideoChunk::FrameDesc;
-                c.textContent = tr("场景 %1 关键帧").arg(s.id);
-                c.frameEmbedding = embeddings[embeddingIndex];
-                c.keyframePath = s.keyframePath;
-                c.metadata.insert(QStringLiteral("scene_id"), s.id);
-                c.metadata.insert(QStringLiteral("keyframe_ms"),
-                                  static_cast<qlonglong>(s.keyframeMs));
-                c.metadata.insert(QStringLiteral("image_width"), s.keyframe.width());
-                c.metadata.insert(QStringLiteral("image_height"), s.keyframe.height());
-                c.metadata.insert(QStringLiteral("index_version"), 1);
-                c.metadata.insert(QStringLiteral("file_path"), repr->metadata.filePath);
+                    frame.ptsMs, frame.ptsMs + 1,
+                    QStringLiteral("%1:%2").arg(scene.id).arg(frameIndex));
+                chunk.videoId = repr->videoId;
+                chunk.startMs = frame.ptsMs;
+                chunk.endMs = frame.ptsMs + 1;
+                chunk.chunkType = VideoChunk::FrameDesc;
+                chunk.textContent = tr("场景 %1 代表帧 %2").arg(scene.id).arg(frameIndex + 1);
+                chunk.frameEmbedding = embeddings[embeddingIndex];
+                chunk.keyframePath = frame.imagePath;
+                chunk.metadata.insert(QStringLiteral("scene_id"), scene.id);
+                chunk.metadata.insert(QStringLiteral("keyframe_ms"),
+                                      static_cast<qlonglong>(frame.ptsMs));
+                chunk.metadata.insert(QStringLiteral("frame_role"),
+                                      frameIndex == 0 ? QStringLiteral("start")
+                                      : frameIndex + 1 == scene.representativeFrames.size()
+                                            ? QStringLiteral("end") : QStringLiteral("middle"));
+                chunk.metadata.insert(QStringLiteral("image_width"), frame.image.width());
+                chunk.metadata.insert(QStringLiteral("image_height"), frame.image.height());
+                chunk.metadata.insert(QStringLiteral("embedding_model_id"), QStringLiteral("clip_visual"));
+                chunk.metadata.insert(QStringLiteral("embedding_version"), QStringLiteral("1"));
+                chunk.metadata.insert(QStringLiteral("embedding_dimension"),
+                                      static_cast<int>(chunk.frameEmbedding.size()));
+                chunk.metadata.insert(QStringLiteral("index_version"), 2);
+                chunk.metadata.insert(QStringLiteral("file_path"), repr->metadata.filePath);
 
                 if (m_ragStore) {
-                    m_ragStore->insertChunk(VideoRAGStore::VisualFrames, c);
+                    m_ragStore->insertChunk(VideoRAGStore::VisualFrames, chunk);
                 }
             }
         }
-        qDebug() << "[VideoIndexer] CLIP embedding 完成 | keyframes:"
-                 << keyframes.size();
+        qDebug() << "[VideoIndexer] CLIP embedding 完成 | representative frames:"
+                 << representativeImages.size();
     }
 #endif
 
@@ -378,18 +509,59 @@ void VideoIndexer::buildLevel1(QSharedPointer<VideoRepresentation> repr,
                     c.metadata.insert(QStringLiteral("source"),
                                       QStringLiteral("whisper"));
                     c.metadata.insert(QStringLiteral("file_path"), repr->metadata.filePath);
+                    c.metadata.insert(QStringLiteral("embedding_model_id"),
+                                      QStringLiteral("bge_text"));
+                    c.metadata.insert(QStringLiteral("embedding_version"), QStringLiteral("passage_v2"));
+                    c.metadata.insert(QStringLiteral("index_version"), 2);
 
 #ifdef FRAMEMIND_HAS_ONNXRUNTIME
                     if (m_embedder && m_embedder->isReady() && !seg.text.isEmpty()) {
-                        c.textEmbedding = m_embedder->embed(seg.text);
+                        c.textEmbedding = m_embedder->embedPassage(seg.text);
+                        c.metadata.insert(QStringLiteral("embedding_dimension"),
+                                          static_cast<int>(c.textEmbedding.size()));
                     }
 #endif
                     m_ragStore->insertChunk(VideoRAGStore::TextSegments, c);
                 }
+
+                // 原始 Whisper 段持续服务字幕、精确引用与音画对齐；额外生成 12-30 秒
+                // 语义窗口仅用于主题检索，避免模型原始短段使连续台词召回碎片化。
+                const auto semanticSegments = SpeechSegmenter::buildSemanticSegments(
+                    repr->speechSegments);
+                for (int semanticIndex = 0; semanticIndex < semanticSegments.size(); ++semanticIndex) {
+                    if (!isTaskCurrent(taskId, repr->videoId)) return;
+                    const SpeechSegment& segment = semanticSegments.at(semanticIndex);
+                    VideoChunk chunk;
+                    chunk.chunkId = makeChunkId(
+                        repr->videoId, VideoChunk::Event, segment.startMs, segment.endMs,
+                        QStringLiteral("semantic_speech:%1").arg(semanticIndex));
+                    chunk.videoId = repr->videoId;
+                    chunk.startMs = segment.startMs;
+                    chunk.endMs = segment.endMs;
+                    chunk.chunkType = VideoChunk::Event;
+                    chunk.textContent = segment.text;
+                    chunk.metadata.insert(QStringLiteral("evidence_type"),
+                                          QStringLiteral("speech_semantic"));
+                    chunk.metadata.insert(QStringLiteral("source"),
+                                          QStringLiteral("whisper_semantic"));
+                    chunk.metadata.insert(QStringLiteral("file_path"), repr->metadata.filePath);
+                    chunk.metadata.insert(QStringLiteral("embedding_model_id"),
+                                          QStringLiteral("bge_text"));
+                    chunk.metadata.insert(QStringLiteral("embedding_version"), QStringLiteral("passage_v2"));
+                    chunk.metadata.insert(QStringLiteral("index_version"), 2);
+#ifdef FRAMEMIND_HAS_ONNXRUNTIME
+                    if (m_embedder && m_embedder->isReady()) {
+                        chunk.textEmbedding = m_embedder->embedPassage(segment.text);
+                        chunk.metadata.insert(QStringLiteral("embedding_dimension"),
+                                              static_cast<int>(chunk.textEmbedding.size()));
+                    }
+#endif
+                    m_ragStore->insertChunk(VideoRAGStore::TextSegments, chunk);
+                }
             }
 
             qDebug() << "[VideoIndexer] 转写完成, 共"
-                     << repr->speechSegments.size() << "段";
+                     << repr->speechSegments.size() << "原始段";
         } else if (pcmData.empty()) {
             qDebug() << "[VideoIndexer] 音频解码结果为空，跳过转写";
         }
@@ -399,6 +571,9 @@ void VideoIndexer::buildLevel1(QSharedPointer<VideoRepresentation> repr,
     if (!isTaskCurrent(taskId, repr->videoId)) return;
     for (Scene& scene : repr->scenes) {
         scene.keyframe = QImage();
+        for (SceneFrame& frame : scene.representativeFrames) {
+            frame.image = QImage();
+        }
     }
     repr->level = VideoRepresentation::Level1;
     qDebug() << "[VideoIndexer] buildLevel1 完成";
@@ -422,23 +597,39 @@ QVector<QImage> VideoIndexer::sampleFrames(const QString& videoPath,
                                             const QString& videoId)
 {
     QVector<QImage> frames;
-    if (!m_player || videoPath.isEmpty() || durationMs <= 0 || count <= 0) return frames;
+    if (videoPath.isEmpty() || durationMs <= 0 || count <= 0) return frames;
 
-    frames.reserve(count);
+    QVector<int64_t> targets;
+    targets.reserve(count);
     for (int i = 0; i < count; ++i) {
+        targets.append(static_cast<int64_t>(
+            (static_cast<double>(i) + 0.5) / count * durationMs));
+    }
+
+    QString decodeError;
+    const QVector<FrameExtractor::Frame> extracted = FrameExtractor::extract(
+        videoPath, targets, FrameExtractor::Options{}, &m_cancelRequested, &decodeError);
+    frames.reserve(extracted.size());
+    for (const FrameExtractor::Frame& frame : extracted) {
         if (!isTaskCurrent(taskId, videoId)) break;
-        const int64_t ts = static_cast<int64_t>(
-            (static_cast<double>(i) + 0.5) / count * durationMs);
+        if (frame.image.isNull()) continue;
+        frames.append(frame.image);
+        if (outTimestamps) outTimestamps->append(frame.ptsMs);
+    }
+    if (!frames.isEmpty() || !m_player || !isTaskCurrent(taskId, videoId)) return frames;
+
+    // 旧播放器截帧仅作为 SDK/编解码器不兼容时的兼容回退，不参与正常离线索引路径。
+    qWarning() << "[VideoIndexer] FrameExtractor 失败，启用播放器兼容回退:" << decodeError;
+    frames.reserve(count);
+    for (const int64_t ts : targets) {
+        if (!isTaskCurrent(taskId, videoId)) break;
         auto future = m_player->captureFrameAt(videoPath, ts, 2000);
         future.waitForFinished();
-        if (!isTaskCurrent(taskId, videoId)) break;
-        if (future.resultCount() > 0) {
-            const QImage img = future.result();
-            if (!img.isNull()) {
-                frames.append(img);
-                if (outTimestamps) outTimestamps->append(ts);
-            }
-        }
+        if (future.resultCount() <= 0 || !isTaskCurrent(taskId, videoId)) continue;
+        const QImage image = future.result();
+        if (image.isNull()) continue;
+        frames.append(image);
+        if (outTimestamps) outTimestamps->append(ts);
     }
     return frames;
 }
@@ -465,16 +656,35 @@ int VideoIndexer::persistKeyframes(QSharedPointer<VideoRepresentation> repr)
 
     int saved = 0;
     for (Scene& scene : repr->scenes) {
-        if (m_cancelRequested.load() || scene.keyframe.isNull()) break;
-        const QString fileName = QStringLiteral("scene_%1_%2.jpg")
-                                     .arg(scene.id)
-                                     .arg(scene.keyframeMs);
-        const QString path = QDir(dirPath).filePath(fileName);
-        if (scene.keyframe.save(path, "JPG", 85)) {
-            scene.keyframePath = path;
-            ++saved;
-        } else {
-            qWarning() << "[VideoIndexer] 关键帧保存失败:" << path;
+        if (m_cancelRequested.load()) break;
+
+        if (!scene.keyframe.isNull()) {
+            const QString fileName = QStringLiteral("scene_%1_%2.jpg")
+                                         .arg(scene.id)
+                                         .arg(scene.keyframeMs);
+            const QString path = QDir(dirPath).filePath(fileName);
+            if (scene.keyframe.save(path, "JPG", 85)) {
+                scene.keyframePath = path;
+                ++saved;
+            } else {
+                qWarning() << "[VideoIndexer] 关键帧保存失败:" << path;
+            }
+        }
+
+        for (int frameIndex = 0; frameIndex < scene.representativeFrames.size(); ++frameIndex) {
+            SceneFrame& frame = scene.representativeFrames[frameIndex];
+            if (frame.image.isNull()) continue;
+            const QString fileName = QStringLiteral("scene_%1_rep_%2_%3.jpg")
+                                         .arg(scene.id)
+                                         .arg(frameIndex)
+                                         .arg(frame.ptsMs);
+            const QString path = QDir(dirPath).filePath(fileName);
+            if (frame.image.save(path, "JPG", 85)) {
+                frame.imagePath = path;
+                ++saved;
+            } else {
+                qWarning() << "[VideoIndexer] 代表帧保存失败:" << path;
+            }
         }
     }
     return saved;
@@ -542,5 +752,25 @@ void VideoIndexer::writeChunksToStore(const VideoRepresentation& repr)
         c.metadata.insert(QStringLiteral("source"), QStringLiteral("whisper"));
         c.metadata.insert(QStringLiteral("file_path"), repr.metadata.filePath);
         m_ragStore->insertChunk(VideoRAGStore::TextSegments, c);
+    }
+
+    // 兼容旧写入路径：原始段仍保留，语义窗口只作为额外召回单元。
+    const auto semanticSegments = SpeechSegmenter::buildSemanticSegments(repr.speechSegments);
+    for (int index = 0; index < semanticSegments.size(); ++index) {
+        const SpeechSegment& segment = semanticSegments.at(index);
+        VideoChunk chunk;
+        chunk.chunkId = makeChunkId(repr.videoId, VideoChunk::Event,
+                                    segment.startMs, segment.endMs,
+                                    QStringLiteral("semantic_speech:%1").arg(index));
+        chunk.videoId = repr.videoId;
+        chunk.startMs = segment.startMs;
+        chunk.endMs = segment.endMs;
+        chunk.chunkType = VideoChunk::Event;
+        chunk.textContent = segment.text;
+        chunk.metadata.insert(QStringLiteral("evidence_type"),
+                              QStringLiteral("speech_semantic"));
+        chunk.metadata.insert(QStringLiteral("source"), QStringLiteral("whisper_semantic"));
+        chunk.metadata.insert(QStringLiteral("file_path"), repr.metadata.filePath);
+        m_ragStore->insertChunk(VideoRAGStore::TextSegments, chunk);
     }
 }

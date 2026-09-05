@@ -146,6 +146,17 @@ void OnnxRuntimeEngine::run(const std::vector<Ort::Value>& inputs,
         return;
     }
 
+    if (inputs.size() != m_inputNames.size()) {
+        qWarning() << "[OnnxRuntime] 输入数量与模型不匹配"
+                   << "provided=" << inputs.size()
+                   << "expected=" << m_inputNames.size();
+        for (const auto& name : m_inputNames) {
+            qWarning() << "[OnnxRuntime] expected input:"
+                       << QString::fromStdString(name);
+        }
+        return;
+    }
+
     try {
         auto result = m_session->Run(
             Ort::RunOptions{nullptr},

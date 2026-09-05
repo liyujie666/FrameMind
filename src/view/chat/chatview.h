@@ -8,6 +8,7 @@ class ChatMessageList;
 class ChatInputWidget;
 class ChatViewModel;
 class ThemeService;
+class MarkdownRenderer;
 class QToolButton;
 class QLabel;
 
@@ -46,6 +47,7 @@ private:
     QLabel*          m_titleLabel = nullptr;
     ChatViewModel*   m_vm = nullptr;
     ThemeService*    m_theme = nullptr;
+    MarkdownRenderer* m_renderer = nullptr;
 
     // 主题相关颜色（缓存）
     QColor m_bgColor;

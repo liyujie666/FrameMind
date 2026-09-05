@@ -5,6 +5,7 @@
 #include <QVariantList>
 #include <QVariantMap>
 #include <QList>
+#include <QMap>
 #include <QSqlDatabase>
 
 /**
@@ -25,6 +26,24 @@ public:
 
     /// 执行查询，返回行列表（列名 → 值）
     QList<QVariantMap> query(const QString& sql, const QVariantList& bindings = {});
+
+    /// 保存视频摘要和元数据
+    bool saveVideoMetadata(const QString& videoId, const QString& videoPath,
+                           const QString& summary, int indexLevel);
+
+    /// 保存场景描述
+    bool saveSceneDescription(const QString& videoId, int sceneId,
+                              const QString& description,
+                              const QString& visualDescription = {});
+
+    /// 加载视频摘要
+    QString loadVideoSummary(const QString& videoId);
+
+    /// 加载场景描述（返回 sceneId → description 的映射）
+    QMap<int, QString> loadSceneDescriptions(const QString& videoId);
+
+    /// 加载视觉描述（返回 sceneId → visual_description 的映射）
+    QMap<int, QString> loadSceneVisualDescriptions(const QString& videoId);
 
     QString lastError() const { return m_lastError; }
 

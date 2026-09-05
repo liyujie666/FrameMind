@@ -18,7 +18,10 @@ public:
         TimestampRole,
         IsStreamingRole,
         AttachedFramesRole,
-        IdRole
+        IdRole,
+        AgentStatusRole,
+        StartTimeRole,
+        ElapsedMsRole
     };
 
     explicit ChatMessageListModel(QObject* parent = nullptr);
@@ -33,11 +36,14 @@ public:
     void appendDeltaSilent(int row, const QString& delta);  // 累积但不发信号（配合节流）
     void flushRow(int row);                                 // 主动发 dataChanged 刷新
     void setStreaming(int row, bool streaming);
+    void setAgentStatus(int row, const QString& status);    // 设置Agent状态
+    void setElapsedMs(int row, qint64 elapsedMs);           // 设置耗时
     void setMessages(const QList<ChatMessage>& msgs);
     void clear();
 
     int count() const { return m_messages.size(); }
     ChatMessage messageAt(int row) const;
+    ChatMessage& messageRefAt(int row);  // 返回可修改的引用
 
 private:
     QList<ChatMessage> m_messages;

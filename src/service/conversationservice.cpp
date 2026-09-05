@@ -54,13 +54,14 @@ QList<Conversation> ConversationService::getAllConversations()
     QList<Conversation> result;
     if (!m_db) return result;
     const auto rows = m_db->query(QStringLiteral(
-        "SELECT id, title, video_path, created_at, updated_at "
+        "SELECT id, title, video_path, video_id, created_at, updated_at "
         "FROM conversations ORDER BY updated_at DESC"));
     for (const auto& row : rows) {
         Conversation c;
         c.id = row.value(QStringLiteral("id")).toString();
         c.title = row.value(QStringLiteral("title")).toString();
         c.videoFilePath = row.value(QStringLiteral("video_path")).toString();
+        c.videoId = row.value(QStringLiteral("video_id")).toString();
         c.createdAt = row.value(QStringLiteral("created_at")).toDateTime();
         c.updatedAt = row.value(QStringLiteral("updated_at")).toDateTime();
         result.append(c);
@@ -68,19 +69,61 @@ QList<Conversation> ConversationService::getAllConversations()
     return result;
 }
 
-Conversation ConversationService::createConversation(const QString& videoPath)
+QList<Conversation> ConversationService::getConversationsByVideoId(const QString& videoId)
+{
+    QList<Conversation> result;
+    if (!m_db || videoId.isEmpty()) return result;
+    const auto rows = m_db->query(QStringLiteral(
+        "SELECT id, title, video_path, video_id, created_at, updated_at "
+        "FROM conversations WHERE video_id = ? ORDER BY updated_at DESC"),
+        { videoId });
+    for (const auto& row : rows) {
+        Conversation c;
+        c.id = row.value(QStringLiteral("id")).toString();
+        c.title = row.value(QStringLiteral("title")).toString();
+        c.videoFilePath = row.value(QStringLiteral("video_path")).toString();
+        c.videoId = row.value(QStringLiteral("video_id")).toString();
+        c.createdAt = row.value(QStringLiteral("created_at")).toDateTime();
+        c.updatedAt = row.value(QStringLiteral("updated_at")).toDateTime();
+        result.append(c);
+    }
+    return result;
+}
+
+Conversation ConversationService::getLatestConversationForVideo(const QString& videoId)
+{
+    Conversation result;
+    if (!m_db || videoId.isEmpty()) return result;
+    const auto rows = m_db->query(QStringLiteral(
+        "SELECT id, title, video_path, video_id, created_at, updated_at "
+        "FROM conversations WHERE video_id = ? ORDER BY updated_at DESC LIMIT 1"),
+        { videoId });
+    if (!rows.isEmpty()) {
+        const auto& row = rows.first();
+        result.id = row.value(QStringLiteral("id")).toString();
+        result.title = row.value(QStringLiteral("title")).toString();
+        result.videoFilePath = row.value(QStringLiteral("video_path")).toString();
+        result.videoId = row.value(QStringLiteral("video_id")).toString();
+        result.createdAt = row.value(QStringLiteral("created_at")).toDateTime();
+        result.updatedAt = row.value(QStringLiteral("updated_at")).toDateTime();
+    }
+    return result;
+}
+
+Conversation ConversationService::createConversation(const QString& videoPath, const QString& videoId)
 {
     Conversation c;
     c.id = newId();
     c.title = QStringLiteral("新对话");
     c.videoFilePath = videoPath;
+    c.videoId = videoId;
     c.createdAt = QDateTime::currentDateTime();
     c.updatedAt = c.createdAt;
     if (m_db) {
         m_db->exec(QStringLiteral(
-            "INSERT INTO conversations(id, title, video_path, created_at, updated_at) "
-            "VALUES(?, ?, ?, ?, ?)"),
-            { c.id, c.title, c.videoFilePath,
+            "INSERT INTO conversations(id, title, video_path, video_id, created_at, updated_at) "
+            "VALUES(?, ?, ?, ?, ?, ?)"),
+            { c.id, c.title, c.videoFilePath, c.videoId,
               c.createdAt.toString(Qt::ISODate),
               c.updatedAt.toString(Qt::ISODate) });
     }
@@ -107,8 +150,12 @@ QList<ChatMessage> ConversationService::getMessages(const QString& convId)
     QList<ChatMessage> result;
     if (!m_db) return result;
     const auto rows = m_db->query(QStringLiteral(
-        "SELECT id, role, content, attached_frames, timestamp "
-        "FROM messages WHERE conversation_id = ? ORDER BY timestamp ASC"),
+        "SELECT id, role, content, attached_frames, timestamp, elapsed_ms "
+        "FROM messages "
+        "WHERE conversation_id = ? "
+        "  AND (role <> 'assistant' OR length(trim(content)) > 0 "
+        "       OR attached_frames IS NOT NULL AND length(attached_frames) > 0) "
+        "ORDER BY timestamp ASC"),
         { convId });
     for (const auto& row : rows) {
         ChatMessage m;
@@ -119,6 +166,7 @@ QList<ChatMessage> ConversationService::getMessages(const QString& convId)
         m.attachedFrames =
             framesFromJson(row.value(QStringLiteral("attached_frames")).toString());
         m.timestamp = row.value(QStringLiteral("timestamp")).toDateTime();
+        m.elapsedMs = row.value(QStringLiteral("elapsed_ms")).toLongLong();
         result.append(m);
     }
     return result;
@@ -127,14 +175,24 @@ QList<ChatMessage> ConversationService::getMessages(const QString& convId)
 void ConversationService::saveMessage(const QString& convId, const ChatMessage& msg)
 {
     if (!m_db) return;
+    // assistant 占位消息在响应完成前为空，不应持久化到历史。
+    if (msg.role == ChatMessage::Assistant
+        && msg.content.trimmed().isEmpty()
+        && msg.attachedFrames.isEmpty()) {
+        return;
+    }
     const QString id = msg.id.isEmpty() ? newId() : msg.id;
     m_db->exec(QStringLiteral(
-        "INSERT INTO messages(id, conversation_id, role, content, attached_frames, timestamp) "
-        "VALUES(?, ?, ?, ?, ?, ?)"),
+        "INSERT INTO messages(id, conversation_id, role, content, attached_frames, timestamp, elapsed_ms) "
+        "VALUES(?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(id) DO UPDATE SET "
+        "  content = excluded.content, "
+        "  elapsed_ms = excluded.elapsed_ms"),
         { id, convId, ChatMessage::roleToString(msg.role), msg.content,
           framesToJson(msg.attachedFrames),
           (msg.timestamp.isValid() ? msg.timestamp : QDateTime::currentDateTime())
-              .toString(Qt::ISODate) });
+              .toString(Qt::ISODate),
+          static_cast<qlonglong>(msg.elapsedMs) });
     // 更新会话的 updated_at，便于按最近排序
     m_db->exec(QStringLiteral(
         "UPDATE conversations SET updated_at = ? WHERE id = ?"),

@@ -11,6 +11,7 @@
 
 #include "model/chatmessage.h"
 #include "model/videocontext.h"
+#include "service/agent/context_budget_manager.h"
 
 class NetworkClient;
 class SettingsService;
@@ -111,6 +112,11 @@ private:
 
     void applyActiveProvider();
 
+    /// 对历史应用 Token 预算截断
+    void applyBudgetTruncation(QJsonArray& history,
+                               int systemTokens,
+                               int currentUserTokens);
+
     NetworkClient*       m_network = nullptr;
     SettingsService*     m_settings = nullptr;
     LLMProviderService*  m_providers = nullptr;
@@ -120,6 +126,9 @@ private:
 
     // 每会话历史（不含 system；元素为 OpenAI message 对象）
     QHash<QString, QJsonArray> m_histories;
+
+    // 上下文预算管理
+    ContextBudgetManager m_budgetManager;
 
     // 当前进行中的流
     QString m_currentConvId;

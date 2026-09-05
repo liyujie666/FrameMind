@@ -1,0 +1,59 @@
+{
+  "name": "video_summary",
+  "description": "视频摘要工作流：全局采样→多模态分析（并行）→结构化整合→反思校验",
+  "maxIterations": 3,
+  "entry": "sample",
+  "nodes": [
+    {
+      "id": "sample",
+      "type": "function",
+      "handler": "PerceptionStrategy::uniformSample",
+      "timeout": 15000
+    },
+    {
+      "id": "analyze_visual",
+      "type": "llm",
+      "systemPrompt": "分析以下视频帧序列，描述视频的视觉内容、场景变化和关键画面。",
+      "enableTools": false,
+      "questionKey": "visual_prompt",
+      "answerKey": "visual_analysis",
+      "timeout": 90000
+    },
+    {
+      "id": "analyze_audio",
+      "type": "function",
+      "handler": "AudioAnalyzer::transcribe",
+      "timeout": 60000
+    },
+    {
+      "id": "integrate",
+      "type": "llm",
+      "systemPrompt": "基于视觉分析和音频转录结果，生成一份结构化的视频摘要。包含：1.视频概述 2.主要内容 3.关键时间点 4.重要细节",
+      "enableTools": false,
+      "questionKey": "integration_prompt",
+      "answerKey": "summary",
+      "timeout": 120000
+    },
+    {
+      "id": "reflect",
+      "type": "function",
+      "handler": "ReflectionEngine::check",
+      "timeout": 15000
+    },
+    {
+      "id": "quality_check",
+      "type": "condition",
+      "expression": "confidence >= 0.6"
+    }
+  ],
+  "edges": [
+    { "from": "sample", "to": "analyze_visual" },
+    { "from": "sample", "to": "analyze_audio" },
+    { "from": "analyze_visual", "to": "integrate" },
+    { "from": "analyze_audio", "to": "integrate" },
+    { "from": "integrate", "to": "reflect" },
+    { "from": "reflect", "to": "quality_check" },
+    { "from": "quality_check", "to": "__END__", "condition": "true" },
+    { "from": "quality_check", "to": "integrate", "condition": "false" }
+  ]
+}

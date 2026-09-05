@@ -20,6 +20,9 @@ class ToolOrchestrator;
 class PerceptionStrategy;
 class ReflectionEngine;
 class EntityTracker;
+class WorkflowExecutor;
+class WorkflowFactory;
+class WorkflowCheckpoint;
 struct VideoRepresentation;
 
 /**
@@ -73,9 +76,18 @@ public:
     QString activeVideoPath() const { return m_activeVideoPath; }
     QString activeVideoId() const   { return m_activeVideoId; }
 
+    /// 设置 Workflow 引擎（可选，设置后 ask() 将使用 Workflow 驱动）
+    void setWorkflowExecutor(WorkflowExecutor* executor);
+    void setWorkflowFactory(WorkflowFactory* factory);
+    void setWorkflowCheckpoint(WorkflowCheckpoint* checkpoint);
+
+    /// 是否使用 Workflow 模式
+    bool useWorkflowMode() const { return m_workflowExecutor != nullptr; }
+
 signals:
     void stageChanged(const QString& stage);     // "PERCEIVE" / "REASON" / ...
     void toolInvoked(const QString& toolName);
+    void statusChanged(const QString& status);
     void reflectionIssueFound(const QString& detail);
 
 private:
@@ -87,8 +99,6 @@ private:
                             const QString& question,
                             const QList<QImage>& userFrames,
                             const VideoContext& ctx);
-    void phaseReflect(const QString& answer,
-                       const QVector<ToolResult>& toolTrace);
 
     void finishAnswer(const AgentAnswer& answer);
     void failWith(const QString& err);
@@ -111,11 +121,29 @@ private:
     QString  m_currentQuestion;
     int64_t  m_currentPlayerPosMs = 0;
     QVector<RetrievalResult> m_retrievedEvidence;
+    int      m_reflectionRetries = 0;          ///< 反思重试次数
+    static constexpr int kMaxReflectionRetries = 1;  ///< 最多反思重试 1 次
 
     // 回调
     std::function<void(const QString&)> m_onProgress;
     std::function<void(const AgentAnswer&)> m_onDone;
     std::function<void(const QString&)> m_onError;
+
+    // 保留上一次推理的上下文，供反思重试使用
+    QList<QImage> m_lastUserFrames;
+    VideoContext  m_lastVideoCtx;
+
+    // Workflow 引擎（可选，为nullptr时走传统五阶段管道）
+    QPointer<WorkflowExecutor>m_workflowExecutor;
+    WorkflowFactory*            m_workflowFactory = nullptr;
+    WorkflowCheckpoint*         m_workflowCheckpoint = nullptr;
+
+    // Workflow 模式的内部方法
+    void askViaWorkflow(const QString& conversationId,
+                        const QString& question,
+                        const QList<QImage>& userFrames,
+                        const VideoContext& videoCtx,
+                        int64_t currentPlayerPosMs);
 };
 
 #endif // FRAMEMIND_VIDEO_AGENT_H

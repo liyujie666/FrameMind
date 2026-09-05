@@ -8,6 +8,7 @@
 #include <QVariantMap>
 
 #include "model/retrieval_result.h"
+#include "service/rag/query_plan.h"
 
 class VideoRAGStore;
 class ClipService;
@@ -36,6 +37,9 @@ public:
         VideoChunk::ChunkType chunkType = static_cast<VideoChunk::ChunkType>(-1);
         QStringList entityIds;
         float    minScore = 0.0f;
+        QString  preferPath;   ///< 偏好检索路径 ("entity"/"text"/"visual")，空=不偏好
+        int64_t  videoDurationMs = -1;
+        int64_t  currentPositionMs = -1;
     };
 
     /// 查询意图（简单启发式判断）
@@ -74,13 +78,19 @@ public:
                                        const Constraints& constraints,
                                        int topK = 5);
 
-    /// 查询意图分析（可单独使用）
+    /// 查询意图分析（仅用于权重与证据偏好，不再单独决定是否关闭任一路召回）
     QueryIntent analyzeQuery(const QString& query) const;
+
+    /// 编译本地、确定性的多路检索计划；显式 Constraints 优先于问题文本时间表达。
+    QueryPlan compileQueryPlan(const QString& query, const Constraints& constraints) const;
 
 private:
     /// Path A: 文本语义检索（BGE 在 text_segments）
     QVector<RetrievalResult> textPathSearch(const QString& query,
                                               const Constraints& c, int topK);
+    /// Path A2: 词面检索（字幕、数字、专有名词与精确台词）
+    QVector<RetrievalResult> lexicalTextPathSearch(const QString& query,
+                                                    const Constraints& c, int topK);
     /// Path B: 视觉语义检索（CLIP text→visual_frames）
     QVector<RetrievalResult> visualPathSearch(const QString& query,
                                                 const Constraints& c, int topK);
@@ -99,6 +109,10 @@ private:
     /// 同一场景的视觉/音频/融合证据互补，不互相去重
     QVector<RetrievalResult> deduplicate(
         const QVector<RetrievalResult>& results) const;
+
+    /// 对时间邻近的跨模态命中补充互证分数及来源元数据。
+    QVector<RetrievalResult> applyTemporalCorroboration(
+        const QVector<RetrievalResult>& results, const QueryPlan& plan) const;
 
     /// 按查询意图对证据类型重新加权（在 RRF 之前作用于单路分数）
     static void applyEvidencePreference(QVector<RetrievalResult>& results,

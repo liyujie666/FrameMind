@@ -44,11 +44,19 @@ public:
 
     /// 检索过滤器
     struct Filter {
+        enum TimeMatchMode {
+            FullyContained,  // 保持旧行为：chunk 必须完整落在范围内
+            Overlaps         // 区间检索：chunk 与范围有任意正向重叠即可
+        };
+
         QString  videoId;
         int64_t  startMsGte = -1;              // -1 = 不限
         int64_t  endMsLte   = -1;
+        TimeMatchMode timeMatchMode = FullyContained;
         VideoChunk::ChunkType chunkType = static_cast<VideoChunk::ChunkType>(-1); // -1 = 不限
         QStringList entityIds;                 // metadata.entities 必须包含
+        QString  expectedEmbeddingModelId;     // 空=兼容旧数据；非空时必须与所用向量模型一致
+        QString  expectedEmbeddingVersion;     // 空=不限制
         float    minScore = 0.0f;              // 分数阈值
     };
 
@@ -62,6 +70,9 @@ public:
 
     /// 视频索引加载：从 DB 读入某 videoId 的所有 chunks 到内存
     void loadVideo(const QString& videoId);
+
+    /// 是否已有可复用的视觉或文本索引（QA 缓存不计入）。
+    bool hasIndexedContent(const QString& videoId) const;
 
     /// 清空 / 失效某视频的所有索引（视频文件变化 or 用户手动清除）
     void invalidateVideo(const QString& videoId);
@@ -93,6 +104,12 @@ public:
                                               const std::vector<float>& queryVector,
                                               const Filter& filter,
                                               int topK);
+
+    /// 本地词面召回（中文双字 gram + ASCII 词），与 dense 向量检索互补。
+    QVector<QPair<VideoChunk, float>> searchLexical(Collection col,
+                                                     const QString& query,
+                                                     const Filter& filter,
+                                                     int topK);
 
     /// 精确匹配某 chunk（不走向量搜索）
     VideoChunk getChunk(Collection col, const QString& chunkId) const;

@@ -69,7 +69,8 @@ signals:
 
 private:
     QString generateEntityId(EntityProfile::EntityType type) const;
-    std::vector<float> encodeDesc(const QString& desc) const;
+    std::vector<float> encodeQuery(const QString& desc) const;
+    std::vector<float> encodePassage(const QString& desc) const;
 
     VideoRAGStore*    m_store    = nullptr;
     EmbeddingService* m_embedder = nullptr;

@@ -49,6 +49,13 @@ AudioVisualAligner::AudioVisualAligner(QObject* parent)
 
 QVector<SpeechSegment> AudioVisualAligner::overlappingSpeechSegments(
     const Scene& scene,
+    const QVector<SpeechSegment>& segments) const
+{
+    return overlappingSpeechSegments(scene, segments, Limits{});
+}
+
+QVector<SpeechSegment> AudioVisualAligner::overlappingSpeechSegments(
+    const Scene& scene,
     const QVector<SpeechSegment>& segments,
     const Limits& limits) const
 {
@@ -259,8 +266,8 @@ AudioVisualGate AudioVisualAligner::gate(const QString& visualDescription,
 #ifdef FRAMEMIND_HAS_ONNXRUNTIME
     if (m_embedder && m_embedder->isReady()
         && !visualDescription.isEmpty() && !transcript.isEmpty()) {
-        const auto visualEmb = m_embedder->embed(visualDescription);
-        const auto audioEmb  = m_embedder->embed(transcript);
+        const auto visualEmb = m_embedder->embedPassage(visualDescription);
+        const auto audioEmb  = m_embedder->embedPassage(transcript);
         if (!visualEmb.empty() && visualEmb.size() == audioEmb.size()) {
             g.semanticSimilarity =
                 VideoRAGStore::cosineSimilarity(visualEmb, audioEmb);

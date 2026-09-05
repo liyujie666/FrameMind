@@ -2,6 +2,8 @@
 
 #include <QRegularExpression>
 #include <QStringList>
+#include <QSet>
+#include <QtGlobal>
 #include <memory>
 
 ReflectionEngine::ReflectionEngine(QObject* parent)
@@ -31,9 +33,24 @@ ReflectionResult ReflectionEngine::reflect(
     if (halluc)   result.issues.append(*halluc);
 
     result.valid = result.issues.isEmpty();
-    // 简单置信度：无问题 0.9；每个问题扣 0.15，最低 0.3
-    result.confidence = 0.9f - 0.15f * result.issues.size();
-    if (result.confidence < 0.3f) result.confidence = 0.3f;
+
+    // 置信度由可追溯证据覆盖、跨模态互证和校验问题共同决定；不再由答案长度
+    // 或单纯问题数量决定。它仍是启发式分数，不能替代人工或 VLM 复核。
+    QSet<QString> modalities;
+    bool hasCorroboration = false;
+    for (const RetrievalResult& item : evidence) {
+        const QString modality = item.chunk.metadata
+            .value(QStringLiteral("evidence_type")).toString();
+        modalities.insert(modality.isEmpty() ? item.hitPath : modality);
+        if (!item.chunk.metadata.value(QStringLiteral("corroborating_chunk_ids")).toList().isEmpty()) {
+            hasCorroboration = true;
+        }
+    }
+    float confidence = evidence.isEmpty() ? 0.35f : 0.65f;
+    confidence += 0.05f * static_cast<float>(qMin(3, modalities.size()));
+    if (hasCorroboration) confidence += 0.05f;
+    confidence -= 0.12f * static_cast<float>(result.issues.size());
+    result.confidence = qBound(0.2f, confidence, 0.95f);
 
     if (!result.valid) {
         QStringList tips;
@@ -70,11 +87,22 @@ ReflectionResult::Issue* ReflectionEngine::checkConsistency(
 ReflectionResult::Issue* ReflectionEngine::checkEvidenceSupport(
     const QString& answer, const QVector<RetrievalResult>& evidence) const
 {
-    // 若答案很长（>200 字符）却没有引用任何证据，视为缺乏支撑
-    if (answer.size() > 200 && evidence.isEmpty()) {
+    // 事实性回答必须至少有一条可追溯证据；简短的澄清/拒答允许没有证据。
+    if (answer.size() > 80 && evidence.isEmpty()) {
         auto* iss = new ReflectionResult::Issue;
         iss->kind = ReflectionResult::Issue::EvidenceMissing;
-        iss->detail = QStringLiteral("答案长度较长但缺少可追溯的检索证据");
+        iss->detail = QStringLiteral("答案包含具体视频结论但缺少可追溯的检索证据");
+        return iss;
+    }
+    for (const RetrievalResult& item : evidence) {
+        if (!item.chunk.chunkId.isEmpty() && !item.chunk.textContent.trimmed().isEmpty()) {
+            return nullptr;
+        }
+    }
+    if (!evidence.isEmpty()) {
+        auto* iss = new ReflectionResult::Issue;
+        iss->kind = ReflectionResult::Issue::EvidenceMissing;
+        iss->detail = QStringLiteral("检索结果缺少可用的文本或结构化证据内容");
         return iss;
     }
     return nullptr;

@@ -43,8 +43,12 @@ public:
      */
     QVector<SpeechSegment> overlappingSpeechSegments(
         const Scene& scene,
+        const QVector<SpeechSegment>& segments) const;
+
+    QVector<SpeechSegment> overlappingSpeechSegments(
+        const Scene& scene,
         const QVector<SpeechSegment>& segments,
-        const Limits& limits = {}) const;
+        const Limits& limits) const;
 
     /**
      * 语义门控：综合多个信号给出候选关系。
