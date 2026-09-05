@@ -150,8 +150,12 @@ QList<ChatMessage> ConversationService::getMessages(const QString& convId)
     QList<ChatMessage> result;
     if (!m_db) return result;
     const auto rows = m_db->query(QStringLiteral(
-        "SELECT id, role, content, attached_frames, timestamp "
-        "FROM messages WHERE conversation_id = ? ORDER BY timestamp ASC"),
+        "SELECT id, role, content, attached_frames, timestamp, elapsed_ms "
+        "FROM messages "
+        "WHERE conversation_id = ? "
+        "  AND (role <> 'assistant' OR length(trim(content)) > 0 "
+        "       OR attached_frames IS NOT NULL AND length(attached_frames) > 0) "
+        "ORDER BY timestamp ASC"),
         { convId });
     for (const auto& row : rows) {
         ChatMessage m;
@@ -162,6 +166,7 @@ QList<ChatMessage> ConversationService::getMessages(const QString& convId)
         m.attachedFrames =
             framesFromJson(row.value(QStringLiteral("attached_frames")).toString());
         m.timestamp = row.value(QStringLiteral("timestamp")).toDateTime();
+        m.elapsedMs = row.value(QStringLiteral("elapsed_ms")).toLongLong();
         result.append(m);
     }
     return result;
@@ -170,14 +175,24 @@ QList<ChatMessage> ConversationService::getMessages(const QString& convId)
 void ConversationService::saveMessage(const QString& convId, const ChatMessage& msg)
 {
     if (!m_db) return;
+    // assistant 占位消息在响应完成前为空，不应持久化到历史。
+    if (msg.role == ChatMessage::Assistant
+        && msg.content.trimmed().isEmpty()
+        && msg.attachedFrames.isEmpty()) {
+        return;
+    }
     const QString id = msg.id.isEmpty() ? newId() : msg.id;
     m_db->exec(QStringLiteral(
-        "INSERT INTO messages(id, conversation_id, role, content, attached_frames, timestamp) "
-        "VALUES(?, ?, ?, ?, ?, ?)"),
+        "INSERT INTO messages(id, conversation_id, role, content, attached_frames, timestamp, elapsed_ms) "
+        "VALUES(?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(id) DO UPDATE SET "
+        "  content = excluded.content, "
+        "  elapsed_ms = excluded.elapsed_ms"),
         { id, convId, ChatMessage::roleToString(msg.role), msg.content,
           framesToJson(msg.attachedFrames),
           (msg.timestamp.isValid() ? msg.timestamp : QDateTime::currentDateTime())
-              .toString(Qt::ISODate) });
+              .toString(Qt::ISODate),
+          static_cast<qlonglong>(msg.elapsedMs) });
     // 更新会话的 updated_at，便于按最近排序
     m_db->exec(QStringLiteral(
         "UPDATE conversations SET updated_at = ? WHERE id = ?"),

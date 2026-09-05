@@ -192,7 +192,7 @@ void TimelineTabWidget::onSceneDescribed(int sceneId, const QString& description
             }
         }
     }
-    lbl->setText(displayText.left(100));
+    lbl->setText(displayText);
     lbl->setVisible(true);
 }
 
@@ -219,7 +219,7 @@ void TimelineTabWidget::onSceneFused(int sceneId, const SceneFusion& fusion)
                                     QString::number(fusion.confidence, 'f', 2));
         }
     }
-    label->setText(displayText.left(240));
+    label->setText(displayText);
     label->setVisible(true);
 }
 

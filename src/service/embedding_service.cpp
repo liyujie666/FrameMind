@@ -104,6 +104,38 @@ std::vector<float> EmbeddingService::embedInternal(const QString& text, bool que
     const auto& inputNames = m_engine->inputNames();
     std::vector<Ort::Value> inputs;
     inputs.reserve(inputNames.size());
+    
+    // 首先检查模型需要哪些输入
+    bool hasInputIds = false;
+    bool hasAttentionMask = false;
+    bool hasTokenTypeIds = false;
+    QStringList unsupportedInputs;
+    
+    for (const auto& inputName : inputNames) {
+        const QString name = QString::fromStdString(inputName);
+        if (name == QLatin1String("input_ids")) {
+            hasInputIds = true;
+        } else if (name == QLatin1String("attention_mask")) {
+            hasAttentionMask = true;
+        } else if (name == QLatin1String("token_type_ids")) {
+            hasTokenTypeIds = true;
+        } else {
+            unsupportedInputs.append(name);
+        }
+    }
+    
+    // 如果有不支持的输入，警告但继续
+    if (!unsupportedInputs.isEmpty()) {
+        qWarning() << "[EmbeddingService] 模型包含未知输入（将跳过）:" << unsupportedInputs.join(", ");
+    }
+    
+    // 检查必需的输入是否存在
+    if (!hasInputIds) {
+        qWarning() << "[EmbeddingService] 模型缺少必需的 input_ids 输入";
+        return {};
+    }
+    
+    // 按照模型期望的顺序构建输入
     for (const auto& inputName : inputNames) {
         const QString name = QString::fromStdString(inputName);
         if (name == QLatin1String("input_ids")) {
@@ -112,13 +144,12 @@ std::vector<float> EmbeddingService::embedInternal(const QString& text, bool que
             inputs.push_back(m_engine->createTensor(attentionMask.data(), shape));
         } else if (name == QLatin1String("token_type_ids")) {
             inputs.push_back(m_engine->createTensor(tokenTypeIds.data(), shape));
-        } else {
-            qWarning() << "[EmbeddingService] 模型包含不支持的输入:" << name;
-            return {};
         }
+        // 不支持的输入直接跳过，不添加到 inputs 中
     }
+    
     if (inputs.empty()) {
-        qWarning() << "[EmbeddingService] 模型没有可用输入";
+        qWarning() << "[EmbeddingService] 没有构建任何有效输入";
         return {};
     }
 

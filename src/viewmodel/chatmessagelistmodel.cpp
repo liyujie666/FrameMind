@@ -23,6 +23,9 @@ QVariant ChatMessageListModel::data(const QModelIndex& index, int role) const
     case IsStreamingRole: return m.isStreaming;
     case IdRole:          return m.id;
     case AttachedFramesRole: return m.attachedFrames.size();
+    case AgentStatusRole: return m.agentStatus;
+    case StartTimeRole:   return m.startTime;
+    case ElapsedMsRole:   return m.elapsedMs;
     default:              return {};
     }
 }
@@ -36,6 +39,9 @@ QHash<int, QByteArray> ChatMessageListModel::roleNames() const
         { IsStreamingRole,    "isStreaming" },
         { AttachedFramesRole, "attachedFrames" },
         { IdRole,             "id" },
+        { AgentStatusRole,    "agentStatus" },
+        { StartTimeRole,      "startTime" },
+        { ElapsedMsRole,      "elapsedMs" },
     };
 }
 
@@ -76,6 +82,29 @@ void ChatMessageListModel::setStreaming(int row, bool streaming)
     m_messages[row].isStreaming = streaming;
     const QModelIndex idx = index(row);
     emit dataChanged(idx, idx, { IsStreamingRole });
+}
+
+void ChatMessageListModel::setAgentStatus(int row, const QString& status)
+{
+    if (row < 0 || row >= m_messages.size()) return;
+    m_messages[row].agentStatus = status;
+    const QModelIndex idx = index(row);
+    emit dataChanged(idx, idx, { AgentStatusRole });
+}
+
+void ChatMessageListModel::setElapsedMs(int row, qint64 elapsedMs)
+{
+    if (row < 0 || row >= m_messages.size()) return;
+    m_messages[row].elapsedMs = elapsedMs;
+    const QModelIndex idx = index(row);
+    emit dataChanged(idx, idx, { ElapsedMsRole });
+}
+
+ChatMessage& ChatMessageListModel::messageRefAt(int row)
+{
+    static ChatMessage empty;
+    if (row < 0 || row >= m_messages.size()) return empty;
+    return m_messages[row];
 }
 
 void ChatMessageListModel::setMessages(const QList<ChatMessage>& msgs)

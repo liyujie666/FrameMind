@@ -17,6 +17,9 @@ struct ChatMessage {
     QList<QImage>  attachedFrames;   // 附带的视频帧
     QDateTime      timestamp;
     bool           isStreaming = false;
+    QString        agentStatus;      // Agent执行状态（工具调用等）
+    QDateTime      startTime;        // 开始时间（用于计时）
+    qint64         elapsedMs = 0;    // 总耗时（毫秒）
 
     static QString roleToString(Role r)
     {

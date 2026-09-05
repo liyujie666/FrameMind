@@ -219,7 +219,8 @@ void DIContainer::initialize()
     // 5. 索引器
     m_videoIndexer = std::make_unique<VideoIndexer>(m_playerService.get(),
                                                      m_sceneDetector.get(),
-                                                     m_ragStore.get());
+                                                     m_ragStore.get(),
+                                                     m_db);
 #ifdef FRAMEMIND_HAS_ONNXRUNTIME
     m_videoIndexer->setClipService(m_clipService.get());
     m_videoIndexer->setEmbeddingService(m_embeddingService.get());
@@ -237,7 +238,7 @@ void DIContainer::initialize()
     // 7. 分析服务
     m_videoAnalysis = std::make_unique<VideoAnalysisService>(
         m_oneShotVlmChannel.get(), m_videoIndexer.get(),
-        m_ragStore.get(), m_playerService.get());
+        m_ragStore.get(), m_playerService.get(), m_db);
     m_videoAnalysis->setAudioVisualAligner(m_avAligner.get());
 #ifdef FRAMEMIND_HAS_ONNXRUNTIME
     m_videoAnalysis->setEmbeddingService(m_embeddingService.get());

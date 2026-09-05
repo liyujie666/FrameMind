@@ -75,8 +75,16 @@ void ChatViewModel::connectAgent()
             [this](const QString& convId, const ChatMessage& full) {
                 if (convId != m_currentConversationId || m_assistantRow < 0) return;
                 m_flushTimer->stop();
+                
+                // 计算耗时
+                const ChatMessage msg = m_messageModel->messageAt(m_assistantRow);
+                const qint64 elapsed = msg.startTime.msecsTo(QDateTime::currentDateTime());
+                
                 m_messageModel->updateContent(m_assistantRow, full.content);
                 m_messageModel->setStreaming(m_assistantRow, false);
+                m_messageModel->setAgentStatus(m_assistantRow, QString());  // 清空状态
+                m_messageModel->setElapsedMs(m_assistantRow, elapsed);      // 设置耗时
+                
                 emit messageUpdated(m_assistantRow);
 
                 // 落库（用占位时生成的 id 持久化）
@@ -84,6 +92,7 @@ void ChatViewModel::connectAgent()
                     ChatMessage saved = full;
                     saved.id = m_assistantId;
                     saved.role = ChatMessage::Assistant;
+                    saved.elapsedMs = elapsed;
                     m_convService->saveMessage(m_currentConversationId, saved);
                 }
                 m_assistantRow = -1;
@@ -101,6 +110,7 @@ void ChatViewModel::connectAgent()
                         m_assistantRow,
                         QStringLiteral("⚠️ 生成失败：%1").arg(err));
                     m_messageModel->setStreaming(m_assistantRow, false);
+                    m_messageModel->setAgentStatus(m_assistantRow, QString());  // 清空状态
                     emit messageUpdated(m_assistantRow);
                     m_assistantRow = -1;
                 }
@@ -150,10 +160,29 @@ void ChatViewModel::setVideoAgent(VideoAgent* agent)
         connect(m_videoAgent, &VideoAgent::statusChanged, this,
                 [this](const QString& status) {
                     if (m_assistantRow < 0 || !m_streaming) return;
-                    if (m_messageModel->messageAt(m_assistantRow).content.isEmpty()
-                        || m_messageModel->messageAt(m_assistantRow).content
-                               == QStringLiteral("正在请求模型…")) {
-                        m_messageModel->updateContent(m_assistantRow, status);
+                    m_messageModel->setAgentStatus(m_assistantRow, status);
+                    emit messageUpdated(m_assistantRow);
+                });
+        
+        connect(m_videoAgent, &VideoAgent::stageChanged, this,
+                [this](const QString& stage) {
+                    if (m_assistantRow < 0 || !m_streaming) return;
+                    QString displayText;
+                    if (stage == QStringLiteral("PERCEIVE")) {
+                        displayText = tr("正在分析视频内容...");
+                    } else if (stage == QStringLiteral("REPRESENT")) {
+                        displayText = tr("正在检索相关片段...");
+                    } else if (stage == QStringLiteral("REASON") || stage == QStringLiteral("REASON+ACT")) {
+                        displayText = tr("正在推理...");
+                    } else if (stage == QStringLiteral("ACT")) {
+                        displayText = tr("正在执行操作...");
+                    } else if (stage == QStringLiteral("REFLECT")) {
+                        displayText = tr("正在验证答案...");
+                    } else if (stage == QStringLiteral("REFLECT_RETRY")) {
+                        displayText = tr("正在重新检索...");
+                    }
+                    if (!displayText.isEmpty()) {
+                        m_messageModel->setAgentStatus(m_assistantRow, displayText);
                         emit messageUpdated(m_assistantRow);
                     }
                 });
@@ -268,6 +297,7 @@ void ChatViewModel::doSend(const QString& text, const QList<QImage>& frames)
     assistant.role = ChatMessage::Assistant;
     assistant.isStreaming = true;
     assistant.timestamp = QDateTime::currentDateTime();
+    assistant.startTime = QDateTime::currentDateTime();  // 记录开始时间
     m_assistantId = assistant.id;
     m_assistantRow = m_messageModel->appendMessage(assistant);
     emit messageAppended(m_assistantRow);
@@ -278,7 +308,7 @@ void ChatViewModel::doSend(const QString& text, const QList<QImage>& frames)
     m_flushTimer->start();
     emit streamingChanged(true);
 
-    m_messageModel->updateContent(m_assistantRow, QStringLiteral("正在请求模型…"));
+    m_messageModel->setAgentStatus(m_assistantRow, tr("正在请求模型..."));
     emit messageUpdated(m_assistantRow);
 
     VideoContext ctx = getVideoContext();
@@ -296,10 +326,9 @@ void ChatViewModel::doSend(const QString& text, const QList<QImage>& frames)
             [this](const QString& delta) {
                 if (m_assistantRow < 0) return;
                 const QString current = m_messageModel->messageAt(m_assistantRow).content;
-                if (current == QStringLiteral("正在请求模型…")
-                    || current.startsWith(QStringLiteral("正在调用工具"))
-                    || current == QStringLiteral("正在整理回答…")) {
-                    m_messageModel->updateContent(m_assistantRow, {});
+                if (current.isEmpty()) {
+                    // 第一次收到内容时，清空状态显示
+                    m_messageModel->setAgentStatus(m_assistantRow, QString());
                 }
                 m_messageModel->appendDeltaSilent(m_assistantRow, delta);
                 m_dirty = true;
@@ -308,8 +337,16 @@ void ChatViewModel::doSend(const QString& text, const QList<QImage>& frames)
                 // onDone
                 m_videoAgentStreaming = false;
                 m_flushTimer->stop();
+                
+                // 计算耗时
+                const ChatMessage msg = m_messageModel->messageAt(m_assistantRow);
+                const qint64 elapsed = msg.startTime.msecsTo(QDateTime::currentDateTime());
+                
                 m_messageModel->updateContent(m_assistantRow, answer.answer);
                 m_messageModel->setStreaming(m_assistantRow, false);
+                m_messageModel->setAgentStatus(m_assistantRow, QString());  // 清空状态
+                m_messageModel->setElapsedMs(m_assistantRow, elapsed);      // 设置耗时
+                
                 emit messageUpdated(m_assistantRow);
 
                 if (m_convService) {
@@ -318,6 +355,7 @@ void ChatViewModel::doSend(const QString& text, const QList<QImage>& frames)
                     saved.role = ChatMessage::Assistant;
                     saved.content = answer.answer;
                     saved.timestamp = QDateTime::currentDateTime();
+                    saved.elapsedMs = elapsed;
                     m_convService->saveMessage(m_currentConversationId, saved);
                 }
                 m_assistantRow = -1;
@@ -334,6 +372,7 @@ void ChatViewModel::doSend(const QString& text, const QList<QImage>& frames)
                         m_assistantRow,
                         QStringLiteral("⚠️ 生成失败：%1").arg(err));
                     m_messageModel->setStreaming(m_assistantRow, false);
+                    m_messageModel->setAgentStatus(m_assistantRow, QString());  // 清空状态
                     emit messageUpdated(m_assistantRow);
                     m_assistantRow = -1;
                 }
@@ -407,6 +446,7 @@ void ChatViewModel::stopGeneration()
         m_flushTimer->stop();
         if (m_assistantRow >= 0) {
             m_messageModel->setStreaming(m_assistantRow, false);
+            m_messageModel->setAgentStatus(m_assistantRow, QString());  // 清空状态
             emit messageUpdated(m_assistantRow);
             if (m_convService) {
                 ChatMessage saved;

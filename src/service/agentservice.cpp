@@ -292,6 +292,26 @@ void AgentService::sendMessageWithTools(const QString& conversationId,
     if (!tools.isEmpty()) {
         payload.insert(QStringLiteral("tools"), tools);
         payload.insert(QStringLiteral("tool_choice"), toolChoice);
+        
+        // 调试日志：输出工具定义
+        qDebug() << "[AgentService] 发送工具调用请求"
+                 << "会话=" << conversationId
+                 << "工具数量=" << tools.size()
+                 << "tool_choice=" << QJsonDocument(toolChoice.toObject()).toJson(QJsonDocument::Compact);
+        
+        // 输出每个工具的名称
+        QStringList toolNames;
+        for (const auto& toolValue : tools) {
+            const QJsonObject tool = toolValue.toObject();
+            const QString toolName = tool.value(QStringLiteral("function"))
+                                         .toObject()
+                                         .value(QStringLiteral("name"))
+                                         .toString();
+            if (!toolName.isEmpty()) {
+                toolNames.append(toolName);
+            }
+        }
+        qDebug() << "[AgentService] 可用工具列表:" << toolNames.join(", ");
     }
     sendStreamWithTools(conversationId, payload);
 }
