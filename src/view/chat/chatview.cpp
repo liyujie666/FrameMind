@@ -12,6 +12,7 @@
 #include <QToolButton>
 #include <QLabel>
 #include <QMenu>
+#include <QTimer>
 #include <QRegularExpression>
 #include <QScrollBar>
 #include <QFileInfo>
@@ -112,28 +113,47 @@ void ChatView::setThemeService(ThemeService* theme)
     if (m_inputWidget) m_inputWidget->setThemeService(theme);
 
     if (m_theme) {
+        // 【性能优化】连接立即信号，优先更新关键 UI
+        connect(m_theme, &ThemeService::themeChangedImmediate,
+                this, &ChatView::onThemeChangedImmediate);
+        // 连接延迟信号，用于非关键更新
         connect(m_theme, &ThemeService::themeChanged,
-                this, &ChatView::onThemeChanged);
+                this, &ChatView::onThemeChangedDelayed);
         applyThemeColors();
         update();
     }
 }
 
-void ChatView::onThemeChanged()
+void ChatView::onThemeChangedImmediate()
 {
+    // 【阶段 0】立即更新：只更新关键 UI（背景、边框、文字颜色）
     applyThemeColors();
+    update();
+}
 
+void ChatView::onThemeChangedDelayed()
+{
+    // 【阶段 1】延迟更新：更新复杂内容（气泡、Markdown）
+    
     // 更新 Markdown 渲染器的主题
     if (m_renderer) m_renderer->setThemeService(m_theme);
 
-    // 批量刷新气泡颜色（不重建 widget，避免布局抖动）
+    // 渐进式刷新气泡颜色（智能判断可见性）
     if (m_messageList) {
         m_messageList->setMarkdownRenderer(m_renderer);
-        m_messageList->refreshBubbleColors();
+        m_messageList->refreshBubbleColorsProgressive();
     }
+    
     if (m_inputWidget) m_inputWidget->setThemeService(m_theme);
+}
 
-    update();
+void ChatView::onThemeChanged()
+{
+    // 保留旧的接口，用于兼容性
+    onThemeChangedImmediate();
+    QTimer::singleShot(0, this, [this]() {
+        onThemeChangedDelayed();
+    });
 }
 
 void ChatView::applyThemeColors()

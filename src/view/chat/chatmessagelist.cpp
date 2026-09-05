@@ -53,15 +53,129 @@ void ChatMessageList::setMarkdownRenderer(MarkdownRenderer* renderer)
 
 void ChatMessageList::refreshBubbleColors()
 {
-    // 批量刷新：暂停布局更新以减少重绘次数
+    // 【性能优化】智能刷新：只更新可见的气泡，非可见的延迟刷新
     m_container->setUpdatesEnabled(false);
-    for (ChatBubbleWidget* bubble : std::as_const(m_bubbles)) {
+    
+    for (int i = 0; i < m_bubbles.size(); ++i) {
+        ChatBubbleWidget* bubble = m_bubbles[i];
         bubble->setThemeService(m_theme);
         bubble->setMarkdownRenderer(m_renderer);
-        bubble->refreshColors();
+        
+        // 判断气泡是否在可见区域
+        if (isBubbleVisible(bubble)) {
+            // 可见气泡：立即完整刷新
+            bubble->refreshColors();
+        } else {
+            // 不可见气泡：只更新颜色，延迟 HTML 刷新
+            bubble->refreshColorsLazy();
+        }
+        
+        // 【修复】更新操作栏的图标
+        updateActionBarIcons(i);
     }
+    
     m_container->setUpdatesEnabled(true);
     m_container->update();
+    m_themeDirty = false;
+}
+
+void ChatMessageList::updateActionBarIcons(int row)
+{
+    if (row < 0 || row >= m_bubbles.size()) return;
+    
+    // 获取 wrapper widget（气泡的父容器的父容器）
+    QWidget* bubbleParent = m_bubbles[row]->parentWidget();
+    if (!bubbleParent) return;
+    
+    QWidget* wrapper = bubbleParent->parentWidget();
+    if (!wrapper) return;
+    
+    // 查找操作栏中的所有按钮（递归查找，不限制只找直接子级）
+    QList<QToolButton*> buttons = wrapper->findChildren<QToolButton*>();
+    
+    const bool isDark = !m_theme || m_theme->isDark();
+    const QString iconSuffix = isDark ? QStringLiteral("_light.png") : QStringLiteral("_dark.png");
+    
+    for (QToolButton* btn : buttons) {
+        const QString tooltip = btn->toolTip();
+        if (tooltip.contains(tr("复制")) || tooltip.contains(QString::fromUtf8("复制"))) {
+            btn->setIcon(QIcon(QStringLiteral(":/icons/copy") + iconSuffix));
+        } else if (tooltip.contains(tr("重新生成")) || tooltip.contains(QString::fromUtf8("重新生成"))) {
+            btn->setIcon(QIcon(QStringLiteral(":/icons/replay") + iconSuffix));
+        }
+    }
+}
+
+void ChatMessageList::refreshBubbleColorsProgressive()
+{
+    // 【性能优化】渐进式刷新：分批更新，避免一次性卡顿
+    constexpr int BATCH_SIZE = 5;  // 每批处理 5 个气泡
+    
+    m_container->setUpdatesEnabled(false);
+    
+    // 第一批：立即更新可见的气泡
+    QList<int> visibleIndices;
+    QList<int> invisibleIndices;
+    
+    for (int i = 0; i < m_bubbles.size(); ++i) {
+        if (isBubbleVisible(m_bubbles[i])) {
+            visibleIndices.append(i);
+        } else {
+            invisibleIndices.append(i);
+        }
+    }
+    
+    // 立即更新可见气泡
+    for (int idx : visibleIndices) {
+        m_bubbles[idx]->setThemeService(m_theme);
+        m_bubbles[idx]->setMarkdownRenderer(m_renderer);
+        m_bubbles[idx]->refreshColors();
+        updateActionBarIcons(idx);  // 【修复】更新图标
+    }
+    
+    m_container->setUpdatesEnabled(true);
+    m_container->update();
+    
+    // 分批延迟更新不可见气泡
+    for (int batchStart = 0; batchStart < invisibleIndices.size(); batchStart += BATCH_SIZE) {
+        const int delay = 16 * (batchStart / BATCH_SIZE + 1);  // 每批延迟 16ms
+        
+        QTimer::singleShot(delay, this, [this, invisibleIndices, batchStart]() {
+            const int batchEnd = qMin(batchStart + BATCH_SIZE, invisibleIndices.size());
+            
+            m_container->setUpdatesEnabled(false);
+            for (int i = batchStart; i < batchEnd; ++i) {
+                const int idx = invisibleIndices[i];
+                if (idx >= 0 && idx < m_bubbles.size()) {
+                    m_bubbles[idx]->setThemeService(m_theme);
+                    m_bubbles[idx]->setMarkdownRenderer(m_renderer);
+                    m_bubbles[idx]->refreshColorsLazy();
+                    updateActionBarIcons(idx);  // 【修复】更新图标
+                }
+            }
+            m_container->setUpdatesEnabled(true);
+            m_container->update();
+        });
+    }
+}
+
+bool ChatMessageList::isBubbleVisible(ChatBubbleWidget* bubble) const
+{
+    if (!bubble || !bubble->isVisible()) return false;
+    
+    const QRect bubbleRect = getBubbleViewportRect(bubble);
+    const QRect viewportRect = viewport()->rect();
+    
+    return viewportRect.intersects(bubbleRect);
+}
+
+QRect ChatMessageList::getBubbleViewportRect(ChatBubbleWidget* bubble) const
+{
+    if (!bubble) return QRect();
+    
+    // 获取气泡在 viewport 坐标系中的位置
+    QPoint bubblePos = bubble->mapTo(viewport(), QPoint(0, 0));
+    return QRect(bubblePos, bubble->size());
 }
 
 void ChatMessageList::setModel(ChatMessageListModel* model)
@@ -539,5 +653,15 @@ void ChatMessageList::resizeEvent(QResizeEvent* event)
     for (ChatBubbleWidget* bubble : std::as_const(m_bubbles)) {
         bubble->setMaximumWidth(maxBubbleWidth);
         bubble->refreshLayout();
+    }
+}
+
+void ChatMessageList::showEvent(QShowEvent* event)
+{
+    QScrollArea::showEvent(event);
+    
+    // 【性能优化】当视图显示时，如果主题变过但没刷新，现在刷新
+    if (m_themeDirty) {
+        refreshBubbleColorsProgressive();
     }
 }

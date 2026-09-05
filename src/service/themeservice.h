@@ -28,9 +28,11 @@ public:
 
 signals:
     void themeChanged(bool isDark);
+    void themeChangedImmediate(bool isDark);
 
 private:
     void onSystemThemeChanged();
+    void applyPalette();
 
     SettingsService* m_settings = nullptr;
     ThemeMode m_mode = ThemeMode::FollowSystem;

@@ -133,8 +133,21 @@ void ChatBubbleWidget::setMarkdownRenderer(MarkdownRenderer* renderer)
 void ChatBubbleWidget::refreshColors()
 {
     updateColors();
+    m_themeDirty = false;
+    // 【修复】主题切换时，使缓存失效，强制重新渲染
+    // 这样代码块的颜色才能正确切换
+    m_htmlCacheValid = false;
     updateHtml();
     update();
+}
+
+void ChatBubbleWidget::refreshColorsLazy()
+{
+    // 【性能优化】延迟刷新：只标记为脏，不立即重新渲染
+    // 适用于不在视口内的气泡
+    m_themeDirty = true;
+    updateColors();
+    update();  // 只更新背景色，不重新渲染 HTML
 }
 
 void ChatBubbleWidget::updateColors()
@@ -167,7 +180,20 @@ void ChatBubbleWidget::updateHtml()
     if (!m_renderer) return;
 
     const bool isDark = !m_theme || m_theme->isDark();
-    const QString html = m_renderer->toHtml(m_markdownContent, isDark);
+    
+    // 【性能优化】使用 HTML 缓存，避免重复渲染
+    QString html;
+    if (m_htmlCacheValid) {
+        // 直接使用缓存
+        html = isDark ? m_cachedHtmlDark : m_cachedHtmlLight;
+    } else {
+        // 生成两个版本的 HTML 并缓存
+        m_cachedHtmlLight = m_renderer->toHtml(m_markdownContent, false);
+        m_cachedHtmlDark = m_renderer->toHtml(m_markdownContent, true);
+        m_htmlCacheValid = true;
+        html = isDark ? m_cachedHtmlDark : m_cachedHtmlLight;
+    }
+    
     m_content->setHtml(html);
     
     // 计算内容的理想宽度
@@ -213,6 +239,13 @@ void ChatBubbleWidget::updateHtml()
 
 void ChatBubbleWidget::paintEvent(QPaintEvent* /*event*/)
 {
+    // 【性能优化】如果主题变了但还没刷新 HTML，现在刷新
+    if (m_themeDirty && m_htmlCacheValid) {
+        m_themeDirty = false;
+        const bool isDark = !m_theme || m_theme->isDark();
+        m_content->setHtml(isDark ? m_cachedHtmlDark : m_cachedHtmlLight);
+    }
+    
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing, true);
 
@@ -297,6 +330,7 @@ void ChatBubbleWidget::setMessage(const ChatMessage& msg)
 void ChatBubbleWidget::updateContent(const QString& markdown)
 {
     m_markdownContent = markdown;
+    m_htmlCacheValid = false;  // 内容变化，使缓存失效
     updateHtml();
 }
 

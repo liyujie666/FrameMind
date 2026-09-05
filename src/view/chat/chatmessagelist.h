@@ -3,6 +3,9 @@
 
 #include <QScrollArea>
 #include <QList>
+#include <QMap>
+#include <QTimer>
+#include <QRect>
 
 class QVBoxLayout;
 class ChatBubbleWidget;
@@ -25,6 +28,7 @@ public:
     void setThemeService(ThemeService* theme);
     void setMarkdownRenderer(MarkdownRenderer* renderer);
     void refreshBubbleColors();
+    void refreshBubbleColorsProgressive();
 
 signals:
     void linkActivated(const QString& href);
@@ -33,6 +37,7 @@ signals:
 
 protected:
     void resizeEvent(QResizeEvent* event) override;
+    void showEvent(QShowEvent* event) override;
 
 private:
     void rebuildAll();
@@ -41,6 +46,9 @@ private:
     bool isAtBottom() const;
     void scrollToBottom();
     void updateElapsedTime(int row);
+    QRect getBubbleViewportRect(ChatBubbleWidget* bubble) const;
+    bool isBubbleVisible(ChatBubbleWidget* bubble) const;
+    void updateActionBarIcons(int row);
 
     QWidget*                   m_container = nullptr;
     QVBoxLayout*               m_layout = nullptr;
@@ -49,6 +57,7 @@ private:
     MarkdownRenderer*          m_renderer = nullptr;
     QList<ChatBubbleWidget*>   m_bubbles;
     QMap<int, QTimer*>         m_elapsedTimers;  // 每行的计时器
+    bool                       m_themeDirty = false;
 };
 
 #endif // FRAMEMIND_CHATMESSAGELIST_H

@@ -33,6 +33,7 @@
 #include <QLabel>
 #include <QMovie>
 #include <QLineEdit>
+#include <QTimer>
 
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -142,9 +143,12 @@ MainWindow::MainWindow(PlayerViewModel* playerVM,
 
     // 主题切换：刷新页面背景 + 重建 Analysis 内容配色
     if (m_theme) {
+        // 【性能优化】连接立即信号和延迟信号
+        connect(m_theme, &ThemeService::themeChangedImmediate,
+                this, &MainWindow::onThemeChangedImmediate);
         connect(m_theme, &ThemeService::themeChanged,
-                this, &MainWindow::onThemeChanged);
-        onThemeChanged(m_theme->isDark());
+                this, &MainWindow::onThemeChangedDelayed);
+        onThemeChangedImmediate();
     }
 }
 
@@ -392,12 +396,42 @@ void MainWindow::onOpenSettings()
     dlg->exec();
 }
 
-void MainWindow::onThemeChanged(bool /*isDark*/)
+void MainWindow::onThemeChanged(bool isDark)
 {
+    // 【兼容性】保留旧接口
+    onThemeChangedImmediate();
+    QTimer::singleShot(0, this, [this]() {
+        onThemeChangedDelayed();
+    });
+}
+
+void MainWindow::onThemeChangedImmediate()
+{
+    // 【阶段 0】立即更新：只更新关键 UI（背景、边框等）
     setUpdatesEnabled(false);
     applyPageBackground();
     updateSpinnerTheme();
     setUpdatesEnabled(true);
+}
+
+void MainWindow::onThemeChangedDelayed()
+{
+    // 【阶段 1】延迟更新：非关键的 Tab 内容
+    // Player 区域的 3 个 Tab 只更新当前激活的
+    if (m_analysisStack) {
+        const int currentTab = m_analysisStack->currentIndex();
+        
+        // 立即更新当前 Tab
+        if (currentTab == 0 && m_timelineTab) {
+            // Timeline tab 会自己处理主题更新
+        } else if (currentTab == 1 && m_summaryTab) {
+            // Summary tab 会自己处理主题更新
+        } else if (currentTab == 2 && m_subtitleTab) {
+            // Subtitle tab 会自己处理主题更新
+        }
+        
+        // 其他 Tab 延迟到切换时更新（通过各自的 showEvent）
+    }
 }
 
 void MainWindow::updateSpinnerTheme()

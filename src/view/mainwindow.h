@@ -64,6 +64,8 @@ private slots:
     void onOpenVideoPath(const QString& path);
     void onNavRequested(int index);
     void onThemeChanged(bool isDark);
+    void onThemeChangedImmediate();
+    void onThemeChangedDelayed();
     void onOpenSettings();
     void onPlayerFullscreenChanged(bool fullscreen);
     void onCollapseChatPanel();

@@ -37,6 +37,7 @@ public:
     void setThemeService(ThemeService* theme);
     void setMarkdownRenderer(MarkdownRenderer* renderer);
     void refreshColors();
+    void refreshColorsLazy();
 
     ChatMessage::Role role() const { return m_role; }
     QString messageId() const { return m_messageId; }
@@ -79,6 +80,12 @@ private:
     QColor m_bgColor;
     QColor m_textColor;
     QColor m_borderColor;
+    
+    // 【性能优化】HTML 双缓冲：缓存亮色和暗色两个版本
+    QString m_cachedHtmlLight;
+    QString m_cachedHtmlDark;
+    bool m_htmlCacheValid = false;
+    bool m_themeDirty = false;
 };
 
 #endif // FRAMEMIND_CHATBUBBLEWIDGET_H

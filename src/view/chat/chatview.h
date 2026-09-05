@@ -38,6 +38,8 @@ private:
     void onLinkActivated(const QString& href);
     void applyThemeColors();
     void onThemeChanged();
+    void onThemeChangedImmediate();
+    void onThemeChangedDelayed();
 
     ChatMessageList* m_messageList = nullptr;
     ChatInputWidget* m_inputWidget = nullptr;
