@@ -5,6 +5,7 @@
 #include "viewmodel/chatviewmodel.h"
 #include "viewmodel/chatmessagelistmodel.h"
 #include "service/themeservice.h"
+#include "service/markdownrenderer.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -25,6 +26,9 @@ ChatView::ChatView(QWidget* parent)
     // 顶层自绘圆角卡片，禁止子 widget 的样式表污染
     setAttribute(Qt::WA_StyledBackground, false);
     setAutoFillBackground(false);
+
+    // 创建 Markdown 渲染器（稍后设置 ThemeService）
+    m_renderer = new MarkdownRenderer(nullptr);
 
     // 默认暗色配色（未接入 ThemeService 时的 fallback）
     m_bgColor            = QColor("#1E1E2E");
@@ -73,6 +77,7 @@ ChatView::ChatView(QWidget* parent)
     // ---- 消息列表 ----
     m_messageList = new ChatMessageList(this);
     m_messageList->setAttribute(Qt::WA_StyledBackground, false);
+    m_messageList->setMarkdownRenderer(m_renderer);
     if (m_messageList->viewport()) {
         m_messageList->viewport()->setAutoFillBackground(false);
         m_messageList->viewport()->setAttribute(Qt::WA_StyledBackground, false);
@@ -80,6 +85,10 @@ ChatView::ChatView(QWidget* parent)
     layout->addWidget(m_messageList, 1);
     connect(m_messageList, &ChatMessageList::linkActivated,
             this, &ChatView::onLinkActivated);
+    connect(m_messageList, &ChatMessageList::regenerateRequested,
+            this, [this]() {
+                if (m_vm) m_vm->regenerateLastResponse();
+            });
 
     // ---- 输入区 ----
     m_inputWidget = new ChatInputWidget(this);
@@ -95,7 +104,11 @@ void ChatView::setThemeService(ThemeService* theme)
     m_theme = theme;
 
     // 传播到子组件
-    if (m_messageList) m_messageList->setThemeService(theme);
+    if (m_renderer) m_renderer->setThemeService(theme);
+    if (m_messageList) {
+        m_messageList->setThemeService(theme);
+        m_messageList->setMarkdownRenderer(m_renderer);
+    }
     if (m_inputWidget) m_inputWidget->setThemeService(theme);
 
     if (m_theme) {
@@ -110,8 +123,14 @@ void ChatView::onThemeChanged()
 {
     applyThemeColors();
 
+    // 更新 Markdown 渲染器的主题
+    if (m_renderer) m_renderer->setThemeService(m_theme);
+
     // 批量刷新气泡颜色（不重建 widget，避免布局抖动）
-    if (m_messageList) m_messageList->refreshBubbleColors();
+    if (m_messageList) {
+        m_messageList->setMarkdownRenderer(m_renderer);
+        m_messageList->refreshBubbleColors();
+    }
     if (m_inputWidget) m_inputWidget->setThemeService(m_theme);
 
     update();
@@ -224,6 +243,13 @@ void ChatView::setViewModel(ChatViewModel* vm)
             });
     connect(m_inputWidget, &ChatInputWidget::currentFrameRequested,
             m_vm, &ChatViewModel::requestCurrentFrame);
+    connect(m_inputWidget, &ChatInputWidget::timeRangeRequested,
+            this, [this](int64_t startMs, int64_t endMs) {
+                // 可以在这里添加批量获取时间段内关键帧的逻辑
+                // 暂时先发出信号，让上层决定如何处理
+                Q_UNUSED(startMs);
+                Q_UNUSED(endMs);
+            });
     connect(m_inputWidget, &ChatInputWidget::frameRemoved,
             m_vm, &ChatViewModel::removeFrameFromCache);
     connect(m_inputWidget, &ChatInputWidget::allFramesCleared,

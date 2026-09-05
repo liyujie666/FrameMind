@@ -13,6 +13,9 @@
 #include <QIcon>
 #include <QSize>
 #include <QLabel>
+#include <QMenu>
+#include <QSpinBox>
+#include <QFormLayout>
 #include <utility>
 
 #include "service/themeservice.h"
@@ -20,6 +23,8 @@
 ChatInputWidget::ChatInputWidget(QWidget* parent)
     : QWidget(parent)
     , m_streaming(false)
+    , m_currentTimestampMs(0)
+    , m_videoDurationMs(0)
 {
     // 背景透明，跟随外层 ChatView 圆角卡片底色
     setAutoFillBackground(false);
@@ -34,11 +39,25 @@ ChatInputWidget::ChatInputWidget(QWidget* parent)
     topRow->setSpacing(8);
 
     m_frameButton = new QToolButton(this);
-    m_frameButton->setText(QStringLiteral("[📷] 添加当前帧"));
+    m_frameButton->setText(QStringLiteral("📷 添加当前帧"));
     m_frameButton->setToolTip(tr("添加当前播放画面"));
     connect(m_frameButton, &QToolButton::clicked,
             this, &ChatInputWidget::currentFrameRequested);
     topRow->addWidget(m_frameButton);
+
+    m_timeRangeButton = new QToolButton(this);
+    m_timeRangeButton->setText(QStringLiteral("⏱ 时间段"));
+    m_timeRangeButton->setToolTip(tr("选择分析时间范围"));
+    connect(m_timeRangeButton, &QToolButton::clicked,
+            this, &ChatInputWidget::showTimeRangeDialog);
+    topRow->addWidget(m_timeRangeButton);
+
+    m_templateButton = new QToolButton(this);
+    m_templateButton->setText(QStringLiteral("💡 快速提问"));
+    m_templateButton->setToolTip(tr("选择预设问题模板"));
+    connect(m_templateButton, &QToolButton::clicked,
+            this, &ChatInputWidget::showTemplateMenu);
+    topRow->addWidget(m_templateButton);
 
     topRow->addStretch(1);
     layout->addLayout(topRow);
@@ -113,12 +132,17 @@ void ChatInputWidget::applyColors()
         ? m_theme->color(QStringLiteral("inputBg"))
         : QColor("#1A1A2A");
 
-    m_frameButton->setStyleSheet(QString(
+    const QString buttonStyle = QString(
         "QToolButton { border:1px solid %1; background:%2; color:%3; "
         "padding:4px 10px; border-radius:14px; font-size:12px; }"
-        "QToolButton:hover { border-color:%4; color:%5; }")
+        "QToolButton:hover { border-color:%4; color:%5; }"
+        "QToolButton:disabled { background:%6; color:%7; border-color:%1; }")
         .arg(border.name(), surface.name(), textSecondary.name(),
-             primary.name(), textPrimary.name()));
+             primary.name(), textPrimary.name(), surface.name(), textSecondary.name());
+
+    m_frameButton->setStyleSheet(buttonStyle);
+    m_timeRangeButton->setStyleSheet(buttonStyle);
+    m_templateButton->setStyleSheet(buttonStyle);
 
     m_edit->setStyleSheet(QString(
         "QTextEdit { background:%1; border:1px solid %2; border-radius:8px; "
@@ -144,6 +168,18 @@ void ChatInputWidget::setStreaming(bool streaming)
     m_sendButton->setText(streaming ? tr("停止") : tr("发送"));
     m_edit->setEnabled(!streaming);
     m_frameButton->setEnabled(!streaming);
+    m_timeRangeButton->setEnabled(!streaming);
+    m_templateButton->setEnabled(!streaming);
+}
+
+void ChatInputWidget::setCurrentTimestamp(int64_t timestampMs)
+{
+    m_currentTimestampMs = timestampMs;
+}
+
+void ChatInputWidget::setVideoDuration(int64_t durationMs)
+{
+    m_videoDurationMs = durationMs;
 }
 
 void ChatInputWidget::addFrame(const QImage& frame, int64_t timestampMs)
@@ -266,4 +302,166 @@ bool ChatInputWidget::eventFilter(QObject* obj, QEvent* event)
         }
     }
     return QWidget::eventFilter(obj, event);
+}
+
+void ChatInputWidget::showTemplateMenu()
+{
+    if (!m_templateMenu) {
+        m_templateMenu = new QMenu(this);
+        
+        // 根据主题设置菜单样式
+        if (m_theme) {
+            const QColor surface = m_theme->color(QStringLiteral("surface"));
+            const QColor border = m_theme->color(QStringLiteral("border"));
+            const QColor textPrimary = m_theme->color(QStringLiteral("textPrimary"));
+            const QColor primary = m_theme->color(QStringLiteral("primary"));
+            
+            m_templateMenu->setStyleSheet(QString(
+                "QMenu { background:%1; border:1px solid %2; border-radius:8px; padding:4px; }"
+                "QMenu::item { color:%3; padding:8px 20px; border-radius:4px; }"
+                "QMenu::item:selected { background:%4; color:#FFFFFF; }")
+                .arg(surface.name(), border.name(), textPrimary.name(), primary.name()));
+        }
+
+        // 添加预设问题模板
+        struct Template {
+            QString icon;
+            QString text;
+        };
+        
+        const QList<Template> templates = {
+            {QStringLiteral("📝"), tr("总结这个视频的主要内容")},
+            {QStringLiteral("🎬"), tr("这一段发生了什么？")},
+            {QStringLiteral("🔍"), tr("识别画面中的物体")},
+            {QStringLiteral("📄"), tr("提取画面中的文字")},
+            {QStringLiteral("🚶"), tr("分析画面中的人物动作")},
+            {QStringLiteral("⚖️"), tr("对比这几帧的差异")}
+        };
+        
+        for (const Template& tmpl : templates) {
+            QAction* action = m_templateMenu->addAction(tmpl.icon + QStringLiteral("  ") + tmpl.text);
+            connect(action, &QAction::triggered, this, [this, tmpl]() {
+                insertTemplate(tmpl.text);
+            });
+        }
+    }
+    
+    // 在按钮下方显示菜单
+    QPoint pos = m_templateButton->mapToGlobal(QPoint(0, m_templateButton->height()));
+    m_templateMenu->exec(pos);
+}
+
+void ChatInputWidget::showTimeRangeDialog()
+{
+    auto* dialog = new QDialog(this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setWindowTitle(tr("选择分析时间范围"));
+    dialog->setFixedWidth(400);
+    
+    auto* layout = new QVBoxLayout(dialog);
+    layout->setSpacing(16);
+    layout->setContentsMargins(20, 20, 20, 20);
+    
+    // 说明文本
+    auto* descLabel = new QLabel(tr("选择要分析的视频时间段："), dialog);
+    descLabel->setStyleSheet(QStringLiteral("QLabel { font-size:13px; }"));
+    layout->addWidget(descLabel);
+    
+    // 时间输入表单
+    auto* formLayout = new QFormLayout();
+    formLayout->setSpacing(12);
+    
+    // 开始时间（秒）
+    auto* startSpinBox = new QSpinBox(dialog);
+    startSpinBox->setMinimum(0);
+    startSpinBox->setMaximum(static_cast<int>(m_videoDurationMs / 1000));
+    startSpinBox->setValue(static_cast<int>(m_currentTimestampMs / 1000));
+    startSpinBox->setSuffix(tr(" 秒"));
+    startSpinBox->setMinimumWidth(150);
+    formLayout->addRow(tr("开始时间:"), startSpinBox);
+    
+    // 结束时间（秒）
+    auto* endSpinBox = new QSpinBox(dialog);
+    endSpinBox->setMinimum(0);
+    endSpinBox->setMaximum(static_cast<int>(m_videoDurationMs / 1000));
+    endSpinBox->setValue(qMin(static_cast<int>(m_currentTimestampMs / 1000) + 10,
+                              static_cast<int>(m_videoDurationMs / 1000)));
+    endSpinBox->setSuffix(tr(" 秒"));
+    endSpinBox->setMinimumWidth(150);
+    formLayout->addRow(tr("结束时间:"), endSpinBox);
+    
+    layout->addLayout(formLayout);
+    
+    // 快速选择按钮
+    auto* quickRow = new QHBoxLayout();
+    quickRow->setSpacing(8);
+    
+    auto* labelQuick = new QLabel(tr("快速选择："), dialog);
+    labelQuick->setStyleSheet(QStringLiteral("QLabel { color:#8B8B8B; font-size:12px; }"));
+    quickRow->addWidget(labelQuick);
+    
+    struct QuickOption {
+        QString label;
+        int seconds;
+    };
+    
+    const QList<QuickOption> quickOptions = {
+        {tr("前后5秒"), 5},
+        {tr("前后10秒"), 10},
+        {tr("前后30秒"), 30},
+        {tr("前后60秒"), 60}
+    };
+    
+    for (const QuickOption& opt : quickOptions) {
+        auto* btn = new QPushButton(opt.label, dialog);
+        btn->setStyleSheet(QStringLiteral(
+            "QPushButton { border:1px solid #2D2D3D; background:#252538; "
+            "padding:4px 8px; border-radius:4px; font-size:11px; }"
+            "QPushButton:hover { border-color:#2979FF; }"));
+        connect(btn, &QPushButton::clicked, [startSpinBox, endSpinBox, opt, this]() {
+            const int current = static_cast<int>(m_currentTimestampMs / 1000);
+            const int maxTime = static_cast<int>(m_videoDurationMs / 1000);
+            startSpinBox->setValue(qMax(0, current - opt.seconds));
+            endSpinBox->setValue(qMin(maxTime, current + opt.seconds));
+        });
+        quickRow->addWidget(btn);
+    }
+    
+    quickRow->addStretch(1);
+    layout->addLayout(quickRow);
+    
+    // 按钮
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, dialog);
+    connect(buttons, &QDialogButtonBox::accepted, dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+    
+    if (dialog->exec() == QDialog::Accepted) {
+        const int64_t startMs = static_cast<int64_t>(startSpinBox->value()) * 1000;
+        const int64_t endMs = static_cast<int64_t>(endSpinBox->value()) * 1000;
+        
+        if (startMs < endMs) {
+            // 在输入框插入时间范围标记
+            const QString rangeText = QString::fromUtf8("[时间段 %1-%2] ")
+                .arg(formatTimestamp(startMs))
+                .arg(formatTimestamp(endMs));
+            m_edit->insertPlainText(rangeText);
+            
+            // 发出信号，让上层添加关键帧或其他处理
+            emit timeRangeRequested(startMs, endMs);
+        }
+    }
+}
+
+void ChatInputWidget::insertTemplate(const QString& templateText)
+{
+    // 清空输入框并插入模板文本
+    m_edit->clear();
+    m_edit->setPlainText(templateText);
+    m_edit->setFocus();
+    
+    // 将光标移到末尾
+    QTextCursor cursor = m_edit->textCursor();
+    cursor.movePosition(QTextCursor::End);
+    m_edit->setTextCursor(cursor);
 }
