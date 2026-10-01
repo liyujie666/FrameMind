@@ -77,6 +77,7 @@ protected:
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
     void mouseDoubleClickEvent(QMouseEvent* event) override;
+    void keyPressEvent(QKeyEvent* event) override;
 
 private:
     QWidget* buildChatPage();
@@ -141,6 +142,8 @@ private:
     FileManagerService*     m_fileService = nullptr;
     ThemeService*           m_theme       = nullptr;
     LLMProviderService*     m_providers   = nullptr;
+    bool                    m_playerFullscreen = false;
+    bool                    m_chatVisibleBeforeFullscreen = true;
 };
 
 #endif // FRAMEMIND_MAINWINDOW_H

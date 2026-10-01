@@ -213,9 +213,11 @@ QString MarkdownRenderer::toHtml(const QString& markdown, bool isDarkTheme) cons
         return QStringLiteral("<p style='color:#8B8B8B;'>?????????</p>");
     }
 
-    QString style = generateStyle(isDarkTheme);
-    QString body = processMarkdown(markdown);
-    body = applyCodeHighlighting(body, isDarkTheme);
+    return generateStyle(isDarkTheme) + toHtmlBody(markdown, isDarkTheme);
+}
 
-    return style + body;
+QString MarkdownRenderer::toHtmlBody(const QString& markdown, bool isDarkTheme) const
+{
+    if (markdown.isEmpty()) return {};
+    return applyCodeHighlighting(processMarkdown(markdown), isDarkTheme);
 }

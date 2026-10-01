@@ -7,6 +7,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QPointer>
+#include <QElapsedTimer>
 
 #include "model/tool_types.h"
 #include "model/videocontext.h"
@@ -109,6 +110,9 @@ private:
     QJsonArray   m_lastAssistantToolCalls;
     QJsonArray   m_activeTools;
     QJsonValue   m_toolChoice = QJsonValue(QStringLiteral("auto"));
+
+    QElapsedTimer m_queryTimer;
+    qint64 m_lastRoundElapsedMs = 0;
 
     // 回调
     std::function<void(const QString&)> m_onProgress;

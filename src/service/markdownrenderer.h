@@ -16,6 +16,8 @@ public:
     ~MarkdownRenderer();
 
     QString toHtml(const QString& markdown, bool isDarkTheme = true) const;
+    /// 返回不带全局样式的 HTML 正文，供使用独立排版的阅读组件复用。
+    QString toHtmlBody(const QString& markdown, bool isDarkTheme = true) const;
     void setThemeService(ThemeService* theme);
 
 private:

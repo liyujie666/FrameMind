@@ -34,6 +34,7 @@ constexpr int kMaxDenseSample     = 600;   // 密集采样上限（10min 视频�
 constexpr int kMaxSparseSample    = 200;
 constexpr int kHashPrefixBytes    = 1024 * 1024;
 
+// 计算采样数量
 int computeSampleCount(int64_t durationMs, bool dense)
 {
     if (durationMs <= 0) return kMinSampleCount;
@@ -122,6 +123,7 @@ QString VideoIndexer::computeVideoId(const QString& videoPath)
 
 void VideoIndexer::startIndex(const QString& videoPath)
 {
+    // 校验文件
     if (videoPath.isEmpty() || !QFileInfo::exists(videoPath)) {
         emit indexError(StageMetadata, tr("视频文件不存在: %1").arg(videoPath));
         return;
@@ -131,6 +133,7 @@ void VideoIndexer::startIndex(const QString& videoPath)
         QMutexLocker l(&m_reprMutex);
         if (m_running.load() && m_currentPath == videoPath) return;
 
+        // 缓存复用
         auto it = m_repr.find(videoPath);
         if (it != m_repr.end() && it.value()
                 && it.value()->level >= VideoRepresentation::Level1) {
@@ -152,6 +155,7 @@ void VideoIndexer::startIndex(const QString& videoPath)
 
     cancel();
 
+    // 计算videoID
     const QString videoId = computeVideoId(videoPath);
     const quint64 taskId = m_taskGeneration.fetch_add(1) + 1;
     m_cancelRequested.store(false);
@@ -162,6 +166,7 @@ void VideoIndexer::startIndex(const QString& videoPath)
         m_currentVideoId = videoId;
     }
 
+    // 保存当前任务信息
     VideoInfo initialInfo;
     if (m_player) {
         const VideoInfo activeInfo = m_player->videoInfo();
@@ -170,6 +175,7 @@ void VideoIndexer::startIndex(const QString& videoPath)
         if (!requested.isEmpty() && requested == active) initialInfo = activeInfo;
     }
 
+    // 失效旧RAG数据
     if (m_ragStore) {
         m_ragStore->invalidateVideo(videoId);
     }
@@ -408,6 +414,7 @@ void VideoIndexer::buildLevel1(QSharedPointer<VideoRepresentation> repr,
         for (int sceneIndex = 0; sceneIndex < repr->scenes.size(); ++sceneIndex) {
             if (!isTaskCurrent(taskId, repr->videoId)) return;
             Scene& scene = repr->scenes[sceneIndex];
+
             if (scene.representativeFrames.isEmpty() && !scene.keyframe.isNull()) {
                 SceneFrame fallback;
                 fallback.requestedMs = scene.keyframeMs;
@@ -416,6 +423,7 @@ void VideoIndexer::buildLevel1(QSharedPointer<VideoRepresentation> repr,
                 fallback.image = scene.keyframe;
                 scene.representativeFrames.append(std::move(fallback));
             }
+
             for (int frameIndex = 0; frameIndex < scene.representativeFrames.size(); ++frameIndex) {
                 const SceneFrame& frame = scene.representativeFrames.at(frameIndex);
                 if (frame.image.isNull()) continue;

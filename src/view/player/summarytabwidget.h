@@ -8,7 +8,7 @@ class VideoAnalysisViewModel;
 class QLabel;
 class QProgressBar;
 class QScrollArea;
-class QTextBrowser;
+class VideoSummaryCard;
 class QVBoxLayout;
 
 /**
@@ -55,7 +55,7 @@ private:
     QWidget*      m_scrollContent = nullptr;
     QVBoxLayout*  m_contentLayout = nullptr;
     QLabel*       m_emptyLabel    = nullptr;
-    QTextBrowser* m_summaryBrowser = nullptr;
+    VideoSummaryCard* m_summaryCard = nullptr;
     QWidget*      m_scenesSection = nullptr;
     QVBoxLayout*  m_scenesLayout  = nullptr;
 

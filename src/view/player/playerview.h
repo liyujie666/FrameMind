@@ -59,8 +59,6 @@ private:
     bool                   m_isFullscreen = false;
     QTimer                 m_hideTimer;
     int                    m_hideDelayMs = 3000;
-
-    QWidget*               m_fullscreenWindow = nullptr;
 };
 
 #endif // FRAMEMIND_PLAYERVIEW_H

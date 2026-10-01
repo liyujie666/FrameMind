@@ -11,6 +11,7 @@ class QLabel;
 class QHBoxLayout;
 class QVBoxLayout;
 class QToolButton;
+class QTimer;
 class ThemeService;
 class MarkdownRenderer;
 
@@ -69,6 +70,9 @@ private:
     QWidget*          m_thumbs = nullptr;
     QHBoxLayout*      m_thumbsLayout = nullptr;
     QTextBrowser*     m_content = nullptr;
+    QLabel*           m_thinkingLabel = nullptr;
+    QTimer*           m_thinkingTimer = nullptr;
+    int               m_thinkingDots = 0;
     QWidget*          m_actionBar = nullptr;
     QToolButton*      m_copyButton = nullptr;
     QToolButton*      m_regenerateButton = nullptr;

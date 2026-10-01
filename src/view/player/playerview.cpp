@@ -101,10 +101,9 @@ void PlayerView::updateControlBarGeometry()
 {
     if (!m_controlContainer) return;
 
-    // 全屏时基于全屏窗口尺寸，否则基于 PlayerView 自身尺寸
-    QWidget* host = (m_isFullscreen && m_fullscreenWindow) ? m_fullscreenWindow : this;
-    const int w = host->width();
-    const int h = host->height();
+    // 控制栏始终以 PlayerView 为父窗口，全屏时也不改变父子关系。
+    const int w = width();
+    const int h = height();
     if (w <= 0 || h <= 0) return;
 
     const int barW = w * 2 / 3;
@@ -138,14 +137,10 @@ bool PlayerView::eventFilter(QObject* obj, QEvent* event)
             return false;
         }
     }
-    if (obj == m_fullscreenWindow) {
+    if (obj == this) {
         if (event->type() == QEvent::KeyPress) {
             auto* ke = static_cast<QKeyEvent*>(event);
-            if (ke->key() == Qt::Key_Escape) {
-                exitFullscreen();
-                return true;
-            }
-            if (ke->key() == Qt::Key_F11) {
+            if (ke->key() == Qt::Key_Escape || ke->key() == Qt::Key_F11) {
                 toggleFullscreen();
                 return true;
             }
@@ -155,14 +150,6 @@ bool PlayerView::eventFilter(QObject* obj, QEvent* event)
             showControlBar();
             m_hideTimer.start();
             return false;
-        }
-        if (event->type() == QEvent::Resize) {
-            updateControlBarGeometry();
-            return false;
-        }
-        if (event->type() == QEvent::MouseButtonDblClick) {
-            exitFullscreen();
-            return true;
         }
     }
     return QWidget::eventFilter(obj, event);
@@ -207,40 +194,9 @@ void PlayerView::enterFullscreen()
 {
     if (m_isFullscreen) return;
     m_isFullscreen = true;
-
-    if (!m_fullscreenWindow) {
-        m_fullscreenWindow = new QWidget(nullptr, Qt::Window | Qt::FramelessWindowHint);
-        m_fullscreenWindow->setStyleSheet("background: black;");
-        m_fullscreenWindow->installEventFilter(this);
-        m_fullscreenWindow->setMouseTracking(true);
-
-        auto* fsLayout = new QVBoxLayout(m_fullscreenWindow);
-        fsLayout->setContentsMargins(0, 0, 0, 0);
-        fsLayout->setSpacing(0);
-    }
-
-    auto* fsLayout = qobject_cast<QVBoxLayout*>(m_fullscreenWindow->layout());
-    if (fsLayout) {
-        fsLayout->addWidget(m_videoContainer);
-    }
     m_videoContainer->setRadius(0);
-    m_videoContainer->setMouseTracking(true);
-    m_videoContainer->show();
-
-    // 控制栏移入全屏窗口，绝对定位，初始隐藏
-    m_controlContainer->setParent(m_fullscreenWindow);
-    m_controlContainer->hide();
     m_controlBarVisible = false;
-
-    m_fullscreenWindow->showFullScreen();
-    m_fullscreenWindow->setFocus();
-    m_fullscreenWindow->activateWindow();
-
-    // 更新控制栏位置（基于全屏窗口尺寸）
-    updateControlBarGeometry();
-
-    m_videoContainer->installEventFilter(this);
-
+    m_controlContainer->hide();
     m_controlBar->setFullscreen(true);
     emit fullscreenChanged(true);
 }
@@ -249,27 +205,10 @@ void PlayerView::exitFullscreen()
 {
     if (!m_isFullscreen) return;
     m_isFullscreen = false;
-
-    // 把视频容器移回 PlayerView 的布局
-    auto* fsLayout = m_fullscreenWindow ? m_fullscreenWindow->layout() : nullptr;
-    if (fsLayout) fsLayout->removeWidget(m_videoContainer);
-
-    m_videoContainer->setParent(this);
     m_videoContainer->setRadius(10);
-
-    auto* rootLayout = qobject_cast<QVBoxLayout*>(layout());
-    if (rootLayout) rootLayout->addWidget(m_videoContainer, 1);
-    m_videoContainer->show();
-
-    // 控制栏容器移回 PlayerView
-    m_controlContainer->setParent(this);
-    m_controlContainer->hide();
     m_controlBarVisible = false;
-
-    if (m_fullscreenWindow) m_fullscreenWindow->hide();
-
+    m_controlContainer->hide();
     m_controlBar->setFullscreen(false);
-    updateControlBarGeometry();
     emit fullscreenChanged(false);
 }
 

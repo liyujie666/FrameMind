@@ -7,6 +7,7 @@
 #include <QList>
 #include <QSharedPointer>
 #include <QPointer>
+#include <QElapsedTimer>
 
 #include "model/agent_types.h"
 #include "model/tool_types.h"
@@ -123,6 +124,9 @@ private:
     QVector<RetrievalResult> m_retrievedEvidence;
     int      m_reflectionRetries = 0;          ///< 反思重试次数
     static constexpr int kMaxReflectionRetries = 1;  ///< 最多反思重试 1 次
+
+    QElapsedTimer m_requestTimer;
+    qint64 m_lastPhaseElapsedMs = 0;
 
     // 回调
     std::function<void(const QString&)> m_onProgress;

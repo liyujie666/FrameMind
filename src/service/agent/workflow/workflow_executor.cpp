@@ -5,6 +5,7 @@
 
 #include <QMetaObject>
 #include <QDebug>
+#include <QElapsedTimer>
 
 static const QString END_NODE = QStringLiteral("__END__");
 
@@ -52,6 +53,10 @@ void WorkflowExecutor::run(const WorkflowGraph& graph, WorkflowState initialStat
     m_graph = graph;
     m_state = std::move(initialState);
     m_running = true;
+    m_workflowTimer.start();
+    qDebug() << "[WorkflowExecutor][Timing] workflow_start"
+             << "workflowId=" << m_workflowId
+             << "entry=" << m_graph.entryNodeId();
     m_totalNodeExecutions = 0;
     m_retryCount.clear();
     m_state.resetCancel();
@@ -137,6 +142,12 @@ void WorkflowExecutor::executeNode(const QString& nodeId)
     m_state.incrementIteration();
     emit nodeEntered(nodeId);
 
+    m_nodeTimer.start();
+    m_timedNode = nodeId;
+    qDebug() << "[WorkflowExecutor][Timing] node_start"
+             << "node=" << nodeId
+             << "workflowTotalMs=" << m_workflowTimer.elapsed();
+
     // 保存断点
     saveCheckpoint();
 
@@ -185,6 +196,11 @@ void WorkflowExecutor::executeNode(const QString& nodeId)
             }
 
             emit nodeCompleted(nodeId, result);
+            qDebug() << "[WorkflowExecutor][Timing] node_finish"
+                     << "node=" << nodeId
+                     << "stepMs=" << m_nodeTimer.elapsed()
+                     << "workflowTotalMs=" << m_workflowTimer.elapsed()
+                     << "success=" << result.success;
             route(nodeId, result);
         }, Qt::QueuedConnection);
     });
@@ -286,6 +302,8 @@ void WorkflowExecutor::saveCheckpoint()
 
 void WorkflowExecutor::finish()
 {
+    qDebug() << "[WorkflowExecutor][Timing] workflow_finish"
+             << "totalMs=" << m_workflowTimer.elapsed();
     m_running = false;
     m_timeoutTimer->stop();
     emit workflowCompleted(m_state);
@@ -293,6 +311,9 @@ void WorkflowExecutor::finish()
 
 void WorkflowExecutor::fail(const QString& error)
 {
+    qDebug() << "[WorkflowExecutor][Timing] workflow_error"
+             << "totalMs=" << m_workflowTimer.elapsed()
+             << "error=" << error;
     m_running = false;
     m_timeoutTimer->stop();
     emit workflowFailed(error);

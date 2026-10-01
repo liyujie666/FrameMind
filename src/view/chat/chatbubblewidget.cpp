@@ -64,6 +64,26 @@ ChatBubbleWidget::ChatBubbleWidget(QWidget* parent)
             });
     m_mainLayout->addWidget(m_content);
 
+    // 思考动画标签
+    m_thinkingLabel = new QLabel(this);
+    m_thinkingLabel->setStyleSheet(QStringLiteral(
+        "QLabel { color: #8B8B8B; font-size: 14px; background: transparent; padding: 0; }"));
+    m_thinkingLabel->setText(QStringLiteral("FrameMind 正在思考."));
+    m_thinkingLabel->setVisible(false);
+    m_mainLayout->addWidget(m_thinkingLabel);
+
+    // 打字机效果定时器
+    m_thinkingTimer = new QTimer(this);
+    m_thinkingTimer->setInterval(500);  // 每500ms切换一次
+    connect(m_thinkingTimer, &QTimer::timeout, this, [this]() {
+        m_thinkingDots = (m_thinkingDots + 1) % 4;  // 0, 1, 2, 3 循环
+        QString dots;
+        for (int i = 0; i <= m_thinkingDots; ++i) {
+            dots += QStringLiteral(".");
+        }
+        m_thinkingLabel->setText(QStringLiteral("FrameMind 正在思考") + dots);
+    });
+
     // 不再在这里创建 header 和 actionBar
 
     // 初始默认颜色（暗色方案）
@@ -180,6 +200,32 @@ void ChatBubbleWidget::updateHtml()
     if (!m_renderer) return;
 
     const bool isDark = !m_theme || m_theme->isDark();
+    
+    // 检查是否是空内容（思考状态）
+    if (m_markdownContent.isEmpty()) {
+        // 显示思考动画，隐藏内容
+        m_content->setVisible(false);
+        m_thinkingLabel->setVisible(true);
+        if (!m_thinkingTimer->isActive()) {
+            m_thinkingDots = 0;
+            m_thinkingLabel->setText(QStringLiteral("FrameMind 正在思考."));
+            m_thinkingTimer->start();
+        }
+        
+        // 设置最小尺寸以保持气泡稳定
+        setMinimumWidth(200);
+        setMaximumWidth(400);
+        setMinimumHeight(60);
+        updateGeometry();
+        return;
+    }
+    
+    // 有内容时，停止动画，显示内容
+    if (m_thinkingTimer->isActive()) {
+        m_thinkingTimer->stop();
+    }
+    m_thinkingLabel->setVisible(false);
+    m_content->setVisible(true);
     
     // 【性能优化】使用 HTML 缓存，避免重复渲染
     QString html;

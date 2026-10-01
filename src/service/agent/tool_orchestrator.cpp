@@ -12,6 +12,7 @@
 #include <QDebug>
 #include <QRegularExpression>
 #include <QUuid>
+#include <memory>
 
 ToolOrchestrator::ToolOrchestrator(AgentService* agent,
                                      ToolRegistry* registry,
@@ -54,6 +55,11 @@ void ToolOrchestrator::runQuery(
     }
 
     m_running    = true;
+    m_queryTimer.start();
+    m_lastRoundElapsedMs = 0;
+    qDebug() << "[ToolOrchestrator][Timing] query_start"
+             << "convId=" << conversationId
+             << "question=" << question;
     m_convId     = conversationId;
     m_question   = question;
     m_userFrames = userFrames;
@@ -163,6 +169,11 @@ void ToolOrchestrator::startRound(int round)
 {
     m_currentRound = round;
     m_streamingText.clear();
+    m_lastRoundElapsedMs = m_queryTimer.elapsed();
+    qDebug() << "[ToolOrchestrator][Timing] llm_round_start"
+             << "convId=" << m_convId
+             << "round=" << round
+             << "totalMs=" << m_lastRoundElapsedMs;
     qDebug() << "[ToolOrchestrator] 开始请求模型"
              << "会话=" << m_convId << "轮次=" << round;
     emit roundStarted(round);
@@ -381,9 +392,23 @@ void ToolOrchestrator::executeToolsThenContinue(
         }
 
         // 记录 assistant tool_calls 消息用于下一轮回填
+        qDebug() << "[ToolOrchestrator][Timing] tool_start"
+                 << "convId=" << m_convId
+                 << "round=" << round
+                 << "tool=" << c.name
+                 << "totalMs=" << m_queryTimer.elapsed();
+        const auto toolTimer = std::make_shared<QElapsedTimer>();
+        toolTimer->start();
         tool->executeAsync(c.id, c.arguments,
-            [this, c, pendingResults, executed, total, round](const ToolResult& result) {
+            [this, c, pendingResults, executed, total, round, toolTimer](const ToolResult& result) {
                 if (!m_running) return;
+                qDebug() << "[ToolOrchestrator][Timing] tool_finish"
+                         << "convId=" << m_convId
+                         << "round=" << round
+                         << "tool=" << result.toolName
+                         << "stepMs=" << toolTimer->elapsed()
+                         << "totalMs=" << m_queryTimer.elapsed()
+                         << "success=" << result.success;
                 m_toolTrace.append(result);
                 qDebug() << "[ToolOrchestrator] 工具调用结束"
                          << "会话=" << m_convId
@@ -457,12 +482,21 @@ void ToolOrchestrator::executeToolsThenContinue(
 
 void ToolOrchestrator::finishWithAnswer(const QString& answer)
 {
+    qDebug() << "[ToolOrchestrator][Timing] query_finish"
+             << "convId=" << m_convId
+             << "totalMs=" << m_queryTimer.elapsed()
+             << "rounds=" << (m_currentRound + 1)
+             << "tools=" << m_toolTrace.size();
     m_running = false;
     if (m_onDone) m_onDone(answer, m_toolTrace, m_currentRound + 1);
 }
 
 void ToolOrchestrator::abortWithError(const QString& err)
 {
+    qDebug() << "[ToolOrchestrator][Timing] query_error"
+             << "convId=" << m_convId
+             << "totalMs=" << m_queryTimer.elapsed()
+             << "error=" << err;
     m_running = false;
     if (m_onError) m_onError(err);
 }

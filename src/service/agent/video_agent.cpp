@@ -123,6 +123,11 @@ void VideoAgent::ask(const QString& conversationId,
         return;
     }
     m_busy = true;
+    m_requestTimer.start();
+    m_lastPhaseElapsedMs = 0;
+    qDebug() << "[VideoAgent][Timing] request_start"
+             << "convId=" << conversationId
+             << "question=" << question;
     m_currentConvId = conversationId;
     m_currentQuestion = question;
     m_currentPlayerPosMs = currentPlayerPosMs;
@@ -242,7 +247,13 @@ void VideoAgent::ask(const QString& conversationId,
             break;
         }
 
+        QElapsedTimer ragTimer;
+        ragTimer.start();
         m_retrievedEvidence = m_retriever->retrieve(question, c, topK);
+        qDebug() << "[VideoAgent][Timing] rag_retrieve"
+                 << "stepMs=" << ragTimer.elapsed()
+                 << "totalMs=" << m_requestTimer.elapsed()
+                 << "hits=" << m_retrievedEvidence.size();
         qDebug() << "[VideoAgent] RAG retrieve"
                  << "videoId=" << m_activeVideoId
                  << "hits=" << m_retrievedEvidence.size()
@@ -474,12 +485,21 @@ void VideoAgent::phaseReasonAndAct(const QString& convId,
 
 void VideoAgent::finishAnswer(const AgentAnswer& answer)
 {
+    qDebug() << "[VideoAgent][Timing] request_finish"
+             << "convId=" << m_currentConvId
+             << "totalMs=" << m_requestTimer.elapsed()
+             << "rounds=" << answer.rounds
+             << "fromCache=" << answer.fromCache;
     m_busy = false;
     if (m_onDone) m_onDone(answer);
 }
 
 void VideoAgent::failWith(const QString& err)
 {
+    qDebug() << "[VideoAgent][Timing] request_error"
+             << "convId=" << m_currentConvId
+             << "totalMs=" << m_requestTimer.elapsed()
+             << "error=" << err;
     m_busy = false;
     if (m_onError) m_onError(err);
 }

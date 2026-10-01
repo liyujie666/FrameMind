@@ -8,6 +8,7 @@
 #include <QHash>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QElapsedTimer>
 
 #include "model/chatmessage.h"
 #include "model/videocontext.h"
@@ -157,6 +158,8 @@ private:
     // 当前活跃视频上下文（会用于 system prompt）
     VideoContext m_activeCtx;
 
+    QElapsedTimer m_requestTimer;
+
     // Tool Calling 状态（sendMessageWithTools 使用）
     // toolCalls[index] = { id, name, arguments(拼接后) }
     QJsonArray m_pendingToolCalls;
@@ -165,6 +168,10 @@ private:
     // 内部：Tool Calling 版本的流式发起
     void sendStreamWithTools(const QString& convId,
                               const QJsonObject& payload);
+
+    QElapsedTimer m_payloadBuildTimer;
+    bool m_firstChunkArrived = false;
+    qint64 m_ttftMs = 0;
 };
 
 #endif // FRAMEMIND_AGENTSERVICE_H

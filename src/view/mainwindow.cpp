@@ -529,7 +529,32 @@ void MainWindow::onOpenVideoPath(const QString& path)
 
 void MainWindow::onPlayerFullscreenChanged(bool fullscreen)
 {
-    Q_UNUSED(fullscreen);
+    if (m_playerFullscreen == fullscreen) return;
+    m_playerFullscreen = fullscreen;
+
+    if (fullscreen) {
+        m_chatVisibleBeforeFullscreen = m_chatView && m_chatView->isVisible();
+
+        if (m_titleBar) m_titleBar->hide();
+        if (m_sidebar) m_sidebar->hide();
+        if (m_chatView) m_chatView->hide();
+        if (m_analysisPanel) m_analysisPanel->hide();
+
+        showFullScreen();
+    } else {
+        showNormal();
+
+        if (m_titleBar) m_titleBar->show();
+        if (m_sidebar) m_sidebar->show();
+        if (m_analysisPanel) m_analysisPanel->show();
+        if (m_chatView && m_chatVisibleBeforeFullscreen) m_chatView->show();
+    }
+
+    if (m_playerView) {
+        m_playerView->setFocus(Qt::OtherFocusReason);
+        m_playerView->updateGeometry();
+        m_playerView->update();
+    }
 }
 
 void MainWindow::onCollapseChatPanel()
@@ -550,6 +575,17 @@ void MainWindow::onChatPanelToggled(bool visible)
     } else {
         m_chatView->hide();
     }
+}
+
+void MainWindow::keyPressEvent(QKeyEvent* event)
+{
+    if (m_playerFullscreen &&
+        (event->key() == Qt::Key_Escape || event->key() == Qt::Key_F11)) {
+        if (m_playerView) m_playerView->toggleFullscreen();
+        event->accept();
+        return;
+    }
+    QMainWindow::keyPressEvent(event);
 }
 
 void MainWindow::mousePressEvent(QMouseEvent* event)

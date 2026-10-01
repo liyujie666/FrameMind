@@ -5,6 +5,7 @@
 #include <QMap>
 #include <QJsonObject>
 #include <QtGlobal>
+#include <QElapsedTimer>
 #include <functional>
 
 #include "workflow_graph.h"
@@ -90,6 +91,10 @@ private:
 
     // 全局节点执行计数（防无限循环）
     int m_totalNodeExecutions = 0;
+
+    QElapsedTimer m_workflowTimer;
+    QElapsedTimer m_nodeTimer;
+    QString m_timedNode;
 
     // Checkpoint
     WorkflowCheckpoint* m_checkpoint = nullptr;

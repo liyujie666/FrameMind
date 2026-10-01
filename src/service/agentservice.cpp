@@ -1,15 +1,14 @@
 #include "service/agentservice.h"
-
 #include "infrastructure/networkclient.h"
 #include "infrastructure/imageprocessor.h"
 #include "service/settingsservice.h"
 #include "service/llmproviderservice.h"
-
 #include <QJsonDocument>
 #include <QUrl>
 #include <QDateTime>
 #include <QUuid>
 #include <QDebug>
+#include <QElapsedTimer>
 #include <utility>
 #include <limits>
 
@@ -69,18 +68,16 @@ QJsonObject AgentService::makeUserMessage(const QString& text,
 {
     QJsonObject msg;
     msg.insert(QStringLiteral("role"), QStringLiteral("user"));
-
     if (frames.isEmpty()) {
         msg.insert(QStringLiteral("content"), text);
         return msg;
     }
-
     // 多模态：content 为数组（text + image_url...）
     QJsonArray content;
     if (!text.isEmpty()) {
         content.append(QJsonObject{
-            { QStringLiteral("type"), QStringLiteral("text") },
-            { QStringLiteral("text"), text } });
+                                   { QStringLiteral("type"), QStringLiteral("text") },
+                                   { QStringLiteral("text"), text } });
     }
     int count = 0;
     for (const QImage& frame : frames) {
@@ -92,19 +89,19 @@ QJsonObject AgentService::makeUserMessage(const QString& text,
         const QByteArray b64 = ImageProcessor::toBase64Jpeg(scaled, 80);
         const QString dataUri =
             QStringLiteral("data:image/jpeg;base64,") + QString::fromLatin1(b64);
-        
+
         // P0修复：添加图片尺寸信息用于精确token估算
         QJsonObject imageContent;
         imageContent.insert(QStringLiteral("type"), QStringLiteral("image_url"));
         imageContent.insert(QStringLiteral("image_url"),
-            QJsonObject{ 
-                { QStringLiteral("url"), dataUri },
-                { QStringLiteral("detail"), QStringLiteral("auto") } 
-            });
+                            QJsonObject{
+                                { QStringLiteral("url"), dataUri },
+                                { QStringLiteral("detail"), QStringLiteral("auto") }
+                            });
         // 添加尺寸元数据（不影响API调用，仅用于本地token估算）
         imageContent.insert(QStringLiteral("width"), scaled.width());
         imageContent.insert(QStringLiteral("height"), scaled.height());
-        
+
         content.append(imageContent);
         ++count;
     }
@@ -118,27 +115,26 @@ QJsonObject AgentService::buildRequestPayload(const QString& convId,
                                               const VideoContext& videoCtx)
 {
     QJsonArray& history = getOrCreateHistory(convId);
-
     // === P1修复：VideoContext静态部分复用 ===
     // 检查当前会话是否已缓存了VideoContext静态部分
     HistoryEntry& entry = m_historiesLRU[convId];
     const bool videoChanged = (entry.cachedVideoId != videoCtx.videoId);
-    const bool needUpdateStaticContext = videoChanged 
-        || entry.cachedVideoSummary.isEmpty()
-        || entry.cachedSceneOverview != videoCtx.sceneOverview
-        || entry.cachedEntityContext != videoCtx.entityContext;
-    
+    const bool needUpdateStaticContext = videoChanged
+                                         || entry.cachedVideoSummary.isEmpty()
+                                         || entry.cachedSceneOverview != videoCtx.sceneOverview
+                                         || entry.cachedEntityContext != videoCtx.entityContext;
+
     QString dynamicPrompt;
     if (needUpdateStaticContext) {
         // 视频切换或首次，需要完整的动态部分
         dynamicPrompt = ContextBudgetManager::buildDynamicSystemPrompt(videoCtx);
-        
+
         // 缓存静态部分
         entry.cachedVideoSummary = videoCtx.videoSummary;
         entry.cachedSceneOverview = videoCtx.sceneOverview;
         entry.cachedEntityContext = videoCtx.entityContext;
         entry.cachedVideoId = videoCtx.videoId;
-        
+
         qDebug() << "[AgentService] 更新VideoContext静态缓存"
                  << "会话=" << convId
                  << "视频切换=" << videoChanged
@@ -152,42 +148,36 @@ QJsonObject AgentService::buildRequestPayload(const QString& convId,
         dynamicOnly.currentPositionMs = videoCtx.currentPositionMs;
         // 保留缓存的静态部分（避免重复注入）
         dynamicPrompt = ContextBudgetManager::buildDynamicSystemPrompt(dynamicOnly);
-        
+
         qDebug() << "[AgentService] 复用VideoContext静态缓存"
                  << "会话=" << convId
                  << "只注入检索证据=" << videoCtx.retrievalEvidence.size() << "字符";
     }
-
     // === System Prompt 分层构建 ===
     // 静态部分（角色/规则/格式）可被后端 Prompt Caching 命中
     // 动态部分（视频背景/证据）每次可能变化
     const QString staticPrompt = ContextBudgetManager::buildStaticSystemPrompt();
     const QString fullSystemPrompt = staticPrompt + dynamicPrompt;
     const int systemTokens = m_budgetManager.estimateTextTokens(fullSystemPrompt);
-
     // 当前 user 消息（同时记入历史）
     const QJsonObject userMsg = makeUserMessage(text, frames);
     const int currentUserTokens = m_budgetManager.estimateMessageTokens(userMsg);
-
     // === Token 预算截断 ===
     applyBudgetTruncation(history, systemTokens, currentUserTokens);
-
     // 组装 messages
     QJsonArray messages;
     messages.append(QJsonObject{
-        { QStringLiteral("role"), QStringLiteral("system") },
-        { QStringLiteral("content"), fullSystemPrompt } });
+                                { QStringLiteral("role"), QStringLiteral("system") },
+                                { QStringLiteral("content"), fullSystemPrompt } });
     for (const auto& v : std::as_const(history)) {
         messages.append(v);
     }
     messages.append(userMsg);
     history.append(userMsg);
-
     QJsonObject payload;
     payload.insert(QStringLiteral("model"), m_model);
     payload.insert(QStringLiteral("stream"), true);
     payload.insert(QStringLiteral("messages"), messages);
-
     qDebug() << "[AgentService] 构建模型请求"
              << "会话=" << convId
              << "历史消息数=" << history.size()
@@ -196,7 +186,6 @@ QJsonObject AgentService::buildRequestPayload(const QString& convId,
              << "历史Token数=" << m_budgetManager.estimateTokens(history)
              << "证据字符数=" << videoCtx.retrievalEvidence.size()
              << "场景概览字符数=" << videoCtx.sceneOverview.size();
-
     if (m_settings) {
         bool ok = false;
         const double temp =
@@ -220,10 +209,8 @@ void AgentService::sendMessage(const QString& conversationId,
         emit responseError(conversationId, tr("网络组件未初始化"));
         return;
     }
-
     // 重新应用当前提供商配置（确保使用最新的 API Key）
     applyActiveProvider();
-
     // 安全：API Key 从密钥服务取，禁止落库/打印
     if (m_apiKey.isEmpty()) {
         emit responseError(conversationId,
@@ -232,32 +219,73 @@ void AgentService::sendMessage(const QString& conversationId,
     }
     m_network->setAuthToken(m_apiKey);
 
+    // 开始计时：Payload构建
+    m_payloadBuildTimer.start();
     const QJsonObject payload =
         buildRequestPayload(conversationId, text, frames, videoCtx);
+    const qint64 payloadBuildMs = m_payloadBuildTimer.elapsed();
+
+    qDebug() << "[AgentService][Timing] request_payload_built"
+             << "convId=" << conversationId
+             << "mode=plain"
+             << "images=" << frames.size()
+             << "evidenceChars=" << videoCtx.retrievalEvidence.size()
+             << "payload_build_ms=" << payloadBuildMs;
 
     m_currentConvId = conversationId;
+    m_firstChunkArrived = false;
+    m_ttftMs = 0;
+    m_requestTimer.start();
+
+    qDebug() << "[AgentService][Timing] stream_request_start"
+             << "convId=" << conversationId
+             << "mode=plain"
+             << "images=" << frames.size();
+
     m_accumulated.clear();
     m_streaming = true;
-
     QString base = m_endpoint;
     while (base.endsWith('/')) base.chop(1);
     const QUrl url(base + QStringLiteral("/chat/completions"));
-
     m_network->streamPost(
         url, payload,
         // onChunk
         [this](const QString& delta) {
+            // 首包到达统计
+            if (!m_firstChunkArrived) {
+                m_firstChunkArrived = true;
+                m_ttftMs = m_requestTimer.elapsed();
+                qDebug() << "[AgentService][Timing] first_chunk_received"
+                         << "convId=" << m_currentConvId
+                         << "TTFT_ms=" << m_ttftMs;
+            }
             m_accumulated += delta;
             emit responseChunk(m_currentConvId, delta);
         },
         // onDone
         [this]() {
             m_streaming = false;
+            const qint64 totalLatencyMs = m_requestTimer.elapsed();
+            const int outputTokens = m_budgetManager.estimateTextTokens(m_accumulated);
+            const qint64 generationTimeMs = totalLatencyMs - m_ttftMs;
+            const double tokensPerSecond = generationTimeMs > 0
+                                               ? (outputTokens * 1000.0) / generationTimeMs
+                                               : 0.0;
+
+            qDebug() << "[AgentService][Timing] stream_request_finished"
+                     << "convId=" << m_currentConvId
+                     << "mode=plain"
+                     << "total_latency_ms=" << totalLatencyMs
+                     << "TTFT_ms=" << m_ttftMs
+                     << "generation_time_ms=" << generationTimeMs
+                     << "output_tokens=" << outputTokens
+                     << "tokens_per_second=" << QString::number(tokensPerSecond, 'f', 2);
+
             // 记入历史
             QJsonArray& history = getOrCreateHistory(m_currentConvId);
             history.append(QJsonObject{
-                { QStringLiteral("role"), QStringLiteral("assistant") },
-                { QStringLiteral("content"), m_accumulated } });
+                                       { QStringLiteral("role"), QStringLiteral("assistant") },
+                                       { QStringLiteral("content"), m_accumulated } });
             ChatMessage msg;
             msg.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
             msg.role = ChatMessage::Assistant;
@@ -269,6 +297,11 @@ void AgentService::sendMessage(const QString& conversationId,
         // onError
         [this](const QString& err) {
             m_streaming = false;
+            const qint64 errorLatencyMs = m_requestTimer.elapsed();
+            qDebug() << "[AgentService][Timing] stream_request_error"
+                     << "convId=" << m_currentConvId
+                     << "error_latency_ms=" << errorLatencyMs
+                     << "error=" << err;
             emit responseError(m_currentConvId, err);
         });
 }
@@ -279,11 +312,20 @@ void AgentService::stopGeneration()
     if (m_network) m_network->cancelStream();
     m_streaming = false;
 
+    const qint64 totalLatencyMs = m_requestTimer.elapsed();
+    const int outputTokens = m_budgetManager.estimateTextTokens(m_accumulated);
+    qDebug() << "[AgentService][Timing] generation_stopped"
+             << "convId=" << m_currentConvId
+             << "total_latency_ms=" << totalLatencyMs
+             << "TTFT_ms=" << m_ttftMs
+             << "output_tokens=" << outputTokens
+             << "stop_reason=user_cancel";
+
     // 把已接收的部分作为最终结果落地（标记非流式）
     QJsonArray& history = getOrCreateHistory(m_currentConvId);
     history.append(QJsonObject{
-        { QStringLiteral("role"), QStringLiteral("assistant") },
-        { QStringLiteral("content"), m_accumulated } });
+                               { QStringLiteral("role"), QStringLiteral("assistant") },
+                               { QStringLiteral("content"), m_accumulated } });
     ChatMessage msg;
     msg.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
     msg.role = ChatMessage::Assistant;
@@ -301,14 +343,14 @@ void AgentService::seedHistory(const QString& conversationId,
         if (m.role == ChatMessage::System) continue;  // system 由本服务统一生成
         // 历史仅回灌文本（图片不重复上送，控制体积）
         arr.append(QJsonObject{
-            { QStringLiteral("role"), ChatMessage::roleToString(m.role) },
-            { QStringLiteral("content"), m.content } });
+                               { QStringLiteral("role"), ChatMessage::roleToString(m.role) },
+                               { QStringLiteral("content"), m.content } });
     }
-    
+
     // 使用LRU缓存
     evictLRUIfNeeded();
     m_historiesLRU[conversationId] = { arr, QDateTime::currentMSecsSinceEpoch() };
-    
+
     // 保持向后兼容
     m_histories.insert(conversationId, arr);
 }
@@ -322,13 +364,12 @@ void AgentService::clearHistory(const QString& conversationId)
 // ============================================================
 // Tool Calling 版本（M4）
 // ============================================================
-
 void AgentService::sendMessageWithTools(const QString& conversationId,
-                                         const QString& text,
-                                         const QList<QImage>& frames,
-                                         const VideoContext& videoCtx,
-                                         const QJsonArray& tools,
-                                         const QJsonValue& toolChoice)
+                                        const QString& text,
+                                        const QList<QImage>& frames,
+                                        const VideoContext& videoCtx,
+                                        const QJsonArray& tools,
+                                        const QJsonValue& toolChoice)
 {
     if (!m_network) {
         emit responseError(conversationId, tr("网络组件未初始化"));
@@ -337,25 +378,26 @@ void AgentService::sendMessageWithTools(const QString& conversationId,
     applyActiveProvider();
     if (m_apiKey.isEmpty()) {
         emit responseError(conversationId,
-                            tr("未配置 API Key，请在设置中填写"));
+                           tr("未配置 API Key，请在设置中填写"));
         return;
     }
     m_network->setAuthToken(m_apiKey);
-
     if (!videoCtx.isEmpty()) m_activeCtx = videoCtx;
     const VideoContext& ctx = videoCtx.isEmpty() ? m_activeCtx : videoCtx;
 
+    // 开始计时：Payload构建
+    m_payloadBuildTimer.start();
     QJsonObject payload = buildRequestPayload(conversationId, text, frames, ctx);
     if (!tools.isEmpty()) {
         payload.insert(QStringLiteral("tools"), tools);
         payload.insert(QStringLiteral("tool_choice"), toolChoice);
-        
+
         // 调试日志：输出工具定义
         qDebug() << "[AgentService] 发送工具调用请求"
                  << "会话=" << conversationId
                  << "工具数量=" << tools.size()
                  << "tool_choice=" << QJsonDocument(toolChoice.toObject()).toJson(QJsonDocument::Compact);
-        
+
         // 输出每个工具的名称
         QStringList toolNames;
         for (const auto& toolValue : tools) {
@@ -370,13 +412,19 @@ void AgentService::sendMessageWithTools(const QString& conversationId,
         }
         qDebug() << "[AgentService] 可用工具列表:" << toolNames.join(", ");
     }
+    const qint64 payloadBuildMs = m_payloadBuildTimer.elapsed();
+    qDebug() << "[AgentService][Timing] tool_request_payload_built"
+             << "convId=" << conversationId
+             << "tool_count=" << tools.size()
+             << "payload_build_ms=" << payloadBuildMs;
+
     sendStreamWithTools(conversationId, payload);
 }
 
 void AgentService::continueWithToolResults(const QString& conversationId,
-                                             const QJsonArray& assistantToolCallMsg,
-                                             const QJsonArray& toolMessages,
-                                             const QJsonArray& tools)
+                                           const QJsonArray& assistantToolCallMsg,
+                                           const QJsonArray& toolMessages,
+                                           const QJsonArray& tools)
 {
     if (!m_network) {
         emit responseError(conversationId, tr("网络组件未初始化"));
@@ -385,15 +433,16 @@ void AgentService::continueWithToolResults(const QString& conversationId,
     applyActiveProvider();
     m_network->setAuthToken(m_apiKey);
 
+    // 开始计时：Payload构建
+    m_payloadBuildTimer.start();
+
     // === P0: 压缩 tool 结果体积 ===
     QJsonArray compressedToolMessages = toolMessages;
     m_budgetManager.compressToolResults(compressedToolMessages);
-
     // 把 assistant tool_calls 消息 + 压缩后的 tool 结果消息 追加到历史
     QJsonArray& history = getOrCreateHistory(conversationId);
     for (const auto& v : assistantToolCallMsg) history.append(v);
     for (const auto& v : compressedToolMessages) history.append(v);
-
     // === Token 预算截断 ===
     // 注意：不截断最近的 assistant tool_calls + tool 消息对，否则 API 会返回 400。
     // 只对早期历史做截断（truncateHistory 已内置尾部保护）。
@@ -401,15 +450,14 @@ void AgentService::continueWithToolResults(const QString& conversationId,
                                   + ContextBudgetManager::buildDynamicSystemPrompt(m_activeCtx);
     const int systemTokens = m_budgetManager.estimateTextTokens(systemContent);
     applyBudgetTruncation(history, systemTokens, 0);
-
     // 安全检查：确保截断后 history 中最后的 tool 消息有对应的 assistant tool_calls
     // 如果截断导致消息对不完整，直接用原始消息构建请求
     bool historyValid = true;
     if (!history.isEmpty()) {
-        // 检查是否存在 tool 消息没有对应的 assistant tool_calls
+        // 检查是否存在 tool 消息没有对应的 assistant tool_calls 消息
         for (int i = 0; i < history.size(); ++i) {
             const QString role = history.at(i).toObject()
-                                     .value(QStringLiteral("role")).toString();
+            .value(QStringLiteral("role")).toString();
             if (role == QLatin1String("tool")) {
                 // 往前找是否有 assistant tool_calls 消息
                 bool foundAssistant = false;
@@ -430,7 +478,6 @@ void AgentService::continueWithToolResults(const QString& conversationId,
             }
         }
     }
-
     if (!historyValid) {
         // 截断破坏了消息结构，重建最小历史：只保留当前轮的 tool 调用
         qWarning() << "[AgentService] truncation broke tool message pairs, rebuilding minimal history";
@@ -438,14 +485,12 @@ void AgentService::continueWithToolResults(const QString& conversationId,
         for (const auto& v : assistantToolCallMsg) history.append(v);
         for (const auto& v : compressedToolMessages) history.append(v);
     }
-
     // 构造 messages
     QJsonArray messages;
     messages.append(QJsonObject{
-        { QStringLiteral("role"), QStringLiteral("system") },
-        { QStringLiteral("content"), systemContent } });
+                                { QStringLiteral("role"), QStringLiteral("system") },
+                                { QStringLiteral("content"), systemContent } });
     for (const auto& v : std::as_const(history)) messages.append(v);
-
     QJsonObject payload;
     payload.insert(QStringLiteral("model"), m_model);
     payload.insert(QStringLiteral("stream"), true);
@@ -454,28 +499,51 @@ void AgentService::continueWithToolResults(const QString& conversationId,
         payload.insert(QStringLiteral("tools"), tools);
         payload.insert(QStringLiteral("tool_choice"), QStringLiteral("auto"));
     }
+
+    const qint64 payloadBuildMs = m_payloadBuildTimer.elapsed();
+    qDebug() << "[AgentService][Timing] tool_continue_payload_built"
+             << "convId=" << conversationId
+             << "tool_count=" << tools.size()
+             << "payload_build_ms=" << payloadBuildMs;
+
     sendStreamWithTools(conversationId, payload);
 }
 
 void AgentService::sendStreamWithTools(const QString& convId,
-                                          const QJsonObject& payload)
+                                       const QJsonObject& payload)
 {
     m_currentConvId       = convId;
     m_accumulated.clear();
     m_pendingToolCalls    = QJsonArray();
     m_pendingFinishReason.clear();
+    m_firstChunkArrived = false;
+    m_ttftMs = 0;
     m_streaming = true;
+
+    m_requestTimer.start();
+    qDebug() << "[AgentService][Timing] tool_stream_request_start"
+             << "convId=" << convId
+             << "tool_count=" << m_pendingToolCalls.size();
 
     QString base = m_endpoint;
     while (base.endsWith('/')) base.chop(1);
     const QUrl url(base + QStringLiteral("/chat/completions"));
-
     m_network->streamPostRaw(
         url, payload,
         // onChoice: 完整 delta 对象
         [this](const QJsonObject& choice) {
             const QJsonObject delta = choice.value(QStringLiteral("delta")).toObject();
             const QString content = delta.value(QStringLiteral("content")).toString();
+
+            // 首包到达统计（只要有内容或tool_calls都算首包）
+            if (!m_firstChunkArrived && (!content.isEmpty() || !delta.value(QStringLiteral("tool_calls")).toArray().isEmpty())) {
+                m_firstChunkArrived = true;
+                m_ttftMs = m_requestTimer.elapsed();
+                qDebug() << "[AgentService][Timing] tool_first_chunk_received"
+                         << "convId=" << m_currentConvId
+                         << "TTFT_ms=" << m_ttftMs;
+            }
+
             if (!content.isEmpty()) {
                 m_accumulated += content;
                 emit responseChunk(m_currentConvId, content);
@@ -515,6 +583,13 @@ void AgentService::sendStreamWithTools(const QString& convId,
         // onDone
         [this]() {
             m_streaming = false;
+            const qint64 totalLatencyMs = m_requestTimer.elapsed();
+            const int outputTokens = m_budgetManager.estimateTextTokens(m_accumulated);
+            const qint64 generationTimeMs = totalLatencyMs - m_ttftMs;
+            const double tokensPerSecond = generationTimeMs > 0
+                                               ? (outputTokens * 1000.0) / generationTimeMs
+                                               : 0.0;
+
             // tool_calls 轮次的 assistant 消息由 continueWithToolResults 回填；
             // stop/length 时在此写入最终 assistant 文本，保证多轮历史闭环。
             if (m_pendingToolCalls.isEmpty()
@@ -524,22 +599,39 @@ void AgentService::sendStreamWithTools(const QString& convId,
                         && !m_accumulated.isEmpty()))) {
                 QJsonArray& history = getOrCreateHistory(m_currentConvId);
                 history.append(QJsonObject{
-                    { QStringLiteral("role"), QStringLiteral("assistant") },
-                    { QStringLiteral("content"), m_accumulated } });
+                                           { QStringLiteral("role"), QStringLiteral("assistant") },
+                                           { QStringLiteral("content"), m_accumulated } });
             }
+
+            qDebug() << "[AgentService][Timing] tool_stream_request_finished"
+                     << "convId=" << m_currentConvId
+                     << "finish_reason=" << m_pendingFinishReason
+                     << "tool_call_count=" << m_pendingToolCalls.size()
+                     << "total_latency_ms=" << totalLatencyMs
+                     << "TTFT_ms=" << m_ttftMs
+                     << "generation_time_ms=" << generationTimeMs
+                     << "output_text_tokens=" << outputTokens
+                     << "tokens_per_second=" << QString::number(tokensPerSecond, 'f', 2);
+
             qDebug() << "[AgentService] 模型流式响应结束"
                      << "会话=" << m_currentConvId
                      << "结束原因=" << m_pendingFinishReason
                      << "工具调用数=" << m_pendingToolCalls.size()
                      << "回答字符数=" << m_accumulated.size();
+
             emit responseFinishedWithTools(m_currentConvId,
-                                            m_pendingToolCalls,
-                                            m_pendingFinishReason,
-                                            m_accumulated);
+                                           m_pendingToolCalls,
+                                           m_pendingFinishReason,
+                                           m_accumulated);
         },
         // onError
         [this](const QString& err) {
             m_streaming = false;
+            const qint64 errorLatencyMs = m_requestTimer.elapsed();
+            qDebug() << "[AgentService][Timing] tool_stream_request_error"
+                     << "convId=" << m_currentConvId
+                     << "error_latency_ms=" << errorLatencyMs
+                     << "error=" << err;
             emit responseError(m_currentConvId, err);
         });
 }
@@ -547,10 +639,9 @@ void AgentService::sendStreamWithTools(const QString& convId,
 // ============================================================
 // Token 预算管理
 // ============================================================
-
 void AgentService::applyBudgetTruncation(QJsonArray& history,
-                                          int systemTokens,
-                                          int currentUserTokens)
+                                         int systemTokens,
+                                         int currentUserTokens)
 {
     const int before = m_budgetManager.estimateTokens(history);
     const int after = m_budgetManager.truncateHistory(history, systemTokens, currentUserTokens);
@@ -564,7 +655,6 @@ void AgentService::applyBudgetTruncation(QJsonArray& history,
 // ============================================================
 // LRU 历史缓存管理（P0修复：防止内存泄漏）
 // ============================================================
-
 QJsonArray& AgentService::getOrCreateHistory(const QString& conversationId)
 {
     // 检查LRU缓存中是否存在
@@ -576,17 +666,14 @@ QJsonArray& AgentService::getOrCreateHistory(const QString& conversationId)
         m_histories[conversationId] = it->messages;
         return it->messages;
     }
-
     // 不存在，创建新条目前先检查是否需要淘汰
     evictLRUIfNeeded();
-
     // 创建新的历史条目
     HistoryEntry entry;
     entry.messages = QJsonArray();
     entry.lastAccessTime = QDateTime::currentMSecsSinceEpoch();
     m_historiesLRU[conversationId] = entry;
     m_histories[conversationId] = entry.messages;
-
     return m_historiesLRU[conversationId].messages;
 }
 
@@ -603,23 +690,20 @@ void AgentService::evictLRUIfNeeded()
     if (m_historiesLRU.size() < kMaxCachedConversations) {
         return;
     }
-
     // 找到最久未使用的条目
     QString oldestConvId;
     qint64 oldestTime = std::numeric_limits<qint64>::max();
-
     for (auto it = m_historiesLRU.begin(); it != m_historiesLRU.end(); ++it) {
         // 跳过当前正在流式处理的会话
         if (it.key() == m_currentConvId && m_streaming) {
             continue;
         }
-        
+
         if (it->lastAccessTime < oldestTime) {
             oldestTime = it->lastAccessTime;
             oldestConvId = it.key();
         }
     }
-
     if (!oldestConvId.isEmpty()) {
         qDebug() << "[AgentService] LRU淘汰会话历史"
                  << "会话ID=" << oldestConvId

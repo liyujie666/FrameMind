@@ -6,6 +6,7 @@
 #include <QList>
 #include <QString>
 #include <QVector>
+#include <QElapsedTimer>
 
 #include <functional>
 
@@ -52,6 +53,8 @@ private:
 
     void startNext();
     void finishActive(const QString& content);
+
+    QElapsedTimer m_requestTimer;
 
     AgentService* m_agent = nullptr;
     QVector<Request> m_pending;
