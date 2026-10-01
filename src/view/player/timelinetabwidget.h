@@ -6,6 +6,7 @@
 
 #include "model/scene.h"
 #include "model/audio_visual_relation.h"
+#include "model/semantic_unit.h"
 
 class ThemeService;
 class VideoAnalysisViewModel;
@@ -14,6 +15,7 @@ class QVBoxLayout;
 class QLabel;
 class QEvent;
 class QTimer;
+class QComboBox;
 
 class TimelineTabWidget : public QWidget {
     Q_OBJECT
@@ -40,6 +42,7 @@ protected:
 
 private:
     void buildCards();
+    void refreshTimeline();
     void clearCards();
     void updateHighlight(int64_t posMs);
     void applyScrollStyle();
@@ -52,6 +55,9 @@ private:
     QWidget* m_container = nullptr;
     QVBoxLayout* m_cardLayout = nullptr;
     QVector<Scene> m_scenes;
+    QVector<Scene> m_shots;
+    QVector<SemanticUnit> m_units;
+    QComboBox* m_mode=nullptr;
     int64_t m_totalDurationMs = 0;
     int64_t m_currentPosMs = 0;
     QVector<QWidget*> m_cards;

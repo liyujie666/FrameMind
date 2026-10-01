@@ -34,6 +34,9 @@ class VideoRAGBuildCoordinator;
 class VideoAnalysisService : public QObject {
     Q_OBJECT
 public:
+    struct BuildModelResult {VideoBuildContext context;ArtifactState state=ArtifactState::Failed;QString content;};
+    void executeBuildRequest(const VideoBuildContext&,const QString& system,const QString& text,const QList<QImage>&,
+                             std::function<void(BuildModelResult)>);
     explicit VideoAnalysisService(OneShotVlmChannel* vlmChannel,
                                   VideoIndexer*     indexer,
                                   VideoRAGStore*   ragStore,
@@ -56,6 +59,7 @@ public:
 
     /// 手动触发全量分析（含 Level 2）
     void analyzeVideo(const QString& videoPath);
+    void analyzeAutomatically(const QString& videoPath);
 
     /// 获取指定视频的表示（VideoIndexer 中的引用）
     QSharedPointer<VideoRepresentation> representation(const QString& videoPath = {}) const;

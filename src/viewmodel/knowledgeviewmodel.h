@@ -34,6 +34,8 @@ public:
         QString   fileName;
         int64_t   durationMs   = 0;
         int       level        = -1;   // -1=未知 0=L0 1=L1 2=L2
+        bool      versioned    = false;
+        ArtifactState buildState = ArtifactState::Pending;
         int       totalChunks  = 0;
         int       visualCount  = 0;
         int       textCount    = 0;

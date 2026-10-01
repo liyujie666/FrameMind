@@ -1883,3 +1883,15 @@ class AnalysisCache:
 11. **安全优先** — 内容安全检测 + 数据隐私保护 + 本地处理优先
 
 > 注：模型选择策略、缓存策略、成本估算的完整内容请见上文 §13「工程实现建议」（§13.1 / §13.2 / §13.3）。
+
+
+## 类型驱动证据规则更新（2026-10-01）
+
+默认 Level 2 单元为 SemanticUnit，而非固定镜头。Meeting、Interview、Lecture、Tutorial、Generic
+共享构建执行器，采用本地候选与真实端点/来源约束的模型校正；全部核心证据分页处理。
+普通 Agent 与 workflow 均通过固定 build/revision/raw snapshot 的 QueryPlan 获取证据。
+
+get_semantic_unit 展开原始来源及前后步骤；派生摘要与事实不作为独立互证，同时间不同事实按身份保留。
+Partial 或缺少操作过程时须局部复核，采样静态帧不得解释为已观察到点击。
+QA 引用与 workflow checkpoint 校验活动版本，切换类型或发布重建使旧缓存失效。
+实际接口与验收边界见 [实施记录](video-rag-implementation-status.md)。

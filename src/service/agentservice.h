@@ -74,6 +74,7 @@ public:
                                    const QJsonArray& tools);
 
     void stopGeneration();
+    QString modelSignature() const;
     void setModel(const QString& modelName);
     void setEndpoint(const QString& endpoint);
 
@@ -143,6 +144,8 @@ private:
         QString cachedSceneOverview;
         QString cachedEntityContext;
         QString cachedVideoId;  // 用于判断视频是否切换
+        QString cachedBuildId;
+        int cachedBuildRevision=0;
     };
     QHash<QString, HistoryEntry> m_historiesLRU;
     static constexpr int kMaxCachedConversations = 10;  // 最多缓存10个会话历史

@@ -7,6 +7,7 @@
 #include <QVector>
 #include <optional>
 #include <vector>
+#include <functional>
 
 #include "model/retrieval_result.h"
 
@@ -43,6 +44,8 @@ public:
     /// 设置命中阈值（默认 0.88）
     void setThreshold(float thr) { m_threshold = qBound(0.0f, thr, 1.0f); }
     float threshold() const { return m_threshold; }
+    /// 可注入编码执行器；默认使用 EmbeddingService。
+    void setQueryEncoder(std::function<std::vector<float>(const QString&)> encoder) {m_queryEncoder=std::move(encoder);}
 
     /// 控制缓存结论最大有效期，过期内容必须重新检索原始证据。
     void setMaxAgeDays(int days) { m_maxAgeDays = qMax(0, days); }
@@ -72,6 +75,7 @@ private:
     EmbeddingService* m_embedder = nullptr;
     float             m_threshold = 0.88f;
     int               m_maxAgeDays = 7;
+    std::function<std::vector<float>(const QString&)> m_queryEncoder;
 };
 
 #endif // FRAMEMIND_QA_CACHE_MANAGER_H

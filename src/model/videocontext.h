@@ -12,6 +12,8 @@
  * 字段对齐 api-protocol.md §4.1 模板。
  */
 struct VideoContext {
+    QString buildId,rawSnapshotId,strategyId;
+    int buildRevision=0;
     QString videoId;             // P1修复：视频唯一标识，用于判断是否切换视频
     QString fileName;
     int64_t durationMs = 0;

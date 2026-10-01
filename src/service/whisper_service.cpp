@@ -1,4 +1,6 @@
 #include "service/whisper_service.h"
+#include "util/model_fingerprint.h"
+#include <QMutexLocker>
 
 #ifndef FRAMEMIND_HAS_WHISPER
 
@@ -10,6 +12,8 @@ WhisperService::~WhisperService() = default;
 #include <whisper.h>
 #include <QDebug>
 #include <QtConcurrent/QtConcurrent>
+#include <QCoreApplication>
+#include <QThread>
 #include <cstring>
 
 // ---------------------------------------------------------------------------
@@ -45,6 +49,7 @@ WhisperService::~WhisperService()
 
 bool WhisperService::initialize(const QString& modelPath)
 {
+    m_modelFingerprint=modelFileFingerprint(modelPath);
     if (m_ctx) {
         whisper_free(m_ctx);
         m_ctx = nullptr;
@@ -78,6 +83,9 @@ void WhisperService::setGreedySampling(bool greedy)
 QVector<SpeechSegment> WhisperService::transcribe(
     const std::vector<float>& pcmSamples, int sampleRate)
 {
+    if(QCoreApplication::instance() && QThread::currentThread()==QCoreApplication::instance()->thread())
+        return QtConcurrent::run([this,pcmSamples,sampleRate]{return transcribe(pcmSamples,sampleRate);}).result();
+    QMutexLocker lock(&m_inferenceMutex);
     if (!m_ctx || pcmSamples.empty()) {
         return {};
     }

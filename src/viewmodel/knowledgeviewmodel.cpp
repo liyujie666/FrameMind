@@ -41,7 +41,7 @@ KnowledgeViewModel::buildSummary(const QString& videoId) const
     // Index level
     bool hasVLM = false;
     for (const auto& c : textChunks) {
-        if (c.chunkType == VideoChunk::SceneSummary) { hasVLM = true; break; }
+        if (c.chunkType == VideoChunk::SceneSummary || c.chunkType==VideoChunk::UnitSummary) { hasVLM = true; break; }
     }
     if (hasVLM)             s.level = 2;
     else if (s.textCount)   s.level = 1;
@@ -57,6 +57,8 @@ KnowledgeViewModel::buildSummary(const QString& videoId) const
         return QString{};
     };
     s.filePath = tryFilePath(textChunks);
+    const auto active=m_ragStore->activeBuild(videoId);
+    if(!active.buildId.isEmpty()) {s.filePath=active.filePath;s.versioned=true;s.buildState=active.state;s.level=2;}
     if (s.filePath.isEmpty()) s.filePath = tryFilePath(visualChunks);
     if (s.filePath.isEmpty()) s.filePath = tryFilePath(qaChunks);
 

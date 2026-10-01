@@ -1,20 +1,107 @@
-# 类型驱动视频 RAG 实施记录
+# 类型驱动视频 RAG：实现与验收记录
 
-构建：`cmake -S . -B build -DFRAMEMIND_THIRD_PARTY_ROOT=<原工程 third_party>`。
-离线验证：Qt bin 加入 PATH 后，`cmake --build build --config Debug`、`ctest --test-dir build -C Debug --output-on-failure`。
+日期：2026-10-01。代码范围为 P0–P2 公共底座与五种策略；真实模型质量验收尚未完成。
 
-## 公共底座与版本化构建
+## 默认流程与职责
 
-- 第三方二进制路径通过 CMake cache 配置，默认路径不变。
-- 共享画像、计划、构建上下文、状态和语义单元支持 JSON 与 Qt metatype。
-- 原始快照、构建、单元及关系存储独立于活动版本。发布使用 SQLite 事务和预期活动版本检查；取消、失败保留活动版本。
-- 独立文件探测、计划驱动提取与分块 ASR 在线程池执行；规范表示和数据库提交在主线程。
-- `VideoAnalysisService` 的自动入口统一转发 `VideoRAGBuildCoordinator`；旧 L1 不再自动触发场景分析。
-- 本地分段保留镜头；语义单元采用本地候选与受约束模型校正。证据分页逐页记录完成、失败和缺失能力。
-- BGE 暴露未截断 token 数，按 tokenizer 的实际限制拆分入库文本。
+`VideoAnalysisService::onVideoOpened/analyzeVideo` 统一转发 `VideoRAGBuildCoordinator`。
+旧 `VideoIndexer::startIndex/buildLevel0/buildLevel1` 流水线已移除，场景读取保留兼容用途。
 
-## 当前验证
+```mermaid
+flowchart TD
+    A[打开视频或重建] --> B{指定类型或兼容画像}
+    B -->|否| C[独立探测：五个位置画面和短转写]
+    C --> D[分类：失败回退 Generic]
+    B -->|是| E[策略路由与能力协商]
+    D --> E
+    E --> F[候选构建：复用兼容证据或完整提取]
+    F --> G[本地候选及受约束模型校正]
+    G --> H[课程和教程补帧]
+    H --> I[保存不可变原始快照]
+    I --> J[全部核心证据分页分析]
+    J --> K[父单元、章节、全局摘要与事实索引]
+    K --> L[事务提交及活动版本 CAS 发布]
+    L --> M[版本过滤检索、来源展开和局部复核]
+```
 
-主程序 Debug 构建通过。QtTest 使用临时 SQLite 验证重复迁移、候选发布冲突、活动版本恢复、真实帧 PTS；验证五种策略映射、静态镜头多主题、分页覆盖、虚构来源拒绝与步骤关系。
+| 策略 | 主单元 | 提取及候选分段 | 专用事实 |
+|---|---|---|---|
+| Meeting | topic | ASR 优先；上下文、停顿、主题过渡，不因镜头强制断开 | 观点、决策、待办、分歧、开放问题 |
+| Interview | qa_pair | 共享对话算法；保持问答连续，可跨镜头 | 问题、回答、观点、论据 |
+| Lecture | concept | ASR 优先；主题及课件候选；单元内补帧 | 定义、解释、例子、推导 |
+| Tutorial | step | 解说及状态候选；2 秒采样，开始/过程/结果补帧，前后关系 | 目标、前置条件、操作、结果、注意事项 |
+| Generic | topic | 镜头及转写候选；最长 30 秒，保守概括 | 事件、主题 |
 
-真实模型质量、固定视频素材对照及全部构建开关矩阵须在最终验收记录中单独标明，不能用离线夹具通过代替。
+策略只返回计划、参数和 Prompt/schema。提取、请求、分页、校验、归并、embedding、存储、取消和检索共用。
+Lecture 承接 educational/presentation；其余叙事类型由 Generic 承接。
+探测每处最多 15 秒音频，合并重叠范围，不拼入完整转写。正式 ASR 按 60 秒区间解码并回写绝对时间。
+Meeting/Interview 取帧间隔 30 秒、Lecture 15 秒、Generic 10 秒；保存 requested time 与真实 PTS。
+
+## 接口和版本约定
+
+| 接口或模型 | 职责 |
+|---|---|
+| `VideoContentProfile` / `VideoRAGBuildPlan` | 分类依据、覆盖、能力、Prompt/schema、模型指纹 |
+| `VideoBuildContext` / `BuildOptions` | 文件、build、snapshot、预期版本、generation、取消；指定类型、强制重建、清除覆盖 |
+| `SemanticUnit` / `EvidenceCoverage` | 时间、原始引用、镜头、父子与前后关系、事实、成功和失败页 |
+| `VideoRAGBuildCoordinator::start/cancel/changeType` | 唯一构建编排及回调上下文校验 |
+| `VideoRAGBuildBackend` / `VideoIndexer` | 异步探测、提取、补帧和编码，可注入离线夹具 |
+| `VideoAnalysisService::executeBuildRequest` | 带上下文与状态的模型请求，生产环境复用后台串行通道 |
+| `VideoRAGStore` | 快照、候选、单元批量提交、事务发布、活动及 legacy 视图 |
+| `QueryPlan` / Retriever constraints | build、revision、snapshot、unit、时间及来源展开 |
+
+SQLite 标记为 `rag_schema_version=4`。新增 raw snapshots、builds、semantic units、unit links、type overrides；
+metadata 增加活动 build，chunks 增加 build/snapshot。`published_flag` 阻止曾发布构建被候选写入覆盖。
+每次重建使用新 build ID，首版发布后的 revision 固定为 1，不支持已发布 build 原地修订。
+原始快照不可覆写；复用证据时复制身份并保留原 snapshot/chunk 引用。
+发布检查预期活动 build，事务成功后才更新内存。取消、失败及冲突保留原活动版本。
+用户覆盖独立保存，即使取消或失败也不丢失；选择“自动”明确清除覆盖。
+
+旧 ChunkType 数值保留，在末尾追加 UnitSummary、UnitFact、TextEvidence、ChapterSummary。
+无活动 build 只读取未版本化 legacy chunks；有活动 build 只读取对应 derived/raw。
+旧场景恢复明确标 Partial，不用“存在 chunk”推断新流程完整。
+
+## 完整性、线程和查询
+
+- 模型校正须满足真实端点、连续完整覆盖、真实区间来源；修复一次失败后本地回退并记录诊断。
+- 证据页记录文本偏移及帧 PTS；核心页全部成功且能力完整才标 Ready，否则 Partial。
+- 长主题保留父单元。摘要归并连续失败时输出明确标注的分散摘录并结束，完整证据仍可展开。
+- BGE 使用实际 tokenCount，passage 按 500 token 拆分；超过 512 token 的推理拒绝执行，不静默截断。
+- 解码及本地推理在工作线程，模型实例 mutex 串行；数据库、请求调度、规范表示发布在主线程。
+- 现有同步查询 API 等待查询向量时仍可能阻塞调用者；构建、补帧和局部解码是异步接口。
+- 文件或模型配置在构建期间变化拒绝发布；查询模型指纹不匹配时跳过对应向量路径，保留词面检索。
+- 检索按 chunk 身份去重，同时间不同事实保留；派生摘要和事实不计为独立互证。
+- 结果带读取版本、单元、原始引文及来源图片；下一步/上一步沿关系展开，显式时间约束优先。
+- 普通 Agent 和 workflow 共用 Retriever、EvidenceComposer、语义工具；QA 和 checkpoint 校验 build/revision。
+- 操作过程证据不足或单元 Partial 时要求局部复核，静态帧不证明未观察到的点击或输入。
+
+总结页支持自动/指定类型、重建、取消和状态；时间线切换语义单元/镜头；知识库区分完整和部分完成。
+
+## 验证与复现
+
+```powershell
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DFRAMEMIND_THIRD_PARTY_ROOT=D:/Qt/ffmpegProjects/FrameMind/third_party
+cmake --build build --config Debug --parallel 3
+$env:PATH="D:/Qt/6.9.1/msvc2022_64/bin;$env:PATH"
+ctest --test-dir build -C Debug --output-on-failure
+./scripts/run-video-rag-matrix.ps1 -ThirdPartyRoot D:/Qt/ffmpegProjects/FrameMind/third_party
+```
+
+依赖根默认仍为仓库 third_party。测试使用临时 SQLite、生成 PNG 和假模型，不访问在线模型或用户数据库。
+五策略流水线用例验证执行逻辑，不代替真实视频语义效果评测。
+
+已验证：重复迁移、重启恢复、PTS 序列化、事务回滚、发布冲突、版本不可覆写；静态镜头多主题、
+跨镜头问答、步骤关系、分页无遗漏、token 拆分、后半段事实召回；失败页 Partial、摘要失败终止、
+旧提取/模型回调丢弃、用户覆盖持久化及自动清除；旧版本过滤、checkpoint 失效、同时间事实保留、来源图片展开、无 ASR 降级。
+
+构建矩阵结果将在最终完成后更新；日志位于 `build/matrix/*/Testing/Temporary/LastTest.log`。
+
+## 尚待验收
+
+尚未提供五类真实素材及标注问题，未做在线模型抽检，未测得对旧流程的召回、摘要覆盖、来源支持率、耗时和成本对照。
+清单记录 model_calls 和 elapsed_ms，可用于后续对照，但不等于 token 或费用统计。
+未完成所有异常路径的穷尽测试及播放器 UI 人工验收。
+
+P3 的叙事专用策略、局部混合路由、专用 OCR、说话人分离、非语音音频事件未实现。
+首版状态候选仍使用采样直方图镜头差异，步骤边界及动作判断须用真实素材校准。
+本记录确认代码和离线检查，不宣称计划的全部发布质量验收通过。

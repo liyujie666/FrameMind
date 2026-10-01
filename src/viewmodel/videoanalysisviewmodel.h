@@ -39,7 +39,7 @@ public:
     QVector<SemanticUnit> semanticUnits() const {return m_repr?m_repr->semanticUnits:QVector<SemanticUnit>{};}
     VideoContentProfile contentProfile() const {return m_profile;}
     void changeType(VideoContentType type);
-    void rebuild();
+    void rebuild(bool automatic=false);
     void cancelBuild();
 
     /// 获取场景的 VLM 描述（若已生成），否则返回空

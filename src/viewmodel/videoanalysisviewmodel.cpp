@@ -145,7 +145,7 @@ void VideoAnalysisViewModel::onVideoOpened(const QString& videoPath)
 void VideoAnalysisViewModel::changeType(VideoContentType type) {
     if(!m_analysis || m_currentPath.isEmpty()) return;m_isIndexing=true;emit indexingChanged(true);m_analysis->changeType(m_currentPath,type);
 }
-void VideoAnalysisViewModel::rebuild() {if(m_analysis && !m_currentPath.isEmpty()) {m_isIndexing=true;emit indexingChanged(true);m_analysis->analyzeVideo(m_currentPath);}}
+void VideoAnalysisViewModel::rebuild(bool automatic) {if(m_analysis && !m_currentPath.isEmpty()) {m_isIndexing=true;emit indexingChanged(true);if(automatic) m_analysis->analyzeAutomatically(m_currentPath);else m_analysis->analyzeVideo(m_currentPath);}}
 void VideoAnalysisViewModel::cancelBuild() {if(m_analysis) m_analysis->cancelBuild();}
 
 QString VideoAnalysisViewModel::sceneDescription(int sceneId) const

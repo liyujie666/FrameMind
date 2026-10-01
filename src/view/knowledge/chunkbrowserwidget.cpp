@@ -136,6 +136,10 @@ QString ChunkBrowserWidget::chunkTypeName(VideoChunk::ChunkType t)
     case VideoChunk::QAcache:        return tr("QA缓存");
     case VideoChunk::SceneAudio:     return tr("音频摘要");
     case VideoChunk::SceneFused:     return tr("融合描述");
+    case VideoChunk::UnitSummary: return tr("语义单元摘要");
+    case VideoChunk::UnitFact: return tr("精确事实");
+    case VideoChunk::TextEvidence: return tr("原始文本证据");
+    case VideoChunk::ChapterSummary: return tr("章节摘要");
     }
     return tr("未知");
 }
@@ -150,6 +154,10 @@ QString ChunkBrowserWidget::chunkTypeColor(VideoChunk::ChunkType t)
     case VideoChunk::QAcache:       return QStringLiteral("#26C6DA");
     case VideoChunk::SceneAudio:    return QStringLiteral("#66BB6A");
     case VideoChunk::SceneFused:    return QStringLiteral("#EC407A");
+    case VideoChunk::UnitSummary: return QStringLiteral("#7E57C2");
+    case VideoChunk::UnitFact: return QStringLiteral("#26A69A");
+    case VideoChunk::TextEvidence: return QStringLiteral("#42A5F5");
+    case VideoChunk::ChapterSummary: return QStringLiteral("#AB47BC");
     }
     return QStringLiteral("#9E9E9E");
 }

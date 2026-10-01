@@ -21,6 +21,7 @@ QACacheManager::QACacheManager(VideoRAGStore* store,
 
 std::vector<float> QACacheManager::encodeQuery(const QString& question) const
 {
+    if(m_queryEncoder) return m_queryEncoder(question);
 #ifdef FRAMEMIND_HAS_ONNXRUNTIME
     if (m_embedder && m_embedder->isReady()) {
         return m_embedder->embedQuery(question);
@@ -57,6 +58,9 @@ void QACacheManager::cache(const QString& videoId,
 
     QVariantMap meta;
     const auto active=m_store->activeBuild(videoId);
+#ifdef FRAMEMIND_HAS_ONNXRUNTIME
+    if(m_embedder && !active.buildId.isEmpty() && active.plan.modelVersions.value("bge").toString()!=m_embedder->modelFingerprint()) return;
+#endif
     QStringList evidenceIds;
     if(!active.buildId.isEmpty()) {
         for(const auto& item:evidence) {
@@ -102,6 +106,9 @@ std::optional<QACacheManager::CachedAnswer> QACacheManager::tryAnswer(
     const float sim = results.first().second;
     const auto evidenceIds = c.metadata.value(QStringLiteral("evidence_scene_ids")).toList();
     const auto active=m_store->activeBuild(videoId);
+#ifdef FRAMEMIND_HAS_ONNXRUNTIME
+    if(m_embedder && !active.buildId.isEmpty() && active.plan.modelVersions.value("bge").toString()!=m_embedder->modelFingerprint()) return std::nullopt;
+#endif
     const auto chunkIds=c.metadata.value("evidence_chunk_ids").toStringList();
     if(!active.buildId.isEmpty()) {
         if(c.metadata.value("build_id").toString()!=active.buildId || c.metadata.value("revision").toInt()!=active.revision || chunkIds.isEmpty()) return std::nullopt;

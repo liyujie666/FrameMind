@@ -50,10 +50,22 @@ if(BUILD_TESTING)
         src/service/rag/video_rag_store.cpp
         src/service/rag/strategies/video_rag_strategy_registry.cpp
         src/service/rag/semantic_unit_builder.cpp
+        src/service/agent/video_rag_build_coordinator.cpp
+        src/service/agent/tools/get_semantic_unit_tool.cpp
+        src/service/rag/video_rag_retriever.cpp
+        src/service/rag/evidence_composer.cpp
+        src/service/rag/qa_cache_manager.cpp
+        src/service/agent/workflow/workflow_checkpoint.cpp
+        src/service/agent/workflow/workflow_state.cpp
     )
     target_include_directories(video_rag_tests PRIVATE src)
     target_link_libraries(video_rag_tests PRIVATE Qt6::Core Qt6::Gui Qt6::Sql Qt6::Test)
-    add_test(NAME video_rag_tests COMMAND video_rag_tests)
+    add_test(NAME video_rag_tests COMMAND video_rag_tests -o video-rag-results.xml,xml -o -,txt)
+    qt_add_executable(video_tokenizer_tests tests/video_tokenizer_tests.cpp src/infrastructure/bert_tokenizer.cpp)
+    target_include_directories(video_tokenizer_tests PRIVATE src)
+    target_compile_definitions(video_tokenizer_tests PRIVATE FRAMEMIND_HAS_ONNXRUNTIME)
+    target_link_libraries(video_tokenizer_tests PRIVATE Qt6::Core Qt6::Test)
+    add_test(NAME video_tokenizer_tests COMMAND video_tokenizer_tests -o video-tokenizer-results.xml,xml -o -,txt)
 endif()
 
 find_package(Qt6 6.9 REQUIRED COMPONENTS

@@ -6,6 +6,17 @@ int BertTokenizer::tokenCount(const QString& text) const {
     for(const auto& token:basicTokenize(text)) count+=int(wordPieceTokenize(token).size());
     return count;
 }
+QStringList BertTokenizer::splitText(const QString& text,int maxTokens) const {
+    QStringList parts;int offset=0;maxTokens=qBound(4,maxTokens,512);
+    while(offset<text.size()) {
+        int low=1,high=int(text.size())-offset;
+        while(low<high) {const int mid=low+(high-low+1)/2;if(tokenCount(text.mid(offset,mid))<=maxTokens) low=mid;else high=mid-1;}
+        if(offset+low<text.size() && text.at(offset+low-1).isHighSurrogate() && low>1) --low;
+        while(low>1 && tokenCount(text.mid(offset,low))>maxTokens) --low;
+        parts<<text.mid(offset,low);offset+=low;
+    }
+    return parts;
+}
 
 #include <QFile>
 #include <QTextStream>

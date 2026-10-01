@@ -21,6 +21,7 @@ public:
     void setThemeService(ThemeService* theme);
     void setSummary(const QString& summary);
     void clear();
+    void setContentType(const QString&);
 
 private:
     void applyTheme();

@@ -7,6 +7,7 @@
 #include <QFuture>
 #include <cstdint>
 #include <vector>
+#include <QMutex>
 
 #include "model/speech_segment.h"
 
@@ -34,6 +35,7 @@ public:
 
     WhisperService(const WhisperService&) = delete;
     WhisperService& operator=(const WhisperService&) = delete;
+    QString modelFingerprint() const {return m_modelFingerprint;}
 
 #ifdef FRAMEMIND_HAS_WHISPER
     /// 加载 ggml 模型
@@ -74,6 +76,9 @@ private:
     bool                    m_greedy    = true;
     int                     m_nThreads  = 4;
 #endif // FRAMEMIND_HAS_WHISPER
+private:
+    QMutex m_inferenceMutex;
+    QString m_modelFingerprint;
 };
 
 #endif // FRAMEMIND_WHISPER_SERVICE_H

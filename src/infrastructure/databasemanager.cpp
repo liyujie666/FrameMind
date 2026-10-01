@@ -22,6 +22,9 @@ DatabaseManager::~DatabaseManager()
 
 bool DatabaseManager::initialize(const QString& dbPath)
 {
+    if(m_db.isOpen()) m_db.close();
+    const QString connection=QStringLiteral("qt_sql_default_connection");m_db=QSqlDatabase();
+    if(QSqlDatabase::contains(connection)) QSqlDatabase::removeDatabase(connection);
     QFileInfo fi(dbPath);
     QDir().mkpath(fi.absolutePath());
 

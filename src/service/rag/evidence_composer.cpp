@@ -82,7 +82,12 @@ QList<QImage> EvidenceComposer::mergeFrames(const QList<QImage>& userFrames,
     for (const RetrievalResult& result : evidence) {
         if (appended >= maxEvidenceFrames) break;
 
-        const QString path = QFileInfo(result.chunk.keyframePath).canonicalFilePath();
+        QStringList paths{result.chunk.keyframePath};
+        for (const auto& source : result.chunk.metadata.value("expanded_sources").toList())
+            paths << source.toMap().value("keyframe_path").toString();
+        for (const auto& candidate : paths) {
+        if (appended >= maxEvidenceFrames) break;
+        const QString path = QFileInfo(candidate).canonicalFilePath();
         if (path.isEmpty() || seenPaths.contains(path)) continue;
         seenPaths.insert(path);
 
@@ -94,6 +99,7 @@ QList<QImage> EvidenceComposer::mergeFrames(const QList<QImage>& userFrames,
         }
         frames.append(frame);
         ++appended;
+        }
     }
     return frames;
 }

@@ -161,7 +161,8 @@ void VideoAgent::ask(const QString& conversationId,
     // ===快速路径：QA 缓存命中 ===
     // 播放器操作（seek/play/pause）必须每次真正执行，不走缓存
     const bool forceFreshAnalysis = requestsFreshAnalysis(question);
-    if (!playerOp && !forceFreshAnalysis && m_qaCache && !m_activeVideoId.isEmpty()) {
+    const bool positionalQuery=question.contains(QStringLiteral("当前")) || question.contains(QStringLiteral("现在")) || question.contains(QStringLiteral("下一步")) || question.contains(QStringLiteral("上一步"));
+    if (!playerOp && !forceFreshAnalysis && !positionalQuery && m_qaCache && !m_activeVideoId.isEmpty()) {
         auto cached = m_qaCache->tryAnswer(m_activeVideoId, question);
         if (cached) {
             AgentAnswer ans;
@@ -581,7 +582,9 @@ void VideoAgent::askViaWorkflow(const QString& conversationId,
 
             // 没有静态检索命中时仍进入带工具的推理节点，让模型可发起局部复核，
             // 不在 perceive/retrieve 间空转。
-            workflowState.set(QStringLiteral("sufficiency"), 0.7);
+            bool enough=!m_retrievedEvidence.isEmpty();for(const auto& e:m_retrievedEvidence) if(e.chunk.metadata.value("needs_local_verification").toBool()) enough=false;
+            workflowState.set(QStringLiteral("sufficiency"), enough?0.8:0.3);
+            workflowState.set(QStringLiteral("needs_local_verification"),!enough);
             done(NodeResult{.nextRoute = {}, .success = true, .error = {}});
         });
     m_workflowFactory->registerFunctionHandler(

@@ -38,6 +38,7 @@ public:
 
     bool isBusy() const { return m_running; }
     int pendingCount() const { return m_pending.size(); }
+    QString modelSignature() const;
 
 private:
     struct Request {

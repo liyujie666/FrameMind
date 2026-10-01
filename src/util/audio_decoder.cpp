@@ -132,7 +132,9 @@ std::vector<float> AudioDecoder::decodeToFloat32(const QString& filePath,
                                                    {1, 1000})
                                     : 0);
     if (durationMs > 0) {
-        int64_t estimatedSamples = (durationMs * TARGET_SAMPLE_RATE) / 1000;
+        const auto beginMs=std::max<int64_t>(0,startMs);
+        const auto finishMs=endMs>0?std::min(durationMs,endMs):durationMs;
+        int64_t estimatedSamples = (std::min<int64_t>(600000,std::max<int64_t>(0,finishMs-beginMs)) * TARGET_SAMPLE_RATE) / 1000;
         output.reserve(static_cast<size_t>(estimatedSamples));
     }
 
@@ -174,7 +176,8 @@ std::vector<float> AudioDecoder::decodeToFloat32(const QString& filePath,
                 int64_t frameMs = av_rescale_q(frame->pts,
                                                 audioStream->time_base,
                                                 {1, 1000});
-                if (frameMs < startMs) {
+                const int64_t frameDurationMs=frame->sample_rate>0?int64_t(frame->nb_samples)*1000/frame->sample_rate:0;
+                if (frameMs+frameDurationMs <= startMs) {
                     av_frame_unref(frame.get());
                     continue;
                 }
@@ -190,7 +193,13 @@ std::vector<float> AudioDecoder::decodeToFloat32(const QString& filePath,
                                          const_cast<const uint8_t**>(frame->extended_data),
                                          frame->nb_samples);
             if (converted > 0) {
-                output.insert(output.end(), buffer.begin(), buffer.begin() + converted);
+                int beginSample=0,endSample=converted;
+                if(frame->pts!=AV_NOPTS_VALUE) {
+                    const int64_t frameMs=av_rescale_q(frame->pts,audioStream->time_base,{1,1000});
+                    if(startMs>frameMs) beginSample=int(std::min<int64_t>(converted,(startMs-frameMs)*TARGET_SAMPLE_RATE/1000));
+                    if(endMs>=0) endSample=int(std::clamp<int64_t>((endMs-frameMs)*TARGET_SAMPLE_RATE/1000,0,converted));
+                }
+                if(endSample>beginSample) output.insert(output.end(),buffer.begin()+beginSample,buffer.begin()+endSample);
             }
 
             // Progress reporting

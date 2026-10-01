@@ -189,6 +189,8 @@ QueryPlan VideoRAGRetriever::compileQueryPlan(
     plan.prefersAudioEvidence = intent.prefersAudioEvidence;
     plan.prefersFusedEvidence = intent.prefersFusedEvidence;
     plan.needsLocalVerification = plan.prefersVisualEvidence
+        || plan.normalizedQuery.contains(QStringLiteral("点击")) || plan.normalizedQuery.contains(QStringLiteral("拖动"))
+        || plan.normalizedQuery.contains(QStringLiteral("操作过程")) || plan.normalizedQuery.contains(QStringLiteral("动作"))
         || plan.normalizedQuery.contains(QStringLiteral("几个"))
         || plan.normalizedQuery.contains(QStringLiteral("多少"))
         || plan.normalizedQuery.contains(QStringLiteral("什么时候"));
@@ -286,7 +288,8 @@ QueryPlan VideoRAGRetriever::compileQueryPlan(
     } else if (constraints.currentPositionMs >= 0
                && (plan.normalizedQuery.contains(QStringLiteral("当前"))
                    || plan.normalizedQuery.contains(QStringLiteral("现在"))
-                   || plan.normalizedQuery.contains(QStringLiteral("这里")))) {
+                   || plan.normalizedQuery.contains(QStringLiteral("这里"))
+                   || plan.expandNeighbors)) {
         plan.startMs = qMax<int64_t>(0, constraints.currentPositionMs - 10000);
         plan.endMs = duration > 0 ? qMin(duration, constraints.currentPositionMs + 10000)
                                   : constraints.currentPositionMs + 10000;
@@ -354,6 +357,15 @@ QVector<RetrievalResult> VideoRAGRetriever::retrieve(const QString& query,
     auto fused = reciprocalRankFusion(perPath, weights, 60);
     fused = deduplicate(fused);
     fused = applyTemporalCorroboration(fused, plan);
+    if(plan.expandNeighbors && effective.currentPositionMs>=0 && plan.temporalHint!=QStringLiteral("explicit_range")) {
+        for(const auto& unit:m_store->listUnits(plan.buildId)) if(unit.kind!="chapter" && unit.startMs<=effective.currentPositionMs && unit.endMs>effective.currentPositionMs) {
+            for(const auto& chunk:m_store->listChunks(VideoRAGStore::TextSegments,c.videoId)) if(chunk.chunkType==VideoChunk::UnitSummary && chunk.metadata.value("unit_id").toString()==unit.unitId) {
+                RetrievalResult hit;hit.chunk=chunk;hit.hitPath="semantic";hit.score=fused.isEmpty()?1.0f:fused.first().score+0.01f;
+                for(int i=fused.size()-1;i>=0;--i) if(fused[i].chunk.chunkId==chunk.chunkId) fused.removeAt(i);fused.prepend(hit);break;
+            }
+            break;
+        }
+    }
     if (fused.size() > topK) fused.resize(topK);
     const auto raw=m_store->rawChunks(plan.rawSnapshotId);
     QHash<QString,VideoChunk> sources;for(const auto& chunk:raw) sources.insert(chunk.chunkId,chunk);
@@ -375,7 +387,7 @@ QVector<RetrievalResult> VideoRAGRetriever::retrieve(const QString& query,
         if(plan.expandNeighbors && unit.isValid()) {
             const QString neighborId=plan.normalizedQuery.contains(QStringLiteral("上一步"))?unit.previousUnitId:unit.nextUnitId;
             const auto neighbor=m_store->getUnit(plan.buildId,neighborId);
-            if(neighbor.isValid() && (effective.startMsGte<0 || neighbor.endMs>effective.startMsGte) && (effective.endMsLte<0 || neighbor.startMs<effective.endMsLte)) meta.insert("neighbor_unit",neighbor.toJson().toVariantMap());
+            if(neighbor.isValid() && (plan.temporalHint!=QStringLiteral("explicit_range") || ((effective.startMsGte<0 || neighbor.endMs>effective.startMsGte) && (effective.endMsLte<0 || neighbor.startMs<effective.endMsLte)))) meta.insert("neighbor_unit",neighbor.toJson().toVariantMap());
         }
         const bool insufficient=unit.isValid() && (unit.state!=ArtifactState::Ready || (plan.needsLocalVerification && unit.coverage.framePtsMs.size()<2));
         meta.insert("needs_local_verification",insufficient || plan.needsLocalVerification);
@@ -395,6 +407,8 @@ QVector<RetrievalResult> VideoRAGRetriever::textPathSearch(
     QVector<RetrievalResult> out;
 #ifdef FRAMEMIND_HAS_ONNXRUNTIME
     if (!m_embedder || !m_embedder->isReady()) return out;
+    const auto active=m_store->activeBuild(c.videoId);
+    if(!active.buildId.isEmpty() && active.plan.modelVersions.value("bge").toString()!=m_embedder->modelFingerprint()) return out;
     const auto emb = m_embedder->embedQuery(query);
 
     VideoRAGStore::Filter f;
@@ -470,6 +484,8 @@ QVector<RetrievalResult> VideoRAGRetriever::visualPathSearch(
     QVector<RetrievalResult> out;
 #ifdef FRAMEMIND_HAS_ONNXRUNTIME
     if (!m_clip || !m_clip->isReady()) return out;
+    const auto active=m_store->activeBuild(c.videoId);
+    if(!active.buildId.isEmpty() && active.plan.modelVersions.value("clip").toString()!=m_clip->modelFingerprint()) return out;
     const auto emb = m_clip->encodeText(query);
 
     VideoRAGStore::Filter f;

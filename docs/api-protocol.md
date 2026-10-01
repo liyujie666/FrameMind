@@ -744,3 +744,16 @@ image.max_per_request        | 10                               | 单次请求�
 - Reasoning 模型的思考过程展示
 - 并行工具调用（parallel_tool_calls）
 ```
+
+
+## get_semantic_unit 本地工具（2026-10-01）
+
+读取范围由工具注册器固定为当前视频，不允许模型切换 video_id。
+可选参数：unit_id、timestamp_ms、build_id、revision、relation（current/previous/next）、
+source_offset（默认 0）、source_limit（默认 20，上限 100）。未传版本时使用当前活动构建；版本不匹配返回失败并要求重新检索。
+
+结果包含单元完整 JSON、build_id、video_id、revision、raw_snapshot_id、coverage、facts、
+source_count、sources（原始 chunk_id、时间、文字、frame_path、metadata）、next_source_offset（结束为 -1）。
+语义边界、来源不足及 Partial 不代表确定动作事实，可进一步调用 analyze_time_range。
+search_video_content 的 metadata 同步提供 read_build_id/read_revision/unit_id/expanded_sources/needs_local_verification。
+完整接口和验证范围见 [实施记录](video-rag-implementation-status.md)。

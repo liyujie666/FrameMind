@@ -56,6 +56,9 @@ SufficiencyCheck PerceptionStrategy::checkSufficiency(
     }
 
     const QuestionType t = classifyQuestion(question);
+    if(!repr->build.buildId.isEmpty() && repr->build.state!=ArtifactState::Ready) {
+        result.isEnough=false;result.reason=QStringLiteral("活动构建为 Partial，需要检查目标单元的原始来源");result.suggestedAction=QStringLiteral("search_and_verify");return result;
+    }
 
     switch (t) {
     case QuestionType::GlobalSummary:

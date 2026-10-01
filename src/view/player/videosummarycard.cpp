@@ -199,6 +199,8 @@ void VideoSummaryCard::clear()
     m_browser->clear();
 }
 
+void VideoSummaryCard::setContentType(const QString& type) {m_typeLabel->setText(type);m_typeLabel->setVisible(!type.isEmpty());}
+
 void VideoSummaryCard::applyTheme()
 {
     const bool dark = m_theme ? m_theme->isDark() : true;

@@ -7,6 +7,7 @@
 #include <QFuture>
 #include <vector>
 #include <memory>
+#include <QMutex>
 
 #ifdef FRAMEMIND_HAS_ONNXRUNTIME
 class OnnxRuntimeEngine;
@@ -36,6 +37,7 @@ public:
     EmbeddingService& operator=(const EmbeddingService&) = delete;
     int tokenCount(const QString& text) const;
     QStringList splitPassage(const QString& text, int maxTokens = 500) const;
+    QString modelFingerprint() const {return m_modelFingerprint;}
 
 #ifdef FRAMEMIND_HAS_ONNXRUNTIME
 
@@ -81,6 +83,9 @@ private:
     std::unique_ptr<OnnxRuntimeEngine> m_engine;
     std::unique_ptr<BertTokenizer>     m_tokenizer;
 #endif // FRAMEMIND_HAS_ONNXRUNTIME
+private:
+    QMutex m_inferenceMutex;
+    QString m_modelFingerprint;
 };
 
 #endif // FRAMEMIND_EMBEDDING_SERVICE_H

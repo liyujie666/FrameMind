@@ -1,4 +1,6 @@
 #include "service/embedding_service.h"
+#include "util/model_fingerprint.h"
+#include <QMutexLocker>
 #ifdef FRAMEMIND_HAS_ONNXRUNTIME
 #include "infrastructure/bert_tokenizer.h"
 #endif
@@ -11,6 +13,9 @@ int EmbeddingService::tokenCount(const QString& text) const {
 }
 
 QStringList EmbeddingService::splitPassage(const QString& text,int maxTokens) const {
+#ifdef FRAMEMIND_HAS_ONNXRUNTIME
+    if(m_tokenizer && m_tokenizer->isLoaded()) return m_tokenizer->splitText(text,maxTokens);
+#endif
     QStringList parts;int offset=0;maxTokens=qBound(4,maxTokens,512);
     while(offset<text.size()) {
         int low=1,high=int(text.size())-offset;
@@ -32,6 +37,8 @@ EmbeddingService::~EmbeddingService() = default;
 #include "infrastructure/bert_tokenizer.h"
 
 #include <QtConcurrent/QtConcurrent>
+#include <QCoreApplication>
+#include <QThread>
 #include <QFileInfo>
 #include <QDebug>
 #include <cmath>
@@ -64,6 +71,7 @@ EmbeddingService::~EmbeddingService() = default;
 
 bool EmbeddingService::initialize(const QString& modelPath)
 {
+    m_modelFingerprint=modelFileFingerprint(modelPath)+":"+modelFileFingerprint(QFileInfo(modelPath).absolutePath()+"/vocab.txt");
     bool ok = m_engine->loadModel(modelPath);
 
     // 词表文件与模型同目录
@@ -104,6 +112,9 @@ std::vector<float> EmbeddingService::embed(const QString& text)
 
 std::vector<float> EmbeddingService::embedInternal(const QString& text, bool queryMode)
 {
+    if(QCoreApplication::instance() && QThread::currentThread()==QCoreApplication::instance()->thread())
+        return QtConcurrent::run([this,text,queryMode]{return embedInternal(text,queryMode);}).result();
+    QMutexLocker lock(&m_inferenceMutex);
     if (!isReady() || text.isEmpty()) {
         return {};
     }
@@ -112,6 +123,7 @@ std::vector<float> EmbeddingService::embedInternal(const QString& text, bool que
     const QString encodedText = queryMode
         ? QStringLiteral("为这个句子生成表示以用于检索相关文章：") + text
         : text;
+    if(tokenCount(encodedText)>MAX_SEQ_LEN) {qWarning()<<"[EmbeddingService] input exceeds tokenizer limit; split passages before embedding";return {};}
 
     // 1. Tokenize
     auto inputIds = tokenize(encodedText);

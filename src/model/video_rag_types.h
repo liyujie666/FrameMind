@@ -1,23 +1,33 @@
 #pragma once
 
-#include <QJsonObject>
 #include <QJsonArray>
+#include <QJsonObject>
 #include <QMetaType>
 #include <QStringList>
 #include <QVector>
-#include <memory>
 #include <atomic>
+#include <memory>
 #include <optional>
 
-enum class VideoContentType { Unknown, Meeting, Interview, Educational, Presentation,
-                              Tutorial, Documentary, Drama, News, Vlog };
+enum class VideoContentType {
+    Unknown,
+    Meeting,
+    Interview,
+    Educational,
+    Presentation,
+    Tutorial,
+    Documentary,
+    Drama,
+    News,
+    Vlog
+};
 QString contentTypeKey(VideoContentType type);
 QString contentTypeLabel(VideoContentType type);
-VideoContentType contentTypeFromKey(const QString& key);
+VideoContentType contentTypeFromKey(const QString &key);
 
 enum class ArtifactState { Pending, Running, Ready, Partial, Failed, Skipped, Cancelled };
 QString artifactStateKey(ArtifactState state);
-ArtifactState artifactStateFromKey(const QString& key);
+ArtifactState artifactStateFromKey(const QString &key);
 
 struct VideoContentProfile {
     VideoContentType primaryType = VideoContentType::Unknown;
@@ -30,10 +40,14 @@ struct VideoContentProfile {
     QString classifierVersion = QStringLiteral("profile_v1");
     bool userOverride = false;
     QJsonObject toJson() const;
-    static VideoContentProfile fromJson(const QJsonObject&);
+    static VideoContentProfile fromJson(const QJsonObject &);
 };
 
-struct AvailableCapabilities { bool asr = false; bool textVector = false; bool visualVector = false; };
+struct AvailableCapabilities {
+    bool asr = false;
+    bool textVector = false;
+    bool visualVector = false;
+};
 struct VideoRAGBuildPlan {
     QString strategyId = QStringLiteral("generic_v1");
     QString strategyVersion = QStringLiteral("1");
@@ -53,14 +67,16 @@ struct VideoRAGBuildPlan {
     int embeddingTokens = 500;
     QStringList factKinds;
     QString analysisPrompt;
+    QJsonObject modelVersions;
     QString fingerprint() const;
     QJsonObject toJson() const;
-    static VideoRAGBuildPlan fromJson(const QJsonObject&);
+    static VideoRAGBuildPlan fromJson(const QJsonObject &);
 };
 
 struct BuildOptions {
     std::optional<VideoContentType> typeOverride;
     bool forceDerivedRebuild = false;
+    bool clearTypeOverride = false;
 };
 
 struct VideoBuildContext {
@@ -77,10 +93,12 @@ struct EvidenceCoverage {
     QStringList failedPages;
     QStringList missingCapabilities;
     QVector<int64_t> framePtsMs;
-    bool complete() const { return totalPages > 0 && processedPages == totalPages
-                                  && failedPages.isEmpty() && missingCapabilities.isEmpty(); }
+    bool complete() const {
+        return totalPages > 0 && processedPages == totalPages && failedPages.isEmpty() &&
+               missingCapabilities.isEmpty();
+    }
     QJsonObject toJson() const;
-    static EvidenceCoverage fromJson(const QJsonObject&);
+    static EvidenceCoverage fromJson(const QJsonObject &);
 };
 
 struct SemanticUnit {
@@ -96,7 +114,7 @@ struct SemanticUnit {
     EvidenceCoverage coverage;
     bool isValid() const { return !unitId.isEmpty() && endMs > startMs && startMs >= 0; }
     QJsonObject toJson() const;
-    static SemanticUnit fromJson(const QJsonObject&);
+    static SemanticUnit fromJson(const QJsonObject &);
 };
 
 struct VideoBuildManifest {
@@ -109,10 +127,13 @@ struct VideoBuildManifest {
     QStringList diagnostics;
     QJsonObject artifacts;
     QJsonObject toJson() const;
-    static VideoBuildManifest fromJson(const QJsonObject&);
+    static VideoBuildManifest fromJson(const QJsonObject &);
 };
 
 Q_DECLARE_METATYPE(VideoContentProfile)
+Q_DECLARE_METATYPE(VideoContentType)
+Q_DECLARE_METATYPE(VideoBuildContext)
+Q_DECLARE_METATYPE(BuildOptions)
 Q_DECLARE_METATYPE(VideoRAGBuildPlan)
 Q_DECLARE_METATYPE(SemanticUnit)
 Q_DECLARE_METATYPE(QVector<SemanticUnit>)

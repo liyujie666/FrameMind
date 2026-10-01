@@ -6,6 +6,8 @@
 #include <QTimer>
 #include <utility>
 
+QString OneShotVlmChannel::modelSignature() const {return m_agent?m_agent->modelSignature():QStringLiteral("unavailable");}
+
 OneShotVlmChannel::OneShotVlmChannel(AgentService* agent, QObject* parent)
     : QObject(parent)
     , m_agent(agent)

@@ -15,6 +15,8 @@
 #include <QPainterPath>
 #include <QEvent>
 #include <QTimer>
+#include <QComboBox>
+#include <algorithm>
 
 // ---- 可点击场景卡片 ----
 // 继承 QWidget 而非 QFrame，完全自绘，避免 QSS 系统绘制覆盖自定义背景色
@@ -116,6 +118,8 @@ TimelineTabWidget::TimelineTabWidget(QWidget* parent)
     auto* root = new QVBoxLayout(this);
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(0);
+    m_mode=new QComboBox(this);m_mode->addItems({tr("语义单元"),tr("镜头")});root->addWidget(m_mode);
+    connect(m_mode,&QComboBox::currentIndexChanged,this,[this]{refreshTimeline();});
     root->addWidget(m_scroll);
 
     // 初始空状态提示
@@ -146,6 +150,7 @@ void TimelineTabWidget::setViewModel(VideoAnalysisViewModel* vm)
     if (m_vm) disconnect(m_vm, nullptr, this, nullptr);
     m_vm = vm;
     if (m_vm) {
+        connect(m_vm,&VideoAnalysisViewModel::semanticUnitsReady,this,[this](const QVector<SemanticUnit>& units){m_units=units;refreshTimeline();});
         connect(m_vm, &VideoAnalysisViewModel::scenesReady,
                 this, &TimelineTabWidget::onScenesReady);
         connect(m_vm, &VideoAnalysisViewModel::sceneDescribed,
@@ -154,6 +159,7 @@ void TimelineTabWidget::setViewModel(VideoAnalysisViewModel* vm)
                 this, &TimelineTabWidget::onSceneFused);
         // 立即刷新（可能已有数据）
         if (!m_vm->scenes().isEmpty()) onScenesReady(m_vm->scenes());
+        m_units=m_vm->semanticUnits();refreshTimeline();
     }
 }
 
@@ -165,16 +171,30 @@ void TimelineTabWidget::onPositionChanged(int64_t posMs)
 
 void TimelineTabWidget::onScenesReady(const QVector<Scene>& scenes)
 {
-    m_scenes = scenes;
+    m_shots = scenes;
     if (!scenes.isEmpty()) {
         m_totalDurationMs = scenes.last().endMs;
     }
-    buildCards();
+    refreshTimeline();
     updateHighlight(m_currentPosMs);
+}
+
+void TimelineTabWidget::refreshTimeline() {
+    m_scenes=m_shots;
+    if(m_mode->currentIndex()==0 && !m_units.isEmpty()) {
+        m_scenes.clear();
+        // These are presentation cards only. The underlying shots remain in m_shots.
+        auto ordered=m_units;
+        std::sort(ordered.begin(),ordered.end(),[](const auto& a,const auto& b){return a.startMs<b.startMs;});
+        for(const auto& u:ordered) {if(u.kind=="chapter") continue;Scene card;card.id=m_scenes.size();card.startMs=u.startMs;card.endMs=u.endMs;card.description=u.title+"\n"+u.fusedDescription+"\n"+(u.state==ArtifactState::Ready?tr("完整"):tr("部分完成"));m_scenes<<card;}
+    }
+    if(!m_scenes.isEmpty()) m_totalDurationMs=m_scenes.last().endMs;
+    buildCards();updateHighlight(m_currentPosMs);
 }
 
 void TimelineTabWidget::onSceneDescribed(int sceneId, const QString& description)
 {
+    if(m_mode->currentIndex()==0 && !m_units.isEmpty()) return;
     if (sceneId < 0 || sceneId >= m_descLabels.size()) return;
     QLabel* lbl = m_descLabels[sceneId];
     if (!lbl) return;
@@ -198,6 +218,7 @@ void TimelineTabWidget::onSceneDescribed(int sceneId, const QString& description
 
 void TimelineTabWidget::onSceneFused(int sceneId, const SceneFusion& fusion)
 {
+    if(m_mode->currentIndex()==0 && !m_units.isEmpty()) return;
     if (sceneId < 0 || sceneId >= m_descLabels.size()) return;
     QLabel* label = m_descLabels[sceneId];
     if (!label) return;
@@ -320,7 +341,7 @@ QWidget* TimelineTabWidget::makeSceneCard(const Scene& scene, int64_t totalDurat
     auto* topRow = new QHBoxLayout();
     topRow->setSpacing(8);
 
-    auto* indexLabel = new QLabel(tr("场景 %1").arg(scene.id + 1), card);
+    auto* indexLabel = new QLabel((m_mode->currentIndex()==0 && !m_units.isEmpty()?tr("单元 %1"):tr("镜头 %1")).arg(scene.id + 1), card);
     indexLabel->setStyleSheet(QString(
         "font-size: 12px; font-weight: 600; color: %1; background: transparent; border: none;")
         .arg(fillColor.name()));
@@ -380,7 +401,8 @@ QWidget* TimelineTabWidget::makeSceneCard(const Scene& scene, int64_t totalDurat
     }
 
     // 如果描述已存在（缓存命中），立即填充
-    if (m_vm) {
+    if (m_mode->currentIndex()==0 && !m_units.isEmpty()) {descLabel->setText(scene.description);descLabel->setVisible(true);}
+    else if (m_vm) {
         const QString existingDesc = m_vm->sceneDescription(scene.id);
         if (!existingDesc.isEmpty()) {
             onSceneDescribed(scene.id, existingDesc);

@@ -1,4 +1,6 @@
 #include "service/clip_service.h"
+#include "util/model_fingerprint.h"
+#include <QMutexLocker>
 
 #ifndef FRAMEMIND_HAS_ONNXRUNTIME
 
@@ -12,6 +14,7 @@ ClipService::~ClipService() = default;
 
 #include <QtConcurrent/QtConcurrent>
 #include <QCoreApplication>
+#include <QThread>
 #include <QFileInfo>
 #include <QDebug>
 #include <cmath>
@@ -43,8 +46,9 @@ ClipService::ClipService(QObject* parent)
 ClipService::~ClipService() = default;
 
 bool ClipService::initialize(const QString& visualModelPath,
-                              const QString& textModelPath)
+                             const QString& textModelPath)
 {
+    m_modelFingerprint=modelFileFingerprint(visualModelPath)+":"+modelFileFingerprint(textModelPath);
     bool ok1 = m_visualEngine->loadModel(visualModelPath);
     bool ok2 = m_textEngine->loadModel(textModelPath);
 
@@ -79,6 +83,9 @@ bool ClipService::isReady() const
 
 std::vector<float> ClipService::encodeImage(const QImage& image)
 {
+    if(QCoreApplication::instance() && QThread::currentThread()==QCoreApplication::instance()->thread())
+        return QtConcurrent::run([this,image]{return encodeImage(image);}).result();
+    QMutexLocker lock(&m_inferenceMutex);
     if (!m_visualEngine->isLoaded() || image.isNull()) {
         return {};
     }
@@ -141,6 +148,9 @@ QFuture<std::vector<std::vector<float>>> ClipService::encodeImagesAsync(
 
 std::vector<float> ClipService::encodeText(const QString& text)
 {
+    if(QCoreApplication::instance() && QThread::currentThread()==QCoreApplication::instance()->thread())
+        return QtConcurrent::run([this,text]{return encodeText(text);}).result();
+    QMutexLocker lock(&m_inferenceMutex);
     if (!m_textEngine->isLoaded() || text.isEmpty()) {
         return {};
     }

@@ -7,6 +7,7 @@
 #include <QFuture>
 #include <vector>
 #include <memory>
+#include <QMutex>
 
 #ifdef FRAMEMIND_HAS_ONNXRUNTIME
 class OnnxRuntimeEngine;
@@ -34,6 +35,7 @@ public:
 
     ClipService(const ClipService&) = delete;
     ClipService& operator=(const ClipService&) = delete;
+    QString modelFingerprint() const {return m_modelFingerprint;}
 
 #ifdef FRAMEMIND_HAS_ONNXRUNTIME
 
@@ -86,6 +88,9 @@ private:
     std::unique_ptr<OnnxRuntimeEngine> m_textEngine;
     std::unique_ptr<ClipTokenizer>     m_tokenizer;
 #endif // FRAMEMIND_HAS_ONNXRUNTIME
+private:
+    QMutex m_inferenceMutex;
+    QString m_modelFingerprint;
 };
 
 #endif // FRAMEMIND_CLIP_SERVICE_H

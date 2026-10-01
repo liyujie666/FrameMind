@@ -1136,3 +1136,17 @@ public:
 2. **可维护** — 职责清晰，改 UI 不动业务，改业务不动 UI
 3. **可扩展** — AI 后端、分析插件可热插拔
 4. **高性能** — 帧回调异步传递、渲染跳帧、网络流式处理
+
+
+## 类型驱动视频 RAG 架构更新（2026-10-01）
+
+默认构建已由 VideoRAGBuildCoordinator 统一编排，VideoIndexer 执行计划驱动的异步提取与编码，
+VideoAnalysisService 执行带构建上下文的后台模型请求。Scene 仍代表镜头，SemanticUnit 代表主题、问答、知识点或步骤。
+
+SQLite 的 rag_schema_version 为 4；新增 video_raw_snapshots、video_rag_builds（含 published_flag）、
+video_semantic_units、video_unit_links、video_type_overrides；video_metadata 增加 active_build_id，rag_chunks 增加 build_id/raw_snapshot_id。
+
+发布在事务内比较预期活动 build，成功后更新内存；已发布构建不可覆盖，重建使用新 build ID。
+版本化数据库操作由 Store 所在线程执行，工作线程不直接访问 SQLite。
+旧场景库通过明确的 legacy 视图读取，不参与新活动版本检索。
+完整接口、迁移与实际限制见 [实施记录](video-rag-implementation-status.md)，当前流程见 [rag_flow](rag_flow.md)。

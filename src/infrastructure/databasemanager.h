@@ -20,6 +20,7 @@ public:
     /// 打开数据库并幂等建表；dbPath 所在目录会被创建
     bool initialize(const QString& dbPath);
     bool isOpen() const;
+    void close() {m_db.close();}
 
     /// 执行写入/DDL，bindings 按顺序绑定到 SQL 中的 '?'
     bool exec(const QString& sql, const QVariantList& bindings = {});

@@ -11,6 +11,8 @@
 #include <QLabel>
 #include <QProgressBar>
 #include <QFrame>
+#include <QComboBox>
+#include <QPushButton>
 
 SummaryTabWidget::SummaryTabWidget(QWidget* parent)
     : QWidget(parent)
@@ -21,6 +23,13 @@ SummaryTabWidget::SummaryTabWidget(QWidget* parent)
     auto* root = new QVBoxLayout(this);
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(8);
+    auto* controls=new QHBoxLayout;
+    m_typeSelector=new QComboBox(this);m_typeSelector->addItem(tr("自动识别"),-1);
+    for(auto type:{VideoContentType::Meeting,VideoContentType::Interview,VideoContentType::Educational,VideoContentType::Presentation,VideoContentType::Tutorial,VideoContentType::Unknown}) m_typeSelector->addItem(contentTypeLabel(type),int(type));
+    controls->addWidget(m_typeSelector,1);auto* rebuild=new QPushButton(tr("按此策略构建"),this);controls->addWidget(rebuild);
+    connect(rebuild,&QPushButton::clicked,this,[this]{if(!m_vm) return;const int type=m_typeSelector->currentData().toInt();if(type<0) m_vm->rebuild(true);else m_vm->changeType(VideoContentType(type));});
+    auto* cancel=new QPushButton(tr("取消"),this);controls->addWidget(cancel);connect(cancel,&QPushButton::clicked,this,[this]{if(m_vm) m_vm->cancelBuild();});
+    root->addLayout(controls);m_buildState=new QLabel(this);m_buildState->setWordWrap(true);root->addWidget(m_buildState);
 
     // ---- 进度区域 ----
     m_progressArea = new QWidget(this);
@@ -117,6 +126,26 @@ void SummaryTabWidget::setViewModel(VideoAnalysisViewModel* vm)
     if (m_vm) disconnect(m_vm, nullptr, this, nullptr);
     m_vm = vm;
     if (!m_vm) return;
+    connect(m_vm,&VideoAnalysisViewModel::contentProfileReady,this,[this](const VideoContentProfile& p){
+        m_typeSelector->setCurrentIndex(p.userOverride?m_typeSelector->findData(int(p.primaryType)):0);
+        m_buildState->setText(tr("%1 · %2").arg(contentTypeLabel(p.primaryType),p.userOverride?tr("用户指定"):tr("自动识别／回退")));
+        m_summaryCard->setContentType(contentTypeLabel(p.primaryType));
+    });
+    connect(m_vm,&VideoAnalysisViewModel::buildStateChanged,this,[this](const VideoBuildManifest& m){
+        QString state=m.state==ArtifactState::Ready?tr("完整"):m.state==ArtifactState::Partial?tr("部分完成"):m.state==ArtifactState::Cancelled?tr("已取消"):tr("构建失败");
+        m_buildState->setText(tr("%1 · %2").arg(contentTypeLabel(m.profile.primaryType),state));
+        m_buildState->setToolTip(m.diagnostics.join('\n'));
+    });
+    connect(m_vm,&VideoAnalysisViewModel::semanticUnitsReady,this,[this](const QVector<SemanticUnit>& units){
+        if(auto* title=qobject_cast<QLabel*>(m_scenesLayout->itemAt(0)->widget())) title->setText(units.isEmpty()?tr("场景描述"):tr("语义单元"));
+        while(m_scenesLayout->count()>1) {auto* item=m_scenesLayout->takeAt(1);if(item->widget()) item->widget()->deleteLater();delete item;}
+        for(const auto& u:units) {
+            auto* label=new QLabel(m_scenesSection);label->setWordWrap(true);label->setTextFormat(Qt::PlainText);label->setTextInteractionFlags(Qt::TextSelectableByMouse);
+            label->setText(QString("[%1-%2s] %3 · %4\n%5\n%6").arg(u.startMs/1000).arg(u.endMs/1000).arg(u.title,u.state==ArtifactState::Ready?tr("完整"):tr("部分完成"),u.fusedDescription,u.sourceChunkIds.isEmpty()?tr("无原始证据"):tr("原始来源：%1 条；已处理 %2/%3 页").arg(u.sourceChunkIds.size()).arg(u.coverage.processedPages).arg(u.coverage.totalPages)));
+            m_scenesLayout->addWidget(label);
+        }
+        m_scenesSection->setVisible(!units.isEmpty());
+    });
 
     connect(m_vm, &VideoAnalysisViewModel::progressChanged,
             this, &SummaryTabWidget::onProgressChanged);
@@ -170,11 +199,12 @@ void SummaryTabWidget::onProgressChanged(int percent, const QString& label)
 {
     m_progressBar->setValue(percent);
     m_progressLabel->setText(label);
-    m_progressArea->setVisible(m_summaryCard->isHidden());
+    m_progressArea->setVisible((m_vm && m_vm->isIndexing()) || m_summaryCard->isHidden());
 }
 
 void SummaryTabWidget::onIndexingChanged(bool isIndexing)
 {
+    if(isIndexing) m_progressArea->show();
     if (!isIndexing) {
         m_progressBar->setValue(100);
     }
@@ -185,6 +215,7 @@ void SummaryTabWidget::onSummaryReady(const QString& summary)
     if (summary.trimmed().isEmpty()) return;
     m_emptyLabel->hide();
     m_summaryCard->setSummary(summary);
+    if(m_vm) m_summaryCard->setContentType(contentTypeLabel(m_vm->contentProfile().primaryType));
     m_summaryCard->show();
     m_progressArea->hide();
 }

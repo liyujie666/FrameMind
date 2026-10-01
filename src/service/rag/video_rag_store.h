@@ -29,7 +29,8 @@ class DatabaseManager;
  *   - 持久化：SQLite 表 rag_chunks + rag_entities
  *   - 每次视频加载时惰性 loadFromDb(videoId) 到内存
  *
- * 线程安全：所有 public 方法用互斥锁保护；插入/检索都可跨线程调用。
+ * 内存检索使用互斥锁；版本化持久化接口由 Store 所在线程调用。
+ * 旧接口中的加载、插入、清理及实体读取会封送到 Store 线程。
  */
 class VideoRAGStore : public QObject {
     Q_OBJECT
@@ -71,6 +72,8 @@ public:
     bool initialize();
 
     VideoBuildManifest activeBuild(const QString& videoId) const;
+    bool saveTypeOverride(const QString& videoId,const QString& fingerprint,std::optional<VideoContentType>);
+    std::optional<VideoContentType> typeOverride(const QString& videoId,const QString& fingerprint) const;
     bool saveCandidateBuild(const VideoBuildManifest&);
     bool publishBuild(const VideoBuildManifest&, const QString& expectedActiveBuildId);
     bool saveRawSnapshot(const QString& snapshotId, const QString& videoId,

@@ -1,4 +1,7 @@
 #include "service/agentservice.h"
+#include <QCryptographicHash>
+
+QString AgentService::modelSignature() const {return QString::fromLatin1(QCryptographicHash::hash((m_model+"\n"+m_endpoint).toUtf8(),QCryptographicHash::Sha256).toHex());}
 #include "infrastructure/networkclient.h"
 #include "infrastructure/imageprocessor.h"
 #include "service/settingsservice.h"
@@ -118,7 +121,7 @@ QJsonObject AgentService::buildRequestPayload(const QString& convId,
     // === P1修复：VideoContext静态部分复用 ===
     // 检查当前会话是否已缓存了VideoContext静态部分
     HistoryEntry& entry = m_historiesLRU[convId];
-    const bool videoChanged = (entry.cachedVideoId != videoCtx.videoId);
+    const bool videoChanged = (entry.cachedVideoId != videoCtx.videoId || entry.cachedBuildId!=videoCtx.buildId || entry.cachedBuildRevision!=videoCtx.buildRevision);
     const bool needUpdateStaticContext = videoChanged
                                          || entry.cachedVideoSummary.isEmpty()
                                          || entry.cachedSceneOverview != videoCtx.sceneOverview
@@ -132,6 +135,7 @@ QJsonObject AgentService::buildRequestPayload(const QString& convId,
         // 缓存静态部分
         entry.cachedVideoSummary = videoCtx.videoSummary;
         entry.cachedSceneOverview = videoCtx.sceneOverview;
+        entry.cachedBuildId=videoCtx.buildId;entry.cachedBuildRevision=videoCtx.buildRevision;
         entry.cachedEntityContext = videoCtx.entityContext;
         entry.cachedVideoId = videoCtx.videoId;
 

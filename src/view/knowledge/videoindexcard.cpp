@@ -131,8 +131,8 @@ void VideoIndexCard::updateSummary(const KnowledgeViewModel::VideoIndexSummary& 
                             : summary.filePath);
 
     // Level badge
-    const QString lvlText = levelText(summary.level);
-    const QColor  lvlClr  = levelColor(summary.level);
+    const QString lvlText = summary.versioned ? (summary.buildState==ArtifactState::Ready?tr("完整"):tr("部分完成")) : levelText(summary.level);
+    const QColor  lvlClr  = summary.versioned && summary.buildState!=ArtifactState::Ready ? QColor("#FF9800") : levelColor(summary.level);
     m_levelBadge->setText(lvlText);
     m_levelBadge->setFixedWidth(lvlText.length() * 8 + 14);
     m_levelBadge->setStyleSheet(QString(

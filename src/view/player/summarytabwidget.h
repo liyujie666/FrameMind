@@ -10,6 +10,7 @@ class QProgressBar;
 class QScrollArea;
 class VideoSummaryCard;
 class QVBoxLayout;
+class QComboBox;
 
 /**
  * 总结 Tab：展示全视频 AI 摘要 + 索引进度。
@@ -58,6 +59,8 @@ private:
     VideoSummaryCard* m_summaryCard = nullptr;
     QWidget*      m_scenesSection = nullptr;
     QVBoxLayout*  m_scenesLayout  = nullptr;
+    QComboBox* m_typeSelector=nullptr;
+    QLabel* m_buildState=nullptr;
 
     int m_renderedSceneCount = 0;
 };
