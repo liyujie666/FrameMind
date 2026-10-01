@@ -98,12 +98,26 @@ ctest --test-dir build -C Debug --output-on-failure
 `FrameExtractor` 从首个目标附近的关键帧开始解码，五处探测和局部分析不会逐次解码整个视频前缀。
 生成 WAV 回归验证 6 秒完整音轨输出 96000 个 16kHz 样本，1234–5678ms 区间输出 71104 个样本。
 
-构建矩阵结果将在最终完成后更新；日志位于 `build/matrix/*/Testing/Temporary/LastTest.log`。
+最终矩阵（MSVC 2022 / Qt 6.9.1 / Debug）已全部通过：
+
+| ONNX | Whisper | 主程序构建 | CTest |
+|---|---|---|---|
+| ON | ON | 通过 | 3/3 通过 |
+| ON | OFF | 通过 | 3/3 通过 |
+| OFF | ON | 通过 | 3/3 通过 |
+| OFF | OFF | 通过 | 3/3 通过 |
+
+三套测试分别为 video_rag_tests、video_tokenizer_tests、video_media_tests，合计 15 个业务用例（含五策略数据行，不计初始化/清理）。
+日志位于 `build/matrix/*/Testing/Temporary/LastTest.log`；每个目录另保存三份 `video-*-results.xml`，可审查逐例结果。
+
+本地实现提交：`ba40cd8`（版本化底座和构建链路）、`14c57b6`（策略执行、类型控制及离线回归）、
+`dc24d9b`（seek 探测及音频完整性修复）。这些是可编译、可验证的实现批次，没有按八个步骤拆成八个独立提交。
 
 ## 尚待验收
 
 尚未提供五类真实素材及标注问题，未做在线模型抽检，未测得对旧流程的召回、摘要覆盖、来源支持率、耗时和成本对照。
 清单记录 model_calls 和 elapsed_ms，可用于后续对照，但不等于 token 或费用统计。
+远端 VLM 指纹对应配置的模型名与 endpoint；服务端同名模型更换权重无法自动识别，需要强制重建。
 未完成所有异常路径的穷尽测试及播放器 UI 人工验收。
 
 P3 的叙事专用策略、局部混合路由、专用 OCR、说话人分离、非语音音频事件未实现。
