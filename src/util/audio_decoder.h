@@ -5,6 +5,7 @@
 #include <vector>
 #include <cstdint>
 #include <functional>
+#include <atomic>
 
 /**
  * 音频解码器：从视频/音频文件中抽取 PCM 数据。
@@ -49,7 +50,7 @@ public:
 
 private:
     ProgressCallback m_progress;
-    bool m_cancelled = false;
+    std::atomic_bool m_cancelled{false};
 };
 
 #endif // FRAMEMIND_AUDIO_DECODER_H

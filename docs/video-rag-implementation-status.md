@@ -87,12 +87,16 @@ ctest --test-dir build -C Debug --output-on-failure
 ./scripts/run-video-rag-matrix.ps1 -ThirdPartyRoot D:/Qt/ffmpegProjects/FrameMind/third_party
 ```
 
-依赖根默认仍为仓库 third_party。测试使用临时 SQLite、生成 PNG 和假模型，不访问在线模型或用户数据库。
+依赖根默认仍为仓库 third_party。测试使用临时 SQLite、生成 PNG/AVI/WAV 和假模型，不访问在线模型或用户数据库。
 五策略流水线用例验证执行逻辑，不代替真实视频语义效果评测。
 
 已验证：重复迁移、重启恢复、PTS 序列化、事务回滚、发布冲突、版本不可覆写；静态镜头多主题、
 跨镜头问答、步骤关系、分页无遗漏、token 拆分、后半段事实召回；失败页 Partial、摘要失败终止、
-旧提取/模型回调丢弃、用户覆盖持久化及自动清除；旧版本过滤、checkpoint 失效、同时间事实保留、来源图片展开、无 ASR 降级。
+旧提取/模型回调丢弃、用户覆盖持久化及自动清除；旧版本过滤、QA/checkpoint 失效、同时间事实保留、来源图片展开；
+快速切视频、对象销毁、模型配置变化、无音轨/ASR/向量、分类失败回退；独立 seek 取帧和音频区间及尾部完整解码。
+
+`FrameExtractor` 从首个目标附近的关键帧开始解码，五处探测和局部分析不会逐次解码整个视频前缀。
+生成 WAV 回归验证 6 秒完整音轨输出 96000 个 16kHz 样本，1234–5678ms 区间输出 71104 个样本。
 
 构建矩阵结果将在最终完成后更新；日志位于 `build/matrix/*/Testing/Temporary/LastTest.log`。
 

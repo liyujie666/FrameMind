@@ -13,6 +13,7 @@
 | 6 | [`api-protocol.md`](./api-protocol.md) | 客户端 ↔ LLM 后端的 OpenAI Compatible 协议、SSE 流式、Tool Calling、错误处理 | 做 `AgentService` / `NetworkClient` 时读 |
 | 7 | [`agent_design.md`](./agent_design.md) | **愿景稿**（早期头脑风暴，含 P2 不做的能力） | 想了解长期方向时读，**不作为落地依据** |
 | 8 | [`video-rag-type-strategy-design.md`](./video-rag-type-strategy-design.md) | **类型策略设计**：按视频类型路由 RAG 构建策略，涵盖语义单元、接口、缓存迁移、线程与验收 | 实施多类型视频 RAG 改造时读；当前行为以源码为准 |
+| 9 | [`video-rag-implementation-status.md`](./video-rag-implementation-status.md) | 已实现接口、实际默认流程、测试矩阵及尚待真实素材验收的边界 | 验证本次改造或继续效果评测时读 |
 
 ## 文档一致性约定
 

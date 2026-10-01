@@ -164,6 +164,12 @@ QVector<FrameExtractor::Frame> FrameExtractor::extract(const QString& videoPath,
     } rgbBuffer{rgb.get()};
 
     const int64_t streamStart = stream->start_time == AV_NOPTS_VALUE ? 0 : stream->start_time;
+    // Probe and local review must not decode the whole prefix of a long video.
+    if (!targets.isEmpty() && targets.first() > 0) {
+        const int64_t seekPts = streamStart + av_rescale_q(targets.first(), AVRational{1, 1000}, stream->time_base);
+        if (av_seek_frame(format.get(), videoStreamIndex, seekPts, AVSEEK_FLAG_BACKWARD) >= 0)
+            avcodec_flush_buffers(codecContext.get());
+    }
     int targetIndex = 0;
     const auto consumeFrame = [&]() {
         const int64_t timestamp = decoded->best_effort_timestamp;

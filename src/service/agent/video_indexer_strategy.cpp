@@ -27,7 +27,7 @@ QJsonObject VideoIndexer::modelVersions() const {
             {"bge", m_embedder ? m_embedder->modelFingerprint() : QString()},
             {"clip", m_clip ? m_clip->modelFingerprint() : QString()},
             {"shots", "histogram_v1"},
-            {"pipeline", "semantic_context_v2"}};
+            {"pipeline", "semantic_context_v3"}};
 }
 
 void VideoIndexer::setPublished(const VideoRepresentation &value) {
@@ -90,7 +90,8 @@ void VideoIndexer::extract(const VideoBuildContext &context, const VideoRAGBuild
                         if (context.isCancelled())
                             decoder.cancel();
                     });
-                    auto pcm = decoder.decodeToFloat32(context.filePath, range.first, range.second);
+                auto pcm = decoder.decodeToFloat32(context.filePath, range.first, range.second);
+                if(context.isCancelled()) break;
                     if (pcm.empty()) {
                         result.diagnostics << "audio_decode_failed:" + QString::number(range.first);
                         continue;

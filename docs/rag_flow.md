@@ -10,7 +10,7 @@ PlayerViewModel 的 videoOpened 经 ChatViewModel 调用 VideoAnalysisService::o
 手动分析强制派生重建；指定类型通过 changeType；自动类型重建明确清除用户覆盖。
 
 1. 校验文件身份，读取活动构建、原始快照、语义单元及用户类型覆盖。
-2. 没有指定类型或兼容画像时，通过独立 FFmpeg 文件读取，探测五个分散位置画面及短音频，先分类。
+2. 没有指定类型或兼容画像时，通过独立 FFmpeg 文件读取并 seek 到目标附近，探测五个分散位置画面及短音频，先分类。
 3. 路由 Meeting / Interview / Lecture / Tutorial / Generic，并协商实际 ASR、文本向量、视觉向量能力。
 4. 创建候选构建。文件及模型匹配、采样足够密集时复用原始证据；否则异步重新提取。
 5. VideoIndexer 按计划提取。对话和课程先 ASR，其余先画面；完整转写以 60 秒区间解码。

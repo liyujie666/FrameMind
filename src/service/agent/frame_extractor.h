@@ -8,7 +8,7 @@
 #include <atomic>
 #include <cstdint>
 
-/** 单次顺序解码的视频帧提取器，供离线索引使用，不依赖播放器状态。 */
+/** 独立文件帧提取器：seek 到首个目标附近，再顺序解码，不依赖播放器状态。 */
 class FrameExtractor final
 {
 public:

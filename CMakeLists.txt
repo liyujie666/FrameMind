@@ -262,6 +262,19 @@ foreach(_dll ${FFMPEG_RUNTIME_DLLS})
     )
 endforeach()
 
+if(BUILD_TESTING)
+    qt_add_executable(video_media_tests tests/video_media_tests.cpp
+        src/service/agent/frame_extractor.cpp src/service/agent/media_probe.cpp src/util/audio_decoder.cpp)
+    target_include_directories(video_media_tests PRIVATE src "${FFMPEG_ROOT}/include")
+    target_link_libraries(video_media_tests PRIVATE Qt6::Core Qt6::Gui Qt6::Test
+        ffmpeg_avformat ffmpeg_avcodec ffmpeg_avutil ffmpeg_swresample ffmpeg_swscale)
+    foreach(_dll ${FFMPEG_RUNTIME_DLLS})
+        add_custom_command(TARGET video_media_tests POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${_dll}" "$<TARGET_FILE_DIR:video_media_tests>")
+    endforeach()
+    add_test(NAME video_media_tests COMMAND video_media_tests -o video-media-results.xml,xml -o -,txt)
+endif()
+
 # ---------------------------------------------------------------------------
 # ONNX Runtime 链接（FRAMEMIND_ENABLE_ONNX=ON 时生效）
 #   布局：third_party/onnxruntime/{include,lib,bin}
