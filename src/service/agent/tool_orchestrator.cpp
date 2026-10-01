@@ -5,6 +5,7 @@
 #include "service/agent/tools/search_video_content_tool.h"
 #include "service/agent/tools/get_transcript_tool.h"
 #include "service/agent/tools/get_scene_info_tool.h"
+#include "service/agent/tools/get_semantic_unit_tool.h"
 
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -147,6 +148,7 @@ void ToolOrchestrator::setActiveVideoContext(const QString& videoPath,
 {
     if (!m_registry) return;
     // 分发给需要 videoId / videoPath 的 Tool
+    if(auto* t=dynamic_cast<GetSemanticUnitTool*>(m_registry->getTool(QStringLiteral("get_semantic_unit")))) t->setVideoId(videoId);
     if (auto* t = dynamic_cast<SearchVideoContentTool*>(
             m_registry->getTool(QStringLiteral("search_video_content")))) {
         t->setVideoId(videoId);

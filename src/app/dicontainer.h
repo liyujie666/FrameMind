@@ -34,6 +34,7 @@ class AudioVisualAligner;
 class VideoIndexer;
 class OneShotVlmChannel;
 class VideoAnalysisService;
+class VideoRAGBuildCoordinator;
 class PerceptionStrategy;
 class ReflectionEngine;
 class ToolRegistry;
@@ -139,6 +140,7 @@ private:
     std::unique_ptr<AudioVisualAligner>   m_avAligner;
     std::unique_ptr<VideoIndexer>         m_videoIndexer;
     std::unique_ptr<VideoAnalysisService> m_videoAnalysis;
+    std::unique_ptr<VideoRAGBuildCoordinator> m_buildCoordinator;
     std::unique_ptr<PerceptionStrategy>   m_perception;
     std::unique_ptr<ReflectionEngine>     m_reflection;
     std::unique_ptr<ToolRegistry>         m_toolRegistry;

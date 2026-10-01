@@ -36,6 +36,11 @@ public:
     int                    indexPercent()    const { return m_indexPercent; }
     QString                indexStageLabel() const { return m_indexStageLabel; }
     bool                   isIndexing()      const { return m_isIndexing; }
+    QVector<SemanticUnit> semanticUnits() const {return m_repr?m_repr->semanticUnits:QVector<SemanticUnit>{};}
+    VideoContentProfile contentProfile() const {return m_profile;}
+    void changeType(VideoContentType type);
+    void rebuild();
+    void cancelBuild();
 
     /// 获取场景的 VLM 描述（若已生成），否则返回空
     QString sceneDescription(int sceneId) const;
@@ -46,6 +51,9 @@ public slots:
     void onVideoOpened(const QString& videoPath);
 
 signals:
+    void semanticUnitsReady(const QVector<SemanticUnit>&);
+    void contentProfileReady(const VideoContentProfile&);
+    void buildStateChanged(const VideoBuildManifest&);
     /// 场景列表已更新（Level 0 完成）
     void scenesReady(const QVector<Scene>& scenes);
 
@@ -73,6 +81,7 @@ private:
     VideoAnalysisService*              m_analysis = nullptr;
     VideoIndexer*                      m_indexer  = nullptr;
     QString                            m_currentPath;
+    VideoContentProfile m_profile;
 
     QVector<Scene>                     m_scenes;
     QVector<SpeechSegment>             m_speechSegments;

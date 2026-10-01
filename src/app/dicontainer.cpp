@@ -28,6 +28,7 @@
 #include "service/agent/video_indexer.h"
 #include "service/agent/one_shot_vlm_channel.h"
 #include "service/agent/video_analysis_service.h"
+#include "service/agent/video_rag_build_coordinator.h"
 #include "service/agent/perception_strategy.h"
 #include "service/agent/reflection_engine.h"
 #include "service/agent/tool_registry.h"
@@ -38,6 +39,7 @@
 #include "service/agent/tools/search_video_content_tool.h"
 #include "service/agent/tools/get_transcript_tool.h"
 #include "service/agent/tools/get_scene_info_tool.h"
+#include "service/agent/tools/get_semantic_unit_tool.h"
 #include "service/agent/tools/control_player_tool.h"
 
 // Workflow Engine
@@ -240,6 +242,8 @@ void DIContainer::initialize()
         m_oneShotVlmChannel.get(), m_videoIndexer.get(),
         m_ragStore.get(), m_playerService.get(), m_db);
     m_videoAnalysis->setAudioVisualAligner(m_avAligner.get());
+    m_buildCoordinator = std::make_unique<VideoRAGBuildCoordinator>(m_videoIndexer.get(),m_ragStore.get(),m_oneShotVlmChannel.get());
+    m_videoAnalysis->setBuildCoordinator(m_buildCoordinator.get());
 #ifdef FRAMEMIND_HAS_ONNXRUNTIME
     m_videoAnalysis->setEmbeddingService(m_embeddingService.get());
 #endif
@@ -260,6 +264,7 @@ void DIContainer::initialize()
         m_ragStore.get()));
     m_toolRegistry->registerTool(std::make_unique<GetSceneInfoTool>(
         m_videoAnalysis.get()));
+    m_toolRegistry->registerTool(std::make_unique<GetSemanticUnitTool>(m_ragStore.get()));
     m_toolRegistry->registerTool(std::make_unique<ControlPlayerTool>(m_eventBus));
 
     m_toolOrchestrator = std::make_unique<ToolOrchestrator>(
@@ -415,6 +420,9 @@ void DIContainer::initialize()
     m_videoAgent->setWorkflowExecutor(m_workflowExecutor.get());
     m_videoAgent->setWorkflowFactory(m_workflowFactory.get());
     m_videoAgent->setWorkflowCheckpoint(m_workflowCheckpoint.get());
+    QObject::connect(m_buildCoordinator.get(),&VideoRAGBuildCoordinator::published,m_videoAgent.get(),[this](const VideoRepresentation& r) {
+        if(m_videoAgent->activeVideoId()==r.videoId) {m_videoAgent->cancel();m_qaCache->clearVideo(r.videoId);m_entityTracker->reload(r.videoId);}
+    });
 
     // ViewModels
     m_playerVM = std::make_unique<PlayerViewModel>(m_playerService.get(),

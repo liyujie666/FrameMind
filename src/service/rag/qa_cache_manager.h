@@ -54,7 +54,8 @@ public:
                const QString& question,
                const QString& answer,
                float confidence,
-               const QVector<int>& evidenceSceneIds = {});
+               const QVector<int>& evidenceSceneIds = {},
+               const QVector<RetrievalResult>& evidence = {});
 
     /// 尝试从缓存回答
     /// 返回 std::nullopt 表示未命中；命中时返回缓存内容 + 相似度

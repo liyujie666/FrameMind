@@ -1,6 +1,11 @@
 #include "infrastructure/bert_tokenizer.h"
 
 #ifdef FRAMEMIND_HAS_ONNXRUNTIME
+int BertTokenizer::tokenCount(const QString& text) const {
+    int count=2;
+    for(const auto& token:basicTokenize(text)) count+=int(wordPieceTokenize(token).size());
+    return count;
+}
 
 #include <QFile>
 #include <QTextStream>

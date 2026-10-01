@@ -1,4 +1,25 @@
 #include "service/embedding_service.h"
+#ifdef FRAMEMIND_HAS_ONNXRUNTIME
+#include "infrastructure/bert_tokenizer.h"
+#endif
+
+int EmbeddingService::tokenCount(const QString& text) const {
+#ifdef FRAMEMIND_HAS_ONNXRUNTIME
+    if(m_tokenizer) return m_tokenizer->tokenCount(text);
+#endif
+    return int(text.size())+2;
+}
+
+QStringList EmbeddingService::splitPassage(const QString& text,int maxTokens) const {
+    QStringList parts;int offset=0;maxTokens=qBound(4,maxTokens,512);
+    while(offset<text.size()) {
+        int low=1,high=int(text.size())-offset;
+        while(low<high) {const int mid=low+(high-low+1)/2;if(tokenCount(text.mid(offset,mid))<=maxTokens) low=mid;else high=mid-1;}
+        if(offset+low<text.size() && text.at(offset+low-1).isHighSurrogate() && low>1) --low;
+        parts<<text.mid(offset,low);offset+=low;
+    }
+    return parts;
+}
 
 #ifndef FRAMEMIND_HAS_ONNXRUNTIME
 

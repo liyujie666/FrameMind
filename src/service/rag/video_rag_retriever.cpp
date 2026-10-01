@@ -37,6 +37,8 @@ int64_t timeGapMs(const VideoChunk& left, const VideoChunk& right)
 
 bool isDerivedFromSameTranscript(const VideoChunk& left, const VideoChunk& right)
 {
+    if(left.metadata.value("evidence_role").toString().startsWith("derived")
+        || right.metadata.value("evidence_role").toString().startsWith("derived")) return true;
     const QString leftSource = left.metadata.value(QStringLiteral("source")).toString();
     const QString rightSource = right.metadata.value(QStringLiteral("source")).toString();
     return leftSource.startsWith(QStringLiteral("whisper"))
@@ -171,6 +173,14 @@ QueryPlan VideoRAGRetriever::compileQueryPlan(
 {
     QueryPlan plan;
     plan.normalizedQuery = query.simplified();
+    plan.videoId=constraints.videoId;plan.expandSources=constraints.expandSources;
+    plan.expandNeighbors=constraints.expandNeighbors || plan.normalizedQuery.contains(QStringLiteral("下一步")) || plan.normalizedQuery.contains(QStringLiteral("上一步"));
+    if(m_store) {
+        const auto active=m_store->activeBuild(constraints.videoId);
+        plan.buildId=constraints.buildId.isEmpty()?active.buildId:constraints.buildId;
+        plan.rawSnapshotId=constraints.rawSnapshotId.isEmpty()?active.rawSnapshotId:constraints.rawSnapshotId;
+        plan.revision=constraints.revision>0?constraints.revision:active.revision;plan.strategyId=active.plan.strategyId;
+    }
     const QueryIntent intent = analyzeQuery(plan.normalizedQuery);
     plan.retrieveText = intent.needsTextSearch;
     plan.retrieveVisual = intent.needsVisualSearch;
@@ -298,8 +308,12 @@ QVector<RetrievalResult> VideoRAGRetriever::retrieve(const QString& query,
 
     const QueryPlan plan = compileQueryPlan(query, c);
     if (plan.temporalConstraintUnsatisfiable) return {};
-    const QueryIntent intent = analyzeQuery(plan.normalizedQuery);
+    QueryIntent intent = analyzeQuery(plan.normalizedQuery);
+    if((plan.strategyId.startsWith("meeting") || plan.strategyId.startsWith("interview") || plan.strategyId.startsWith("lecture")) && !intent.prefersVisualEvidence) {intent.weightText=0.75;intent.weightVisual=0.15;intent.weightEntity=0.1;}
     Constraints effective = c;
+    effective.buildId=plan.buildId;effective.rawSnapshotId=plan.rawSnapshotId;effective.revision=plan.revision;
+    const auto pinned=m_store->activeBuild(c.videoId);
+    if(pinned.buildId!=plan.buildId || (!plan.buildId.isEmpty() && pinned.revision!=plan.revision)) return {};
     if (plan.hasTimeRange()) {
         effective.startMsGte = plan.startMs;
         effective.endMsLte = plan.endMs;
@@ -341,6 +355,33 @@ QVector<RetrievalResult> VideoRAGRetriever::retrieve(const QString& query,
     fused = deduplicate(fused);
     fused = applyTemporalCorroboration(fused, plan);
     if (fused.size() > topK) fused.resize(topK);
+    const auto raw=m_store->rawChunks(plan.rawSnapshotId);
+    QHash<QString,VideoChunk> sources;for(const auto& chunk:raw) sources.insert(chunk.chunkId,chunk);
+    for(auto& hit:fused) {
+        auto& meta=hit.chunk.metadata;meta.insert("read_build_id",plan.buildId);meta.insert("read_revision",plan.revision);meta.insert("read_snapshot_id",plan.rawSnapshotId);
+        const QString unitId=meta.value("unit_id").toString();auto unit=m_store->getUnit(plan.buildId,unitId);
+        QVariantList expanded;
+        if(plan.expandSources) {
+            QStringList ids;for(auto ref:meta.value("source_chunk_ids").toList()) ids<<ref.toString();
+            if(ids.isEmpty()) ids=unit.sourceChunkIds;
+            for(const auto& id:ids) if(sources.contains(id) && expanded.size()<plan.sourceBudget) {
+                const auto& source=sources[id];
+                if((effective.startMsGte>=0 && source.endMs<=effective.startMsGte) || (effective.endMsLte>=0 && source.startMs>=effective.endMsLte)) continue;
+                expanded<<QVariantMap{{"chunk_id",id},{"start_ms",qlonglong(source.startMs)},{"end_ms",qlonglong(source.endMs)},{"text",source.textContent},{"keyframe_path",source.keyframePath},{"modality",source.chunkType==VideoChunk::FrameDesc?"frame":"speech"}};
+            }
+            meta.insert("expanded_sources",expanded);
+            meta.insert("source_expansion_partial",ids.size()>expanded.size());
+        }
+        if(plan.expandNeighbors && unit.isValid()) {
+            const QString neighborId=plan.normalizedQuery.contains(QStringLiteral("上一步"))?unit.previousUnitId:unit.nextUnitId;
+            const auto neighbor=m_store->getUnit(plan.buildId,neighborId);
+            if(neighbor.isValid() && (effective.startMsGte<0 || neighbor.endMs>effective.startMsGte) && (effective.endMsLte<0 || neighbor.startMs<effective.endMsLte)) meta.insert("neighbor_unit",neighbor.toJson().toVariantMap());
+        }
+        const bool insufficient=unit.isValid() && (unit.state!=ArtifactState::Ready || (plan.needsLocalVerification && unit.coverage.framePtsMs.size()<2));
+        meta.insert("needs_local_verification",insufficient || plan.needsLocalVerification);
+    }
+    const auto after=m_store->activeBuild(c.videoId);
+    if(after.buildId!=pinned.buildId || after.revision!=pinned.revision) return {};
     return fused;
 }
 
@@ -358,6 +399,7 @@ QVector<RetrievalResult> VideoRAGRetriever::textPathSearch(
 
     VideoRAGStore::Filter f;
     f.videoId    = c.videoId;
+    f.buildId=c.buildId;f.rawSnapshotId=c.rawSnapshotId;f.unitId=c.unitId;
     f.startMsGte = c.startMsGte;
     f.endMsLte   = c.endMsLte;
     if (c.startMsGte >= 0 || c.endMsLte >= 0) {
@@ -396,6 +438,7 @@ QVector<RetrievalResult> VideoRAGRetriever::lexicalTextPathSearch(
 
     VideoRAGStore::Filter filter;
     filter.videoId = c.videoId;
+    filter.buildId=c.buildId;filter.rawSnapshotId=c.rawSnapshotId;filter.unitId=c.unitId;
     filter.startMsGte = c.startMsGte;
     filter.endMsLte = c.endMsLte;
     if (c.startMsGte >= 0 || c.endMsLte >= 0) {
@@ -431,6 +474,7 @@ QVector<RetrievalResult> VideoRAGRetriever::visualPathSearch(
 
     VideoRAGStore::Filter f;
     f.videoId    = c.videoId;
+    f.buildId=c.buildId;f.rawSnapshotId=c.rawSnapshotId;f.unitId=c.unitId;
     f.startMsGte = c.startMsGte;
     f.endMsLte   = c.endMsLte;
     if (c.startMsGte >= 0 || c.endMsLte >= 0) {
@@ -536,7 +580,7 @@ QVector<RetrievalResult> VideoRAGRetriever::deduplicate(
         bool overlap = false;
         for (const auto& kept : out) {
             if (r.chunk.chunkType != kept.chunk.chunkType) continue;
-            if (timeOverlapRatio(r.chunk, kept.chunk) > 0.7f) {
+            if (r.chunk.chunkId==kept.chunk.chunkId) {
                 overlap = true;
                 break;
             }

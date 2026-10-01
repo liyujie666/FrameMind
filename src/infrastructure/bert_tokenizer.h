@@ -36,6 +36,7 @@ public:
 
     /// 编码文本 → token IDs（含 [CLS]/[SEP]，padding 到 maxLen）
     std::vector<int64_t> encode(const QString& text, int maxLen = 512) const;
+    int tokenCount(const QString& text) const;
 
     /// 生成 attention mask
     std::vector<int64_t> attentionMask(const std::vector<int64_t>& inputIds) const;

@@ -30,13 +30,13 @@ void VideoAnalysisViewModel::connectServices()
 
         connect(m_indexer, &VideoIndexer::levelReady,
                 this, [this](int level, QSharedPointer<VideoRepresentation> repr) {
-            if (!repr) return;
+            if (!repr || (!m_currentPath.isEmpty() && repr->metadata.filePath!=m_currentPath)) return;
             m_repr = repr;
             if (level == 0) {
                 m_scenes = repr->scenes;
                 emit scenesReady(m_scenes);
             }
-            if (level == 1) {
+            if (level >= 1) {
                 m_scenes         = repr->scenes;
                 m_speechSegments = repr->speechSegments;
                 emit scenesReady(m_scenes);
@@ -53,6 +53,15 @@ void VideoAnalysisViewModel::connectServices()
     }
 
     if (m_analysis) {
+        connect(m_analysis,&VideoAnalysisService::contentProfileReady,this,[this](const QString& path,const VideoContentProfile& p){
+            if(path!=m_currentPath) return;m_profile=p;emit contentProfileReady(p);
+        });
+        connect(m_analysis,&VideoAnalysisService::semanticUnitsReady,this,[this](const QString& path,const QVector<SemanticUnit>& units){
+            if(path!=m_currentPath) return;m_repr=m_analysis->representation(path);emit semanticUnitsReady(units);
+        });
+        connect(m_analysis,&VideoAnalysisService::buildFinished,this,[this](const VideoBuildManifest& manifest){
+            if(manifest.filePath!=m_currentPath) return;m_isIndexing=false;emit indexingChanged(false);emit buildStateChanged(manifest);
+        });
         connect(m_analysis, &VideoAnalysisService::analysisProgress,
                 this, [this](int percent, const QString& msg) {
             m_indexPercent    = percent;
@@ -62,16 +71,14 @@ void VideoAnalysisViewModel::connectServices()
 
         connect(m_analysis, &VideoAnalysisService::sceneDescribed,
                 this, [this](int sceneId, const QString& description) {
-            if (m_repr) {
-                m_repr->sceneDescriptions.insert(sceneId, description);
-            }
             emit sceneDescribed(sceneId, description);
         });
 
         connect(m_analysis, &VideoAnalysisService::summaryReady,
                 this, [this](const QString& summary) {
+            auto current=m_analysis->representation(m_currentPath);
+            if(!current || current->videoSummary!=summary) return;
             m_videoSummary = summary;
-            if (m_repr) m_repr->videoSummary = summary;
             
             // 摘要生成完成，标记索引结束
             m_isIndexing = false;
@@ -94,6 +101,7 @@ void VideoAnalysisViewModel::onVideoOpened(const QString& videoPath)
     m_currentPath = videoPath;
 
     m_scenes.clear();
+    m_profile={};emit contentProfileReady(m_profile);emit semanticUnitsReady({});
     m_speechSegments.clear();
     m_videoSummary.clear();
     m_repr.reset();
@@ -113,6 +121,7 @@ void VideoAnalysisViewModel::onVideoOpened(const QString& videoPath)
             m_scenes         = repr->scenes;
             m_speechSegments = repr->speechSegments;
             m_videoSummary   = repr->videoSummary;
+            m_profile=repr->build.profile;emit contentProfileReady(m_profile);emit semanticUnitsReady(repr->semanticUnits);
             m_indexPercent   = 100;
             m_indexStageLabel = tr("已加载持久化视频索引");
             m_isIndexing     = false;
@@ -132,6 +141,12 @@ void VideoAnalysisViewModel::onVideoOpened(const QString& videoPath)
         }
     }
 }
+
+void VideoAnalysisViewModel::changeType(VideoContentType type) {
+    if(!m_analysis || m_currentPath.isEmpty()) return;m_isIndexing=true;emit indexingChanged(true);m_analysis->changeType(m_currentPath,type);
+}
+void VideoAnalysisViewModel::rebuild() {if(m_analysis && !m_currentPath.isEmpty()) {m_isIndexing=true;emit indexingChanged(true);m_analysis->analyzeVideo(m_currentPath);}}
+void VideoAnalysisViewModel::cancelBuild() {if(m_analysis) m_analysis->cancelBuild();}
 
 QString VideoAnalysisViewModel::sceneDescription(int sceneId) const
 {

@@ -448,11 +448,11 @@ void VideoAgent::phaseReasonAndAct(const QString& convId,
                             const QVector<int> retrySceneIds = evidenceSceneIds(m_retrievedEvidence);
                             if (!isPlayerOp(m_currentQuestion)
                                 && m_qaCache && !m_activeVideoId.isEmpty()
-                                && !retrySceneIds.isEmpty()
+                                && (!retrySceneIds.isEmpty() || !m_retrievedEvidence.isEmpty())
                                 && retryResult.confidence >= 0.7f) {
                                 m_qaCache->cache(m_activeVideoId,
                                                  m_currentQuestion, retryAnswer,
-                                                 retryResult.confidence, retrySceneIds);
+                                                 retryResult.confidence, retrySceneIds, m_retrievedEvidence);
                             }
                             finishAnswer(retryResult);
                         },
@@ -468,9 +468,9 @@ void VideoAgent::phaseReasonAndAct(const QString& convId,
             const QVector<int> sceneIds = evidenceSceneIds(m_retrievedEvidence);
             if (!isPlayerOp(m_currentQuestion)
                 && m_qaCache && !m_activeVideoId.isEmpty()
-                && !sceneIds.isEmpty() && result.confidence >= 0.7f) {
+                && (!sceneIds.isEmpty() || !result.evidence.isEmpty()) && result.confidence >= 0.7f) {
                 m_qaCache->cache(m_activeVideoId, m_currentQuestion, answer,
-                                 result.confidence, sceneIds);
+                                 result.confidence, sceneIds, result.evidence);
             }
 
             finishAnswer(result);
@@ -554,6 +554,7 @@ void VideoAgent::askViaWorkflow(const QString& conversationId,
             if (m_retriever && !workflowQuestion.isEmpty() && !workflowVideoId.isEmpty()) {
                 VideoRAGRetriever::Constraints constraints;
                 constraints.videoId = workflowVideoId;
+                constraints.buildId=workflowState.get("build_id").toString();constraints.revision=workflowState.get("build_revision").toInt();constraints.rawSnapshotId=workflowState.get("raw_snapshot_id").toString();
                 constraints.currentPositionMs = workflowState.get(
                     QStringLiteral("current_pos_ms")).toLongLong();
                 if (m_analysis) {
@@ -634,6 +635,10 @@ void VideoAgent::askViaWorkflow(const QString& conversationId,
     state.set("conversation_id", conversationId);
     state.set("video_path", m_activeVideoPath);
     state.set("video_id", m_activeVideoId);
+    if(m_analysis) {
+        const auto repr=m_analysis->representation(m_activeVideoPath);
+        if(repr) {state.set("build_id",repr->build.buildId);state.set("build_revision",repr->build.revision);state.set("raw_snapshot_id",repr->build.rawSnapshotId);}
+    }
     state.set("current_pos_ms", static_cast<qlonglong>(currentPlayerPosMs));
     state.set("video_context", QVariant::fromValue(videoCtx));
     if (!userFrames.isEmpty()) {
@@ -664,9 +669,9 @@ void VideoAgent::askViaWorkflow(const QString& conversationId,
 
         const QVector<int> sceneIds = evidenceSceneIds(result.evidence);
         if (m_qaCache && !workflowVideoId.isEmpty()
-            && !sceneIds.isEmpty() && result.confidence >= 0.7f) {
+            && (!sceneIds.isEmpty() || !result.evidence.isEmpty()) && result.confidence >= 0.7f) {
             m_qaCache->cache(workflowVideoId, question, result.answer,
-                             result.confidence, sceneIds);
+                             result.confidence, sceneIds, result.evidence);
         }
 
         finishAnswer(result);

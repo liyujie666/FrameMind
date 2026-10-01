@@ -39,6 +39,7 @@ ReflectionResult ReflectionEngine::reflect(
     QSet<QString> modalities;
     bool hasCorroboration = false;
     for (const RetrievalResult& item : evidence) {
+        if(item.chunk.metadata.value("evidence_role").toString().startsWith("derived")) continue;
         const QString modality = item.chunk.metadata
             .value(QStringLiteral("evidence_type")).toString();
         modalities.insert(modality.isEmpty() ? item.hitPath : modality);
@@ -95,6 +96,9 @@ ReflectionResult::Issue* ReflectionEngine::checkEvidenceSupport(
         return iss;
     }
     for (const RetrievalResult& item : evidence) {
+        if(item.chunk.metadata.value("needs_local_verification").toBool()) {
+            auto* issue=new ReflectionResult::Issue;issue->kind=ReflectionResult::Issue::EvidenceMissing;issue->detail=QStringLiteral("当前语义单元证据不完整或细节需局部复核，请展开原始证据或调用时间区间分析");return issue;
+        }
         if (!item.chunk.chunkId.isEmpty() && !item.chunk.textContent.trimmed().isEmpty()) {
             return nullptr;
         }

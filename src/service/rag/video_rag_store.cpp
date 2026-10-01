@@ -53,6 +53,10 @@ QString chunkTypeToString(VideoChunk::ChunkType t)
     case VideoChunk::QAcache:        return QStringLiteral("qa_cache");
     case VideoChunk::SceneAudio:     return QStringLiteral("scene_audio");
     case VideoChunk::SceneFused:     return QStringLiteral("scene_fused");
+    case VideoChunk::UnitSummary: return QStringLiteral("unit_summary");
+    case VideoChunk::UnitFact: return QStringLiteral("unit_fact");
+    case VideoChunk::TextEvidence: return QStringLiteral("text_evidence");
+    case VideoChunk::ChapterSummary: return QStringLiteral("chapter_summary");
     }
     return QStringLiteral("unknown");
 }
@@ -66,6 +70,10 @@ VideoChunk::ChunkType chunkTypeFromString(const QString& s)
     if (s == QLatin1String("qa_cache"))       return VideoChunk::QAcache;
     if (s == QLatin1String("scene_audio"))    return VideoChunk::SceneAudio;
     if (s == QLatin1String("scene_fused"))    return VideoChunk::SceneFused;
+    if (s == QLatin1String("unit_summary")) return VideoChunk::UnitSummary;
+    if (s == QLatin1String("unit_fact")) return VideoChunk::UnitFact;
+    if (s == QLatin1String("text_evidence")) return VideoChunk::TextEvidence;
+    if (s == QLatin1String("chapter_summary")) return VideoChunk::ChapterSummary;
     return VideoChunk::SceneSummary;
 }
 
@@ -110,6 +118,28 @@ float lexicalScore(const QSet<QString>& queryTerms, const QString& content)
 }
 } // namespace
 
+namespace {
+bool visible(const VideoChunk& c, const VideoBuildManifest& active,
+             const QString& explicitBuild = {}, const QString& explicitRaw = {}) {
+    const QString build = c.metadata.value(QStringLiteral("build_id")).toString();
+    const QString raw = c.metadata.value(QStringLiteral("raw_snapshot_id")).toString();
+    const QString targetBuild = explicitBuild.isEmpty() ? active.buildId : explicitBuild;
+    const QString targetRaw = explicitRaw.isEmpty() ? active.rawSnapshotId : explicitRaw;
+    if (targetBuild.isEmpty()) return build.isEmpty() && raw.isEmpty(); // explicit legacy view
+    if (!build.isEmpty()) return build == targetBuild;
+    return !targetRaw.isEmpty() && raw == targetRaw;
+}
+QString json(const QJsonObject& j) {return QString::fromUtf8(QJsonDocument(j).toJson(QJsonDocument::Compact));}
+bool writeChunk(DatabaseManager* db, VideoRAGStore::Collection col, const VideoChunk& c) {
+    if (!c.isValid()) return false;
+    if (!db) return true;
+    return db->exec(QStringLiteral("INSERT OR REPLACE INTO rag_chunks (chunk_id,collection,video_id,start_ms,end_ms,chunk_type,text_content,text_embedding,frame_embedding,keyframe_path,metadata_json,build_id,raw_snapshot_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)"),
+        {c.chunkId,colName(col),c.videoId,qlonglong(c.startMs),qlonglong(c.endMs),chunkTypeToString(c.chunkType),c.textContent,
+         embeddingToBlob(c.textEmbedding),embeddingToBlob(c.frameEmbedding),c.keyframePath,json(QJsonObject::fromVariantMap(c.metadata)),
+         c.metadata.value(QStringLiteral("build_id"),QString()),c.metadata.value(QStringLiteral("raw_snapshot_id"),QString())});
+}
+}
+
 // ================= Impl =================
 
 struct VideoRAGStore::Impl {
@@ -121,6 +151,8 @@ struct VideoRAGStore::Impl {
 
     // 记录当前已加载的 videoId 集合，避免重复 load
     QSet<QString> loadedVideos;
+    QHash<QString, VideoBuildManifest> active;
+    QHash<QString, QVector<SemanticUnit>> units;
 
     QMutex mtx;
 };
@@ -184,6 +216,28 @@ bool VideoRAGStore::initialize()
         "CREATE INDEX IF NOT EXISTS idx_rag_entities_video "
         "ON rag_entities(video_id)"));
 
+    if (!d->db->exec(QStringLiteral("BEGIN IMMEDIATE"))) return false;
+    const QStringList migrations = {
+        QStringLiteral("CREATE TABLE IF NOT EXISTS video_raw_snapshots (snapshot_id TEXT PRIMARY KEY, video_id TEXT NOT NULL, payload_json TEXT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)"),
+        QStringLiteral("CREATE TABLE IF NOT EXISTS video_rag_builds (build_id TEXT PRIMARY KEY, video_id TEXT NOT NULL, raw_snapshot_id TEXT NOT NULL, status TEXT NOT NULL, payload_json TEXT NOT NULL, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)"),
+        QStringLiteral("CREATE TABLE IF NOT EXISTS video_semantic_units (build_id TEXT NOT NULL, unit_id TEXT NOT NULL, start_ms INTEGER NOT NULL, end_ms INTEGER NOT NULL, payload_json TEXT NOT NULL, PRIMARY KEY(build_id,unit_id))"),
+        QStringLiteral("CREATE TABLE IF NOT EXISTS video_unit_links (build_id TEXT NOT NULL, from_unit_id TEXT NOT NULL, relation TEXT NOT NULL, target_kind TEXT NOT NULL, target_id TEXT NOT NULL, PRIMARY KEY(build_id,from_unit_id,relation,target_id))"),
+        QStringLiteral("CREATE INDEX IF NOT EXISTS idx_build_video ON video_rag_builds(video_id,status)"),
+        QStringLiteral("CREATE INDEX IF NOT EXISTS idx_units_time ON video_semantic_units(build_id,start_ms,end_ms)")
+    };
+    bool ok = true;
+    for (const auto& sql : migrations) ok = d->db->exec(sql) && ok;
+    const auto addColumn = [this](const QString& table, const QString& column) {
+        for (const auto& row : d->db->query(QStringLiteral("PRAGMA table_info(%1)").arg(table)))
+            if (row.value(QStringLiteral("name")).toString() == column) return true;
+        return d->db->exec(QStringLiteral("ALTER TABLE %1 ADD COLUMN %2 TEXT NOT NULL DEFAULT ''").arg(table,column));
+    };
+    ok = addColumn(QStringLiteral("video_metadata"),QStringLiteral("active_build_id")) && ok;
+    ok = addColumn(QStringLiteral("rag_chunks"),QStringLiteral("build_id")) && ok;
+    ok = addColumn(QStringLiteral("rag_chunks"),QStringLiteral("raw_snapshot_id")) && ok;
+    ok = d->db->exec(QStringLiteral("CREATE INDEX IF NOT EXISTS idx_chunks_scope ON rag_chunks(video_id,raw_snapshot_id,build_id)")) && ok;
+    if (ok) ok=d->db->exec(QStringLiteral("INSERT OR REPLACE INTO settings(key,value) VALUES('rag_schema_version','3')"));
+    if (!ok || !d->db->exec(QStringLiteral("COMMIT"))) {d->db->exec(QStringLiteral("ROLLBACK"));return false;}
     return true;
 }
 
@@ -191,9 +245,20 @@ bool VideoRAGStore::initialize()
 
 void VideoRAGStore::loadVideo(const QString& videoId)
 {
+    if (QThread::currentThread()!=thread()) {QMetaObject::invokeMethod(this,[this,videoId]{loadVideo(videoId);},Qt::BlockingQueuedConnection);return;}
     QMutexLocker lock(&d->mtx);
     if (d->loadedVideos.contains(videoId)) return;
     if (!d->db) return;
+
+    const auto builds = d->db->query(QStringLiteral("SELECT b.payload_json FROM video_metadata m JOIN video_rag_builds b ON b.build_id=m.active_build_id WHERE m.video_id=?"),{videoId});
+    if (!builds.isEmpty()) {
+        const auto manifest=VideoBuildManifest::fromJson(QJsonDocument::fromJson(builds.first().value("payload_json").toString().toUtf8()).object());
+        d->active[videoId]=manifest;
+        QVector<SemanticUnit> units;
+        for(const auto& row:d->db->query(QStringLiteral("SELECT payload_json FROM video_semantic_units WHERE build_id=? ORDER BY start_ms,unit_id"),{manifest.buildId}))
+            units<<SemanticUnit::fromJson(QJsonDocument::fromJson(row.value("payload_json").toString().toUtf8()).object());
+        d->units[manifest.buildId]=units;
+    }
 
     int count = 0;
     const auto rows = d->db->query(
@@ -231,6 +296,7 @@ void VideoRAGStore::loadVideo(const QString& videoId)
     }
 
     d->loadedVideos.insert(videoId);
+    lock.unlock();
     emit videoIndexLoaded(videoId, count);
 }
 
@@ -241,7 +307,7 @@ bool VideoRAGStore::hasIndexedContent(const QString& videoId) const
         const auto chunks = d->inMemory.constFind(collection);
         if (chunks == d->inMemory.constEnd()) continue;
         for (auto it = chunks->constBegin(); it != chunks->constEnd(); ++it) {
-            if (it.value().videoId == videoId) return true;
+            if (it.value().videoId == videoId && visible(it.value(),d->active.value(videoId))) return true;
         }
     }
     return false;
@@ -249,6 +315,7 @@ bool VideoRAGStore::hasIndexedContent(const QString& videoId) const
 
 void VideoRAGStore::invalidateVideo(const QString& videoId)
 {
+    if(QThread::currentThread()!=thread()){QMetaObject::invokeMethod(this,[this,videoId]{invalidateVideo(videoId);},Qt::BlockingQueuedConnection);return;}
     {
         QMutexLocker lock(&d->mtx);
         for (auto it = d->inMemory.begin(); it != d->inMemory.end(); ++it) {
@@ -259,11 +326,18 @@ void VideoRAGStore::invalidateVideo(const QString& videoId)
             }
         }
         d->loadedVideos.remove(videoId);
+        d->active.remove(videoId);
     }
 
     if (d->db) {
         d->db->exec(QStringLiteral("DELETE FROM rag_chunks WHERE video_id = ?"), { videoId });
         d->db->exec(QStringLiteral("DELETE FROM rag_entities WHERE video_id = ?"), { videoId });
+        d->db->exec(QStringLiteral("DELETE FROM video_unit_links WHERE build_id IN (SELECT build_id FROM video_rag_builds WHERE video_id=?)"),{videoId});
+        d->db->exec(QStringLiteral("DELETE FROM video_semantic_units WHERE build_id IN (SELECT build_id FROM video_rag_builds WHERE video_id=?)"),{videoId});
+        d->db->exec(QStringLiteral("DELETE FROM video_rag_builds WHERE video_id=?"),{videoId});
+        d->db->exec(QStringLiteral("DELETE FROM video_raw_snapshots WHERE video_id=?"),{videoId});
+        d->db->exec(QStringLiteral("DELETE FROM scene_descriptions WHERE video_id=?"),{videoId});
+        d->db->exec(QStringLiteral("DELETE FROM video_metadata WHERE video_id=?"),{videoId});
     }
     emit videoIndexInvalidated(videoId);
 }
@@ -293,34 +367,14 @@ bool VideoRAGStore::insertChunk(Collection col, const VideoChunk& chunk)
         }, Qt::BlockingQueuedConnection);
         return inserted;
     }
+    if (!writeChunk(d->db,col,chunk)) return false;
     {
         QMutexLocker lock(&d->mtx);
         d->inMemory[col][chunk.chunkId] = chunk;
         d->loadedVideos.insert(chunk.videoId);
     }
 
-    if (!d->db) return true;
-
-    return d->db->exec(
-        QStringLiteral(
-            "INSERT OR REPLACE INTO rag_chunks "
-            "(chunk_id, collection, video_id, start_ms, end_ms, chunk_type, "
-            " text_content, text_embedding, frame_embedding, keyframe_path, metadata_json) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"),
-        {
-            chunk.chunkId,
-            colName(col),
-            chunk.videoId,
-            static_cast<qlonglong>(chunk.startMs),
-            static_cast<qlonglong>(chunk.endMs),
-            chunkTypeToString(chunk.chunkType),
-            chunk.textContent,
-            embeddingToBlob(chunk.textEmbedding),
-            embeddingToBlob(chunk.frameEmbedding),
-            chunk.keyframePath,
-            QString::fromUtf8(QJsonDocument(QJsonObject::fromVariantMap(chunk.metadata))
-                              .toJson(QJsonDocument::Compact))
-        });
+    return true;
 }
 
 bool VideoRAGStore::insertChunks(Collection col, const std::vector<VideoChunk>& chunks)
@@ -376,6 +430,8 @@ QVector<QPair<VideoChunk, float>> VideoRAGStore::search(Collection col,
 
     for (auto cit = chunks.constBegin(); cit != chunks.constEnd(); ++cit) {
         const VideoChunk& c = cit.value();
+        if (!visible(c,d->active.value(c.videoId),filter.buildId,filter.rawSnapshotId)) continue;
+        if(!filter.unitId.isEmpty() && c.metadata.value("unit_id").toString()!=filter.unitId) continue;
 
         // 过滤
         if (!filter.videoId.isEmpty() && c.videoId != filter.videoId) continue;
@@ -432,6 +488,8 @@ QVector<QPair<VideoChunk, float>> VideoRAGStore::searchLexical(
     results.reserve(collection->size());
     for (auto it = collection->constBegin(); it != collection->constEnd(); ++it) {
         const VideoChunk& chunk = it.value();
+        if (!visible(chunk,d->active.value(chunk.videoId),filter.buildId,filter.rawSnapshotId)) continue;
+        if(!filter.unitId.isEmpty() && chunk.metadata.value("unit_id").toString()!=filter.unitId) continue;
         if (!filter.videoId.isEmpty() && chunk.videoId != filter.videoId) continue;
         if (filter.timeMatchMode == Filter::Overlaps) {
             if (filter.startMsGte >= 0 && chunk.endMs <= filter.startMsGte) continue;
@@ -466,7 +524,8 @@ VideoChunk VideoRAGStore::getChunk(Collection col, const QString& chunkId) const
     QMutexLocker lock(&d->mtx);
     const auto it = d->inMemory.constFind(col);
     if (it == d->inMemory.constEnd()) return {};
-    return it.value().value(chunkId, {});
+    const auto c=it.value().value(chunkId, {});
+    return visible(c,d->active.value(c.videoId)) ? c : VideoChunk{};
 }
 
 QVector<VideoChunk> VideoRAGStore::listChunks(Collection col, const QString& videoId) const
@@ -476,7 +535,7 @@ QVector<VideoChunk> VideoRAGStore::listChunks(Collection col, const QString& vid
     const auto it = d->inMemory.constFind(col);
     if (it == d->inMemory.constEnd()) return out;
     for (const auto& c : it.value()) {
-        if (c.videoId == videoId) out.append(c);
+        if (c.videoId == videoId && visible(c,d->active.value(videoId))) out.append(c);
     }
     return out;
 }
@@ -602,6 +661,107 @@ QVector<EntityProfile> VideoRAGStore::listEntities(const QString& videoId) const
 }
 
 // ================= 工具 =================
+
+VideoBuildManifest VideoRAGStore::activeBuild(const QString& videoId) const
+{
+    QMutexLocker lock(&d->mtx);
+    return d->active.value(videoId);
+}
+
+bool VideoRAGStore::saveCandidateBuild(const VideoBuildManifest& m)
+{
+    Q_ASSERT(QThread::currentThread()==thread());
+    if (!d->db || m.buildId.isEmpty() || m.videoId.isEmpty()) return false;
+    return d->db->exec(QStringLiteral("INSERT OR REPLACE INTO video_rag_builds(build_id,video_id,raw_snapshot_id,status,payload_json) VALUES(?,?,?,?,?)"),
+                       {m.buildId,m.videoId,m.rawSnapshotId,artifactStateKey(m.state),json(m.toJson())});
+}
+
+bool VideoRAGStore::saveRawSnapshot(const QString& id, const QString& video,
+                                   const QJsonObject& payload, const QVector<VideoChunk>& chunks)
+{
+    Q_ASSERT(QThread::currentThread()==thread());
+    if (!d->db || id.isEmpty() || !d->db->exec(QStringLiteral("BEGIN IMMEDIATE"))) return false;
+    bool ok=d->db->exec(QStringLiteral("INSERT OR IGNORE INTO video_raw_snapshots(snapshot_id,video_id,payload_json) VALUES(?,?,?)"),{id,video,json(payload)});
+    for(const auto& c:chunks) {
+        if(c.videoId!=video || c.metadata.value("raw_snapshot_id").toString()!=id || !c.metadata.value("build_id").toString().isEmpty()) {ok=false;break;}
+        ok=writeChunk(d->db,c.chunkType==VideoChunk::FrameDesc?VisualFrames:TextSegments,c)&&ok;
+    }
+    if (!ok || !d->db->exec(QStringLiteral("COMMIT"))) {d->db->exec(QStringLiteral("ROLLBACK"));return false;}
+    QMutexLocker lock(&d->mtx);
+    for(const auto& c:chunks) d->inMemory[c.chunkType==VideoChunk::FrameDesc?VisualFrames:TextSegments][c.chunkId]=c;
+    d->loadedVideos.insert(video);
+    return true;
+}
+
+QJsonObject VideoRAGStore::loadRawSnapshot(const QString& id) const
+{
+    Q_ASSERT(QThread::currentThread()==thread());
+    if (!d->db) return {};
+    auto rows=d->db->query(QStringLiteral("SELECT payload_json FROM video_raw_snapshots WHERE snapshot_id=?"),{id});
+    return rows.isEmpty()?QJsonObject{}:QJsonDocument::fromJson(rows.first().value("payload_json").toString().toUtf8()).object();
+}
+
+QVector<VideoChunk> VideoRAGStore::rawChunks(const QString& id) const
+{
+    QMutexLocker lock(&d->mtx);QVector<VideoChunk> out;
+    for(const auto& collection:d->inMemory) for(const auto& c:collection)
+        if(c.metadata.value("raw_snapshot_id").toString()==id && c.metadata.value("build_id").toString().isEmpty()) out<<c;
+    std::sort(out.begin(),out.end(),[](const auto& a,const auto& b){return a.startMs==b.startMs?a.chunkId<b.chunkId:a.startMs<b.startMs;});
+    return out;
+}
+
+bool VideoRAGStore::saveUnitBatch(const VideoBuildManifest& m,const QVector<SemanticUnit>& units,const QVector<VideoChunk>& chunks)
+{
+    Q_ASSERT(QThread::currentThread()==thread());
+    if(!d->db || !d->db->exec(QStringLiteral("BEGIN IMMEDIATE"))) return false;
+    bool ok=saveCandidateBuild(m);QSet<QString> ids;
+    for(const auto& u:units) ids.insert(u.unitId);
+    for(const auto& u:units) {
+        if(!u.isValid() || u.buildId!=m.buildId || (!u.nextUnitId.isEmpty() && !ids.contains(u.nextUnitId)) || (!u.previousUnitId.isEmpty() && !ids.contains(u.previousUnitId))) {ok=false;break;}
+        ok=d->db->exec(QStringLiteral("INSERT OR REPLACE INTO video_semantic_units VALUES(?,?,?,?,?)"),{m.buildId,u.unitId,qlonglong(u.startMs),qlonglong(u.endMs),json(u.toJson())})&&ok;
+        ok=d->db->exec(QStringLiteral("DELETE FROM video_unit_links WHERE build_id=? AND from_unit_id=?"),{m.buildId,u.unitId})&&ok;
+        auto link=[&](const QString& relation,const QString& kind,const QString& target){
+            if(!target.isEmpty()) ok=d->db->exec(QStringLiteral("INSERT OR REPLACE INTO video_unit_links VALUES(?,?,?,?,?)"),{m.buildId,u.unitId,relation,kind,target})&&ok;
+        };
+        for(const auto& source:u.sourceChunkIds) link("source","chunk",source);
+        link("parent","unit",u.parentUnitId);link("previous","unit",u.previousUnitId);link("next","unit",u.nextUnitId);
+    }
+    for(const auto& c:chunks) {
+        if(c.videoId!=m.videoId || c.metadata.value("build_id").toString()!=m.buildId || c.metadata.value("raw_snapshot_id").toString()!=m.rawSnapshotId) {ok=false;break;}
+        ok=writeChunk(d->db,TextSegments,c)&&ok;
+    }
+    if(!ok || !d->db->exec(QStringLiteral("COMMIT"))) {d->db->exec(QStringLiteral("ROLLBACK"));return false;}
+    QMutexLocker lock(&d->mtx);d->units[m.buildId]=units;
+    for(const auto& c:chunks) d->inMemory[TextSegments][c.chunkId]=c;
+    return true;
+}
+
+bool VideoRAGStore::publishBuild(const VideoBuildManifest& m,const QString& expected)
+{
+    Q_ASSERT(QThread::currentThread()==thread());
+    if(!d->db || (m.state!=ArtifactState::Ready && m.state!=ArtifactState::Partial) || listUnits(m.buildId).isEmpty()) return false;
+    if(!d->db->exec(QStringLiteral("BEGIN IMMEDIATE"))) return false;
+    const auto rows=d->db->query(QStringLiteral("SELECT active_build_id FROM video_metadata WHERE video_id=?"),{m.videoId});
+    const QString active=rows.isEmpty()?QString():rows.first().value("active_build_id").toString();
+    bool ok=active==expected;
+    if(ok && active==m.buildId) {const auto old=activeBuild(m.videoId);ok=m.revision>old.revision;}
+    ok=ok && !loadRawSnapshot(m.rawSnapshotId).isEmpty();
+    if(ok) ok=saveCandidateBuild(m) && d->db->saveVideoMetadata(m.videoId,m.filePath,m.summary,2)
+        && d->db->exec(QStringLiteral("UPDATE video_metadata SET active_build_id=? WHERE video_id=?"),{m.buildId,m.videoId});
+    if(!ok || !d->db->exec(QStringLiteral("COMMIT"))) {d->db->exec(QStringLiteral("ROLLBACK"));return false;}
+    QMutexLocker lock(&d->mtx);d->active[m.videoId]=m;
+    return true;
+}
+
+QVector<SemanticUnit> VideoRAGStore::listUnits(const QString& buildId) const
+{
+    QMutexLocker lock(&d->mtx);return d->units.value(buildId);
+}
+SemanticUnit VideoRAGStore::getUnit(const QString& build,const QString& id) const
+{
+    for(const auto& u:listUnits(build)) if(u.unitId==id) return u;
+    return {};
+}
 
 float VideoRAGStore::cosineSimilarity(const std::vector<float>& a,
                                        const std::vector<float>& b)

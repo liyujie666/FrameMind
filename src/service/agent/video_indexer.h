@@ -10,6 +10,7 @@
 #include <QVector>
 #include <atomic>
 #include <memory>
+#include <functional>
 
 #include "model/video_representation.h"
 #include "model/retrieval_result.h"
@@ -93,6 +94,18 @@ public:
 
     /// 根据文件路径计算稳定 videoId（size + 头 1MB hash）
     static QString computeVideoId(const QString& videoPath);
+    struct ExtractionResult {
+        VideoRepresentation representation;
+        QVector<VideoChunk> chunks;
+        QStringList diagnostics;
+        ArtifactState state = ArtifactState::Ready;
+    };
+    AvailableCapabilities capabilities() const;
+    void extract(const VideoBuildContext&, const VideoRAGBuildPlan&, bool probe,
+                 std::function<void(ExtractionResult)>);
+    void encodeChunks(const VideoBuildContext&, QVector<VideoChunk>,
+                      std::function<void(QVector<VideoChunk>)>);
+    void setPublished(const VideoRepresentation&);
 
 signals:
     /// 进度上报

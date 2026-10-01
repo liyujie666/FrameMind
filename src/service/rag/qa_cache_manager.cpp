@@ -34,10 +34,11 @@ void QACacheManager::cache(const QString& videoId,
                            const QString& question,
                            const QString& answer,
                            float confidence,
-                           const QVector<int>& evidenceSceneIds)
+                           const QVector<int>& evidenceSceneIds,
+                           const QVector<RetrievalResult>& evidence)
 {
     if (!m_store || videoId.isEmpty() || question.trimmed().isEmpty()
-        || answer.trimmed().isEmpty() || confidence < 0.7f || evidenceSceneIds.isEmpty()) {
+        || answer.trimmed().isEmpty() || confidence < 0.7f || (evidenceSceneIds.isEmpty() && evidence.isEmpty())) {
         return;
     }
 
@@ -55,6 +56,17 @@ void QACacheManager::cache(const QString& videoId,
     c.textEmbedding = emb;
 
     QVariantMap meta;
+    const auto active=m_store->activeBuild(videoId);
+    QStringList evidenceIds;
+    if(!active.buildId.isEmpty()) {
+        for(const auto& item:evidence) {
+            if(item.chunk.metadata.value("read_build_id").toString()!=active.buildId || item.chunk.metadata.value("read_revision").toInt()!=active.revision) return;
+            if(item.chunk.metadata.value("needs_local_verification").toBool()) return;
+            evidenceIds<<item.chunk.chunkId;
+        }
+        if(evidenceIds.isEmpty()) return;
+        meta.insert("build_id",active.buildId);meta.insert("raw_snapshot_id",active.rawSnapshotId);meta.insert("revision",active.revision);meta.insert("evidence_chunk_ids",evidenceIds);
+    }
     meta.insert(QStringLiteral("question"), question);
     meta.insert(QStringLiteral("answer"), answer);
     meta.insert(QStringLiteral("confidence"), confidence);
@@ -89,6 +101,12 @@ std::optional<QACacheManager::CachedAnswer> QACacheManager::tryAnswer(
     const VideoChunk& c = results.first().first;
     const float sim = results.first().second;
     const auto evidenceIds = c.metadata.value(QStringLiteral("evidence_scene_ids")).toList();
+    const auto active=m_store->activeBuild(videoId);
+    const auto chunkIds=c.metadata.value("evidence_chunk_ids").toStringList();
+    if(!active.buildId.isEmpty()) {
+        if(c.metadata.value("build_id").toString()!=active.buildId || c.metadata.value("revision").toInt()!=active.revision || chunkIds.isEmpty()) return std::nullopt;
+        for(const auto& id:chunkIds) if(!m_store->getChunk(VideoRAGStore::TextSegments,id).isValid() && !m_store->getChunk(VideoRAGStore::VisualFrames,id).isValid()) return std::nullopt;
+    }
     const float originalConfidence = c.metadata.value(QStringLiteral("confidence")).toFloat();
     const QString modelId = c.metadata.value(QStringLiteral("embedding_model_id")).toString();
     const QString modelVersion = c.metadata.value(QStringLiteral("embedding_version")).toString();
@@ -96,7 +114,7 @@ std::optional<QACacheManager::CachedAnswer> QACacheManager::tryAnswer(
         c.metadata.value(QStringLiteral("cached_at")).toString(), Qt::ISODate);
     const bool expired = m_maxAgeDays > 0 && (!cachedAt.isValid()
         || cachedAt < QDateTime::currentDateTime().addDays(-m_maxAgeDays));
-    if (sim < m_threshold || evidenceIds.isEmpty() || originalConfidence < 0.7f
+    if (sim < m_threshold || (evidenceIds.isEmpty() && chunkIds.isEmpty()) || originalConfidence < 0.7f
         || modelId != QLatin1String("bge_text")
         || modelVersion != QLatin1String("query_v2") || expired) {
         return std::nullopt;

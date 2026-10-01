@@ -12,6 +12,11 @@
  */
 struct QueryPlan {
     QString normalizedQuery;
+    QString videoId,buildId,rawSnapshotId,strategyId;
+    int revision=0;
+    bool expandSources=true;
+    bool expandNeighbors=false;
+    int sourceBudget=8;
 
     bool retrieveText = true;
     bool retrieveVisual = true;

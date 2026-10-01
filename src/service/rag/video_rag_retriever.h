@@ -32,6 +32,10 @@ public:
     /// 检索约束
     struct Constraints {
         QString  videoId;
+        QString buildId,rawSnapshotId,unitId;
+        int revision=0;
+        bool expandSources=true;
+        bool expandNeighbors=false;
         int64_t  startMsGte = -1;
         int64_t  endMsLte   = -1;
         VideoChunk::ChunkType chunkType = static_cast<VideoChunk::ChunkType>(-1);

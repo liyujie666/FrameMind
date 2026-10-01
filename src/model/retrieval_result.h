@@ -29,7 +29,11 @@ struct VideoChunk {
         FrameDesc,       // 关键帧描述
         QAcache,         // 历史问答缓存
         SceneAudio,      // 场景同期音频摘要
-        SceneFused       // 场景音视频融合描述
+        SceneFused,      // 场景音视频融合描述
+        UnitSummary,
+        UnitFact,
+        TextEvidence,
+        ChapterSummary
     };
 
     QString chunkId;

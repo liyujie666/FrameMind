@@ -47,6 +47,14 @@ std::optional<QJsonObject> WorkflowCheckpoint::load(const QString& workflowId)
         return std::nullopt;
     }
 
+    const auto state=QJsonDocument::fromJson(rows.first()["state_json"].toString().toUtf8()).object();
+    const auto data=state["data"].toObject();const QString video=data["video_id"].toString();
+    if(!video.isEmpty()) {
+        const auto activeRows=DatabaseManager::instance()->query("SELECT b.payload_json FROM video_metadata m LEFT JOIN video_rag_builds b ON b.build_id=m.active_build_id WHERE m.video_id=?",{video});
+        const auto active=activeRows.isEmpty()?QJsonObject{}:QJsonDocument::fromJson(activeRows.first()["payload_json"].toString().toUtf8()).object();
+        if(data["build_id"].toString()!=active["build_id"].toString() || (!active["build_id"].toString().isEmpty() && data["build_revision"].toInt()!=active["revision"].toInt())) {remove(workflowId);return std::nullopt;}
+    }
+
     QJsonObject result;
     QString stateStr = rows.first()["state_json"].toString();
     result["state"] = QJsonDocument::fromJson(stateStr.toUtf8()).object();

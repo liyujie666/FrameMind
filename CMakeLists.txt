@@ -1,6 +1,10 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(FrameMind LANGUAGES CXX)
+include(CTest)
+
+set(FRAMEMIND_THIRD_PARTY_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party" CACHE PATH
+    "External binary dependencies (FFmpeg, ONNX Runtime, Whisper, SmartPlayer)")
 
 # ---------------------------------------------------------------------------
 # 基本编译设置
@@ -36,6 +40,22 @@ foreach(path IN LISTS QT_PATHS)
     endif()
 endforeach()
 
+if(BUILD_TESTING)
+    find_package(Qt6 6.9 REQUIRED COMPONENTS Test)
+    qt_add_executable(video_rag_tests
+        tests/video_rag_tests.cpp
+        src/infrastructure/databasemanager.cpp
+        src/model/video_rag_types.cpp
+        src/model/video_representation_codec.cpp
+        src/service/rag/video_rag_store.cpp
+        src/service/rag/strategies/video_rag_strategy_registry.cpp
+        src/service/rag/semantic_unit_builder.cpp
+    )
+    target_include_directories(video_rag_tests PRIVATE src)
+    target_link_libraries(video_rag_tests PRIVATE Qt6::Core Qt6::Gui Qt6::Sql Qt6::Test)
+    add_test(NAME video_rag_tests COMMAND video_rag_tests)
+endif()
+
 find_package(Qt6 6.9 REQUIRED COMPONENTS
     Core
     Gui
@@ -60,7 +80,7 @@ qt_standard_project_setup()
 #   "无法定位程序输入点 xxx 于动态链接库" 错误。
 #   下面用 dumpbin 解析 SmartPlayerSDK.dll 的依赖，自动校验配套 dll 是否齐全。
 # ---------------------------------------------------------------------------
-set(SMARTPLAYER_SDK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/smartplayer_sdk")
+set(SMARTPLAYER_SDK_DIR "${FRAMEMIND_THIRD_PARTY_ROOT}/smartplayer_sdk" CACHE PATH "SmartPlayer SDK directory")
 
 add_library(smartplayer SHARED IMPORTED)
 set_target_properties(smartplayer PROPERTIES
@@ -203,7 +223,7 @@ target_link_libraries(FrameMind PRIVATE
 #   注意：这些 DLL 与 SmartPlayerSDK 共用同一套 FFmpeg 构建产物，
 #         版本必须与 SmartPlayerSDK.dll 导入表一致。
 # ---------------------------------------------------------------------------
-set(FFMPEG_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ffmpeg")
+set(FFMPEG_ROOT "${FRAMEMIND_THIRD_PARTY_ROOT}/ffmpeg" CACHE PATH "FFmpeg directory")
 
 target_include_directories(FrameMind PRIVATE "${FFMPEG_ROOT}/include")
 
@@ -245,7 +265,7 @@ endforeach()
 #      可执行目录。
 # ---------------------------------------------------------------------------
 if(FRAMEMIND_ENABLE_ONNX)
-    set(ONNXRUNTIME_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/onnxruntime")
+    set(ONNXRUNTIME_ROOT "${FRAMEMIND_THIRD_PARTY_ROOT}/onnxruntime" CACHE PATH "ONNX Runtime directory")
 
     add_library(onnxruntime SHARED IMPORTED)
     set_target_properties(onnxruntime PROPERTIES
@@ -296,14 +316,14 @@ endif()
 #     bin/      → whisper.dll + ggml*.dll
 # ---------------------------------------------------------------------------
 if(FRAMEMIND_ENABLE_WHISPER)
-    set(WHISPER_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/whisper.cpp")
+    set(WHISPER_ROOT "${FRAMEMIND_THIRD_PARTY_ROOT}/whisper.cpp" CACHE PATH "Whisper directory")
 
     if(EXISTS "${WHISPER_ROOT}/CMakeLists.txt")
         # 方式 A：源码版
         message(STATUS "whisper.cpp: source build (add_subdirectory)")
         set(WHISPER_BUILD_TESTS OFF CACHE BOOL "" FORCE)
         set(WHISPER_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-        add_subdirectory(third_party/whisper.cpp)
+        add_subdirectory("${WHISPER_ROOT}" "${CMAKE_CURRENT_BINARY_DIR}/whisper")
         target_link_libraries(FrameMind PRIVATE whisper)
     elseif(EXISTS "${WHISPER_ROOT}/lib/whisper.lib")
         # 方式 B：预编译版
@@ -373,7 +393,7 @@ endif()
 #   也可使用 vcpkg：vcpkg install faiss:x64-windows-static
 # ---------------------------------------------------------------------------
 if(FRAMEMIND_ENABLE_FAISS)
-    set(FAISS_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/faiss")
+    set(FAISS_ROOT "${FRAMEMIND_THIRD_PARTY_ROOT}/faiss" CACHE PATH "FAISS directory")
 
     if(NOT EXISTS "${FAISS_ROOT}/include/faiss/Index.h")
         message(FATAL_ERROR

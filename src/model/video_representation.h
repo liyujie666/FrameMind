@@ -12,6 +12,7 @@
 #include "model/speech_segment.h"
 #include "model/entity_profile.h"
 #include "model/audio_visual_relation.h"
+#include "video_rag_types.h"
 
 /**
  * 视频三层表示（agent-core-design.md §2.1）：感知层 / 结构层 / 语义层。
@@ -20,6 +21,8 @@
  * 由 VideoIndexer 按 Level 0/1/2 渐进式填充。
  */
 struct VideoRepresentation {
+    VideoBuildManifest build;
+    QVector<SemanticUnit> semanticUnits;
     // ===== 通用元信息 =====
     QString   videoId;          // 基于 fileHash 生成
     VideoInfo metadata;         // 感知层元信息（时长/分辨率/fps/有无音频）

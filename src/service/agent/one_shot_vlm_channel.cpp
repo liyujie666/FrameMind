@@ -3,6 +3,7 @@
 #include "service/agentservice.h"
 
 #include <QUuid>
+#include <QTimer>
 #include <utility>
 
 OneShotVlmChannel::OneShotVlmChannel(AgentService* agent, QObject* parent)
@@ -92,6 +93,12 @@ void OneShotVlmChannel::startNext()
     const QString requestText = m_active.systemPrompt + QStringLiteral("\n\n")
         + m_active.userText;
     m_agent->sendMessage(m_active.conversationId, requestText, m_active.frames, {});
+    const QString conversationId=m_active.conversationId;
+    QTimer::singleShot(55000,this,[this,conversationId] {
+        if(!m_running || m_active.conversationId!=conversationId) return;
+        m_agent->stopGeneration();
+        if(m_running && m_active.conversationId==conversationId) finishActive({});
+    });
 }
 
 void OneShotVlmChannel::finishActive(const QString& content)

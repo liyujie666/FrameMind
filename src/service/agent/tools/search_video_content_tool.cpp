@@ -66,6 +66,7 @@ void SearchVideoContentTool::executeAsync(const QString& callId,
     QJsonArray results;
     for (const auto& h : hits) {
         QJsonObject o;
+        o.insert("metadata",QJsonObject::fromVariantMap(h.chunk.metadata));
         o.insert(QStringLiteral("timestamp_ms"), static_cast<qint64>(h.chunk.startMs));
         o.insert(QStringLiteral("end_ms"),       static_cast<qint64>(h.chunk.endMs));
         o.insert(QStringLiteral("score"),        h.score);

@@ -17,6 +17,10 @@ QString evidenceTypeLabel(const VideoChunk& chunk)
     case VideoChunk::SceneFused: return QStringLiteral("fused");
     case VideoChunk::SpeechSegment: return QStringLiteral("speech_segment");
     case VideoChunk::FrameDesc: return QStringLiteral("frame");
+    case VideoChunk::UnitSummary: return QStringLiteral("unit_summary");
+    case VideoChunk::UnitFact: return QStringLiteral("unit_fact");
+    case VideoChunk::TextEvidence: return QStringLiteral("raw_text");
+    case VideoChunk::ChapterSummary: return QStringLiteral("chapter_summary");
     default: return QStringLiteral("other");
     }
 }
@@ -53,6 +57,14 @@ QString EvidenceComposer::formatText(const QVector<RetrievalResult>& evidence,
         }
         output += QStringLiteral("相关内容：%1\n\n")
                       .arg(chunk.textContent.left(maxCharsPerItem));
+        if(chunk.textContent.size()>maxCharsPerItem) output+=QStringLiteral("[本段展示有截断，需要精确事实时展开来源]\n");
+        output+=QStringLiteral("构建：%1；修订：%2；单元：%3\n").arg(chunk.metadata.value("read_build_id").toString()).arg(chunk.metadata.value("read_revision").toInt()).arg(chunk.metadata.value("unit_id").toString());
+        for(const auto& source:chunk.metadata.value("expanded_sources").toList()) {
+            const auto s=source.toMap();output+=QStringLiteral("原始来源 [%1] @%2-%3ms (%4)：%5\n").arg(s.value("chunk_id").toString()).arg(s.value("start_ms").toLongLong()).arg(s.value("end_ms").toLongLong()).arg(s.value("modality").toString(),s.value("text").toString().left(maxCharsPerItem));
+        }
+        const auto neighbor=chunk.metadata.value("neighbor_unit").toMap();
+        if(!neighbor.isEmpty()) output+=QStringLiteral("相邻步骤 [%1] @%2ms：%3\n").arg(neighbor.value("unit_id").toString()).arg(neighbor.value("start_ms").toLongLong()).arg(neighbor.value("fused_description").toString().left(maxCharsPerItem));
+        if(chunk.metadata.value("needs_local_verification").toBool()) output+=QStringLiteral("[证据不完整或需确认细节：调用局部分析工具后再作确定结论]\n");
     }
     return output;
 }

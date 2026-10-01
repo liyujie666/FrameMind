@@ -34,6 +34,8 @@ public:
 
     EmbeddingService(const EmbeddingService&) = delete;
     EmbeddingService& operator=(const EmbeddingService&) = delete;
+    int tokenCount(const QString& text) const;
+    QStringList splitPassage(const QString& text, int maxTokens = 500) const;
 
 #ifdef FRAMEMIND_HAS_ONNXRUNTIME
 

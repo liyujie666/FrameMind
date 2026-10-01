@@ -10,6 +10,7 @@
 
 #include "model/retrieval_result.h"
 #include "model/entity_profile.h"
+#include "model/video_rag_types.h"
 
 class DatabaseManager;
 
@@ -58,6 +59,9 @@ public:
         QString  expectedEmbeddingModelId;     // 空=兼容旧数据；非空时必须与所用向量模型一致
         QString  expectedEmbeddingVersion;     // 空=不限制
         float    minScore = 0.0f;              // 分数阈值
+        QString buildId;
+        QString rawSnapshotId;
+        QString unitId;
     };
 
     explicit VideoRAGStore(DatabaseManager* db, QObject* parent = nullptr);
@@ -65,6 +69,18 @@ public:
 
     /// 建表（rag_chunks / rag_entities），幂等
     bool initialize();
+
+    VideoBuildManifest activeBuild(const QString& videoId) const;
+    bool saveCandidateBuild(const VideoBuildManifest&);
+    bool publishBuild(const VideoBuildManifest&, const QString& expectedActiveBuildId);
+    bool saveRawSnapshot(const QString& snapshotId, const QString& videoId,
+                         const QJsonObject& representation, const QVector<VideoChunk>& chunks);
+    QJsonObject loadRawSnapshot(const QString& snapshotId) const;
+    QVector<VideoChunk> rawChunks(const QString& snapshotId) const;
+    bool saveUnitBatch(const VideoBuildManifest&, const QVector<SemanticUnit>&,
+                       const QVector<VideoChunk>& chunks);
+    QVector<SemanticUnit> listUnits(const QString& buildId) const;
+    SemanticUnit getUnit(const QString& buildId, const QString& unitId) const;
 
     // ---- 索引管理 ----
 

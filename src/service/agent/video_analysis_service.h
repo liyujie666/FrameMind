@@ -18,6 +18,7 @@ class PlayerService;
 class EmbeddingService;
 class AudioVisualAligner;
 class DatabaseManager;
+class VideoRAGBuildCoordinator;
 
 /**
  * 视频分析主服务（架构 §3.3.2 / agent-core-design.md §3.2 REPRESENT）。
@@ -44,6 +45,9 @@ public:
 
     /// 注入音画对齐/门控器（未注入时融合阶段自动降级为纯视觉描述）
     void setAudioVisualAligner(AudioVisualAligner* a) { m_aligner = a; }
+    void setBuildCoordinator(VideoRAGBuildCoordinator*);
+    void changeType(const QString& path, VideoContentType);
+    void cancelBuild();
 
     // ---- 统筹入口 ----
 
@@ -98,6 +102,9 @@ public:
     VideoContext buildVideoContext(QSharedPointer<VideoRepresentation> repr) const;
 
 signals:
+    void semanticUnitsReady(const QString& filePath,const QVector<SemanticUnit>&);
+    void contentProfileReady(const QString& filePath,const VideoContentProfile&);
+    void buildFinished(const VideoBuildManifest&);
     void analysisProgress(int percent, const QString& stage);
     void sceneDescribed(int sceneId, const QString& description);
     void summaryReady(const QString& summary);
@@ -159,6 +166,7 @@ private:
                          std::function<void()> onDone);
 
     OneShotVlmChannel*  m_vlmChannel = nullptr;
+    VideoRAGBuildCoordinator* m_coordinator = nullptr;
     VideoIndexer*       m_indexer  = nullptr;
     VideoRAGStore*      m_ragStore = nullptr;
     PlayerService*      m_player   = nullptr;

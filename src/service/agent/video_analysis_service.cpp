@@ -1,4 +1,5 @@
 #include "service/agent/video_analysis_service.h"
+#include "service/agent/video_rag_build_coordinator.h"
 
 #include "service/agent/one_shot_vlm_channel.h"
 #include "service/playerservice.h"
@@ -25,17 +26,6 @@ namespace {
 // ============================================================
 // 视频类型枚举
 // ============================================================
-enum class VideoContentType {
-    Unknown,        // 未知类型
-    Educational,    // 教学/讲座/课程
-    Interview,      // 访谈/对话/讨论
-    Documentary,    // 纪录片/专题片
-    Drama,          // 剧情/影视
-    Vlog,           // Vlog/生活记录
-    News,           // 新闻/资讯
-    Tutorial,       // 操作教程/演示
-    Presentation    // 演讲/报告/发布会
-};
 
 // ============================================================
 // Prompt 模板：agent-core-design.md §3.2
@@ -524,62 +514,36 @@ VideoAnalysisService::VideoAnalysisService(OneShotVlmChannel* vlmChannel,
     , m_player(player)
     , m_db(db)
 {
-    if (m_indexer) {
-        connect(m_indexer, &VideoIndexer::levelReady,
-                this, [this](int level, QSharedPointer<VideoRepresentation> repr) {
-            emit analysisProgress(30 + level * 20,
-                                  tr("Level %1 索引完成").arg(level));
-            if (level == 1) {
-                // 缓存命中：repr 已有场景描述和摘要，直接重放信号，不重复调 VLM
-                if (!repr->videoSummary.isEmpty()) {
-                    qDebug() << "[VideoAnalysisService] 使用缓存的分析结果 | videoId:" << repr->videoId;
-                    for (auto it = repr->sceneDescriptions.constBegin();
-                         it != repr->sceneDescriptions.constEnd(); ++it) {
-                        emit sceneDescribed(it.key(), it.value());
-                    }
-                    emit summaryReady(repr->videoSummary);
-                    return;
-                }
 
-                if (!repr->scenes.isEmpty()) {
-                    startDescribeAllScenes(repr);
-                }
-            }
-        });
-    }
 }
 
 // ============================================================
 // 统筹入口
 // ============================================================
 
+void VideoAnalysisService::setBuildCoordinator(VideoRAGBuildCoordinator* coordinator) {
+    m_coordinator=coordinator;
+    connect(coordinator,&VideoRAGBuildCoordinator::progress,this,&VideoAnalysisService::analysisProgress);
+    connect(coordinator,&VideoRAGBuildCoordinator::buildFailed,this,&VideoAnalysisService::analysisError);
+    connect(coordinator,&VideoRAGBuildCoordinator::profileReady,this,&VideoAnalysisService::contentProfileReady);
+    connect(coordinator,&VideoRAGBuildCoordinator::finished,this,&VideoAnalysisService::buildFinished);
+    connect(coordinator,&VideoRAGBuildCoordinator::published,this,[this](const VideoRepresentation& r) {
+        emit contentProfileReady(r.metadata.filePath,r.build.profile);
+        emit semanticUnitsReady(r.metadata.filePath,r.semanticUnits);
+        emit summaryReady(r.videoSummary);
+    });
+}
+void VideoAnalysisService::changeType(const QString& path,VideoContentType type) {if(m_coordinator) m_coordinator->changeType(path,type);}
+void VideoAnalysisService::cancelBuild() {if(m_coordinator) m_coordinator->cancel();}
+
 void VideoAnalysisService::onVideoOpened(const QString& videoPath)
 {
-    const QString videoId = VideoIndexer::computeVideoId(videoPath);
-    if (m_vlmChannel && !m_backgroundVideoId.isEmpty()
-        && m_backgroundVideoId != videoId) {
-        m_vlmChannel->cancelBackground(m_backgroundVideoId);
-    }
-    m_backgroundVideoId = videoId;
-    if (m_ragStore) {
-        // 先尝试加载已有索引；QA 缓存只能在其原始证据也仍存在时复用。
-        m_ragStore->loadVideo(videoId);
-        if (m_ragStore->hasIndexedContent(videoId)) {
-            qDebug() << "[VideoAnalysisService] 检测到已有RAG索引，跳过重复构建 | videoId:" << videoId;
-            emit analysisProgress(100, tr("已加载持久化视频索引"));
-            return;
-        }
-    }
-    if (m_indexer) {
-        qDebug() << "[VideoAnalysisService] 未找到已有索引，开始构建RAG | videoId:" << videoId;
-        m_indexer->startIndex(videoPath);
-    }
+    if (m_coordinator) m_coordinator->start(videoPath);
 }
 
 void VideoAnalysisService::analyzeVideo(const QString& videoPath)
 {
-    onVideoOpened(videoPath);
-    // 后续 Level 2 由 levelReady 触发
+    if (m_coordinator) {BuildOptions options;options.forceDerivedRebuild=true;m_coordinator->start(videoPath,options);}
 }
 
 QSharedPointer<VideoRepresentation> VideoAnalysisService::representation(
