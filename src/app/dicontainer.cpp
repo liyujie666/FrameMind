@@ -244,8 +244,8 @@ void DIContainer::initialize()
     m_videoAnalysis->setAudioVisualAligner(m_avAligner.get());
     m_buildCoordinator = std::make_unique<VideoRAGBuildCoordinator>(m_videoIndexer.get(),m_ragStore.get(),m_oneShotVlmChannel.get());
     m_videoAnalysis->setBuildCoordinator(m_buildCoordinator.get());
-    m_buildCoordinator->setModelRequest([this](const VideoBuildContext& context,const QString& system,const QString& text,const QList<QImage>& frames,std::function<void(QString)> done) {
-        m_videoAnalysis->executeBuildRequest(context,system,text,frames,[done](VideoAnalysisService::BuildModelResult result) {done(result.state==ArtifactState::Ready?result.content:QString());});
+    m_buildCoordinator->setDetailedModelRequest([this](const VideoBuildContext& context,const QString& system,const QString& text,const QList<QImage>& frames,std::function<void(ModelReply)> done) {
+        m_videoAnalysis->executeBuildRequest(context,system,text,frames,[done](VideoAnalysisService::BuildModelResult result) {done({result.content,result.error});});
     });
 #ifdef FRAMEMIND_HAS_ONNXRUNTIME
     m_videoAnalysis->setEmbeddingService(m_embeddingService.get());

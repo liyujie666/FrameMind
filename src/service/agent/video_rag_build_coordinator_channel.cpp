@@ -11,11 +11,11 @@ VideoRAGBuildCoordinator::VideoRAGBuildCoordinator(VideoRAGBuildBackend *backend
             guard->cancelBackground(key);
     };
     m_modelRequest = [guard](const VideoBuildContext &context, const QString &system, const QString &text,
-                             const QList<QImage> &images, std::function<void(QString)> done) {
+                             const QList<QImage> &images, std::function<void(ModelReply)> done) {
         if (guard)
-            guard->enqueue(system, text, images, OneShotVlmChannel::Priority::Background,
+            guard->enqueueDetailed(system, text, images, OneShotVlmChannel::Priority::Background,
                            context.cancellationKey(), done);
         else
-            done({});
+            done({{}, QStringLiteral("模型通道未初始化")});
     };
 }

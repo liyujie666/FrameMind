@@ -21,6 +21,6 @@ class SemanticUnitBuilder {
     static QVector<UnitEvidencePage> pages(const SemanticUnit &, const QVector<VideoChunk> &,
                                            const VideoRAGBuildPlan &);
     static QJsonArray validatedFacts(const QJsonArray &, const UnitEvidencePage &, const VideoRAGBuildPlan &,
-                                     bool *valid);
-    static QJsonObject parseObject(const QString &);
+                                     bool *valid, QString *error = nullptr);
+    static QJsonObject parseObject(const QString &, QString *error = nullptr);
 };

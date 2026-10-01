@@ -8,21 +8,22 @@
 
 QString OneShotVlmChannel::modelSignature() const {return m_agent?m_agent->modelSignature():QStringLiteral("unavailable");}
 
-OneShotVlmChannel::OneShotVlmChannel(AgentService* agent, QObject* parent)
+OneShotVlmChannel::OneShotVlmChannel(AgentService* agent, QObject* parent, int requestTimeoutMs)
     : QObject(parent)
     , m_agent(agent)
+    , m_requestTimeoutMs(qMax(1, requestTimeoutMs))
 {
     if (!m_agent) return;
 
     connect(m_agent, &AgentService::responseFinished, this,
             [this](const QString& conversationId, const ChatMessage& message) {
                 if (!m_running || conversationId != m_active.conversationId) return;
-                finishActive(message.content);
+                finishActive({message.content, {}});
             });
     connect(m_agent, &AgentService::responseError, this,
-            [this](const QString& conversationId, const QString&) {
+            [this](const QString& conversationId, const QString& error) {
                 if (!m_running || conversationId != m_active.conversationId) return;
-                finishActive({});
+                finishActive({{}, error});
             });
 }
 
@@ -33,9 +34,17 @@ void OneShotVlmChannel::enqueue(const QString& systemPrompt,
                                 const QString& cancellationKey,
                                 std::function<void(const QString&)> onDone)
 {
+    enqueueDetailed(systemPrompt, userText, frames, priority, cancellationKey,
+                    [onDone](ModelReply reply) { if (onDone) onDone(reply.error.isEmpty() ? reply.content : QString()); });
+}
+
+void OneShotVlmChannel::enqueueDetailed(const QString& systemPrompt, const QString& userText,
+                                        const QList<QImage>& frames, Priority priority,
+                                        const QString& cancellationKey, std::function<void(ModelReply)> onDone)
+{
     if (!m_agent) {
         qWarning() << "[OneShotVlmChannel] Agent 为空，无法处理请求";
-        if (onDone) onDone({});
+        if (onDone) onDone({{}, QStringLiteral("模型通道未初始化")});
         return;
     }
 
@@ -80,6 +89,7 @@ void OneShotVlmChannel::cancelBackground(const QString& cancellationKey)
     if (m_running && m_active.priority == Priority::Background
         && m_active.cancellationKey == cancellationKey) {
         m_active.discardResult = true;
+        m_agent->abortRequest(m_active.conversationId, QStringLiteral("cancelled: 构建已取消"));
     }
 }
 
@@ -92,23 +102,23 @@ void OneShotVlmChannel::startNext()
     qDebug() << "[OneShotVlmChannel] 开始处理 VLM 请求, convId:" << m_active.conversationId 
              << "帧数:" << m_active.frames.size() 
              << "优先级:" << (m_active.priority == Priority::Interactive ? "交互" : "后台");
-    const QString requestText = m_active.systemPrompt + QStringLiteral("\n\n")
-        + m_active.userText;
-    m_agent->sendMessage(m_active.conversationId, requestText, m_active.frames, {});
-    const QString conversationId=m_active.conversationId;
-    QTimer::singleShot(55000,this,[this,conversationId] {
-        if(!m_running || m_active.conversationId!=conversationId) return;
-        m_agent->stopGeneration();
-        if(m_running && m_active.conversationId==conversationId) finishActive({});
+    const QString conversationId = m_active.conversationId;
+    const QString system = m_active.systemPrompt, text = m_active.userText;
+    const auto frames = m_active.frames;
+    // Capture identity before send: configuration errors may complete synchronously.
+    QTimer::singleShot(m_requestTimeoutMs, this, [this, conversationId] {
+        if (!m_running || m_active.conversationId != conversationId) return;
+        m_agent->abortRequest(conversationId, QStringLiteral("timeout: 模型请求超过%1毫秒").arg(m_requestTimeoutMs));
     });
+    m_agent->sendOneShot(conversationId, system, text, frames);
 }
 
-void OneShotVlmChannel::finishActive(const QString& content)
+void OneShotVlmChannel::finishActive(ModelReply reply)
 {
     if (!m_running) return;
 
     qDebug() << "[OneShotVlmChannel] 完成 VLM 请求, convId:" << m_active.conversationId 
-             << "内容长度:" << content.length()
+             << "内容长度:" << reply.content.length()
              << "是否丢弃:" << m_active.discardResult
              << "队列剩余:" << m_pending.size();
 
@@ -118,7 +128,7 @@ void OneShotVlmChannel::finishActive(const QString& content)
     if (m_agent) m_agent->clearHistory(completed.conversationId);
     if (!completed.discardResult && completed.onDone) {
         qDebug() << "[OneShotVlmChannel] 调用完成回调";
-        completed.onDone(content);
+        QTimer::singleShot(0, this, [done = std::move(completed.onDone), reply = std::move(reply)] { done(reply); });
     }
     startNext();
 }

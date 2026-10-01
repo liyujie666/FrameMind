@@ -1,4 +1,5 @@
 #pragma once
+#include "model/model_reply.h"
 #include "model/video_representation.h"
 #include "service/agent/video_rag_build_backend.h"
 #include "service/rag/semantic_unit_builder.h"
@@ -14,6 +15,9 @@ class VideoRAGBuildCoordinator final : public QObject {
   public:
     using ModelRequest = std::function<void(const VideoBuildContext &, const QString &, const QString &,
                                             const QList<QImage> &, std::function<void(QString)>)>;
+    using DetailedModelRequest =
+        std::function<void(const VideoBuildContext &, const QString &, const QString &, const QList<QImage> &,
+                           std::function<void(ModelReply)>)>;
     VideoRAGBuildCoordinator(VideoRAGBuildBackend *, VideoRAGStore *, QObject *parent = nullptr);
     VideoRAGBuildCoordinator(VideoRAGBuildBackend *, VideoRAGStore *, OneShotVlmChannel *,
                              QObject *parent = nullptr);
@@ -21,7 +25,13 @@ class VideoRAGBuildCoordinator final : public QObject {
     void start(const QString &path, const BuildOptions &options = {});
     void cancel();
     void changeType(const QString &path, VideoContentType);
-    void setModelRequest(ModelRequest request) { m_modelRequest = std::move(request); }
+    void setModelRequest(ModelRequest request) {
+        m_modelRequest = [request](const auto &context, const auto &system, const auto &text,
+                                   const auto &frames, std::function<void(ModelReply)> done) {
+            request(context, system, text, frames, [done](QString content) { done({content, {}}); });
+        };
+    }
+    void setDetailedModelRequest(DetailedModelRequest request) { m_modelRequest = std::move(request); }
     void setModelSignatureProvider(std::function<QString()> fn) { m_modelSignature = std::move(fn); }
     bool isRunning() const { return bool(m_job); }
   signals:
@@ -44,13 +54,13 @@ class VideoRAGBuildCoordinator final : public QObject {
     void publish(const std::shared_ptr<Job> &);
     void fail(const std::shared_ptr<Job> &, const QString &);
     void request(const std::shared_ptr<Job> &, const QString &, const QString &, const QList<QImage> &,
-                 std::function<void(QString)>);
+                 std::function<void(ModelReply)>);
     QString modelSignature() const {
         return m_modelSignature ? m_modelSignature() : QStringLiteral("unavailable");
     }
     VideoRAGBuildBackend *m_indexer;
     VideoRAGStore *m_store;
-    ModelRequest m_modelRequest;
+    DetailedModelRequest m_modelRequest;
     std::function<QString()> m_modelSignature;
     std::function<void(const QString &)> m_cancelModel;
     quint64 m_generation = 0;

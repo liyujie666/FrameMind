@@ -535,12 +535,18 @@ void VideoAnalysisService::setBuildCoordinator(VideoRAGBuildCoordinator* coordin
         emit summaryReady(r.videoSummary);
     });
 }
-void VideoAnalysisService::executeBuildRequest(const VideoBuildContext& context,const QString& system,const QString& text,const QList<QImage>& frames,std::function<void(BuildModelResult)> done) {
-    if(context.isCancelled()) {done({context,ArtifactState::Cancelled,{}});return;}
+void VideoAnalysisService::executeBuildRequest(const VideoBuildContext& context, const QString& system,
+    const QString& text, const QList<QImage>& frames, std::function<void(BuildModelResult)> done) {
+    if (context.isCancelled()) { done({context, ArtifactState::Cancelled, {}, "cancelled"}); return; }
+    if (!m_vlmChannel) { done({context, ArtifactState::Failed, {}, QStringLiteral("模型通道未初始化")}); return; }
     QPointer<VideoAnalysisService> guard(this);
-    oneShotVLM(system,text,frames,false,context.cancellationKey(),[guard,context,done](const QString& reply) {
-        if(!guard) return;done({context,context.isCancelled()?ArtifactState::Cancelled:reply.isEmpty()?ArtifactState::Failed:ArtifactState::Ready,reply});
-    });
+    m_vlmChannel->enqueueDetailed(system, text, frames, OneShotVlmChannel::Priority::Background,
+        context.cancellationKey(), [guard, context, done](ModelReply reply) {
+            if (!guard) return;
+            done({context, context.isCancelled() ? ArtifactState::Cancelled
+                : !reply.error.isEmpty() || reply.content.isEmpty() ? ArtifactState::Failed : ArtifactState::Ready,
+                reply.content, reply.error});
+        });
 }
 void VideoAnalysisService::changeType(const QString& path,VideoContentType type) {if(m_coordinator) m_coordinator->changeType(path,type);}
 void VideoAnalysisService::cancelBuild() {if(m_coordinator) m_coordinator->cancel();}

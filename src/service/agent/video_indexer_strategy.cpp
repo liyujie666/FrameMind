@@ -27,7 +27,7 @@ QJsonObject VideoIndexer::modelVersions() const {
             {"bge", m_embedder ? m_embedder->modelFingerprint() : QString()},
             {"clip", m_clip ? m_clip->modelFingerprint() : QString()},
             {"shots", "histogram_v1"},
-            {"pipeline", "semantic_context_v3"}};
+            {"pipeline", "semantic_context_v4"}};
 }
 
 void VideoIndexer::setPublished(const VideoRepresentation &value) {

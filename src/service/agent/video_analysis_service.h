@@ -34,7 +34,7 @@ class VideoRAGBuildCoordinator;
 class VideoAnalysisService : public QObject {
     Q_OBJECT
 public:
-    struct BuildModelResult {VideoBuildContext context;ArtifactState state=ArtifactState::Failed;QString content;};
+    struct BuildModelResult {VideoBuildContext context;ArtifactState state=ArtifactState::Failed;QString content;QString error;};
     void executeBuildRequest(const VideoBuildContext&,const QString& system,const QString& text,const QList<QImage>&,
                              std::function<void(BuildModelResult)>);
     explicit VideoAnalysisService(OneShotVlmChannel* vlmChannel,

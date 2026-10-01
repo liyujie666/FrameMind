@@ -9,6 +9,7 @@
 #include <QElapsedTimer>
 
 #include <functional>
+#include "model/model_reply.h"
 
 class AgentService;
 
@@ -24,7 +25,7 @@ class OneShotVlmChannel final : public QObject
 public:
     enum class Priority { Background, Interactive };
 
-    explicit OneShotVlmChannel(AgentService* agent, QObject* parent = nullptr);
+    explicit OneShotVlmChannel(AgentService* agent, QObject* parent = nullptr, int requestTimeoutMs = 55000);
 
     void enqueue(const QString& systemPrompt,
                  const QString& userText,
@@ -32,6 +33,10 @@ public:
                  Priority priority,
                  const QString& cancellationKey,
                  std::function<void(const QString&)> onDone);
+
+    void enqueueDetailed(const QString& systemPrompt, const QString& userText,
+                         const QList<QImage>& frames, Priority priority,
+                         const QString& cancellationKey, std::function<void(ModelReply)> onDone);
 
     /// 取消尚未发起的同一视频后台任务；正在请求只会被标记为丢弃结果。
     void cancelBackground(const QString& cancellationKey);
@@ -48,12 +53,12 @@ private:
         Priority priority = Priority::Background;
         QString cancellationKey;
         QString conversationId;
-        std::function<void(const QString&)> onDone;
+        std::function<void(ModelReply)> onDone;
         bool discardResult = false;
     };
 
     void startNext();
-    void finishActive(const QString& content);
+    void finishActive(ModelReply reply);
 
     QElapsedTimer m_requestTimer;
 
@@ -61,6 +66,7 @@ private:
     QVector<Request> m_pending;
     Request m_active;
     bool m_running = false;
+    int m_requestTimeoutMs = 55000;
 };
 
 #endif // FRAMEMIND_ONE_SHOT_VLM_CHANNEL_H

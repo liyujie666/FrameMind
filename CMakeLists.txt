@@ -94,6 +94,28 @@ qt_standard_project_setup()
 # ---------------------------------------------------------------------------
 set(SMARTPLAYER_SDK_DIR "${FRAMEMIND_THIRD_PARTY_ROOT}/smartplayer_sdk" CACHE PATH "SmartPlayer SDK directory")
 
+if(BUILD_TESTING)
+    qt_add_executable(video_model_channel_tests
+        tests/video_model_channel_tests.cpp
+        src/infrastructure/databasemanager.cpp
+        src/infrastructure/networkclient.cpp
+        src/infrastructure/imageprocessor.cpp
+        src/model/llmprovider.cpp
+        src/service/settingsservice.cpp
+        src/service/llmproviderservice.cpp
+        src/service/agentservice.cpp
+        src/service/agent/context_budget_manager.cpp
+        src/service/agent/one_shot_vlm_channel.cpp
+    )
+    target_include_directories(video_model_channel_tests PRIVATE src "${SMARTPLAYER_SDK_DIR}/include")
+    target_link_libraries(video_model_channel_tests PRIVATE Qt6::Core Qt6::Gui Qt6::Network Qt6::Sql Qt6::Test)
+    if(WIN32)
+        target_link_libraries(video_model_channel_tests PRIVATE Crypt32)
+    endif()
+    add_test(NAME video_model_channel_tests COMMAND video_model_channel_tests -o video-model-results.xml,xml -o -,txt)
+endif()
+
+
 add_library(smartplayer SHARED IMPORTED)
 set_target_properties(smartplayer PROPERTIES
     IMPORTED_IMPLIB   "${SMARTPLAYER_SDK_DIR}/lib/SmartPlayerSDK.lib"

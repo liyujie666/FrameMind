@@ -43,6 +43,11 @@ public:
                      const QList<QImage>& frames = {},
                      const VideoContext& videoCtx = {});
 
+    // Isolated analysis request: supplied system prompt, no chat history or tool policy.
+    void sendOneShot(const QString& conversationId, const QString& systemPrompt,
+                     const QString& text, const QList<QImage>& frames = {});
+    void abortRequest(const QString& conversationId, const QString& reason);
+
     /**
      * 带 Tool Calling 的发送（M4）。
      *

@@ -57,6 +57,7 @@ private:
                             const QMap<QString, QString>& headers) const;
     void parseSSEChunk(const QByteArray& chunk);
     void finishStream();
+    void handleStreamFinished(QNetworkReply* reply);
 
     QNetworkAccessManager* m_nam = nullptr;
     QNetworkReply*         m_activeStream = nullptr;

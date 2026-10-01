@@ -32,6 +32,10 @@ AgentService::AgentService(NetworkClient* network,
         // 监听激活提供商变更
         connect(m_providers, &LLMProviderService::activeProviderChanged,
                 this, &AgentService::applyActiveProvider);
+        connect(m_providers, &LLMProviderService::providerUpdated, this,
+                [this](const QString& id) {
+                    if (id == m_providers->activeProviderId()) applyActiveProvider();
+                });
         applyActiveProvider();
     }
 }
@@ -40,7 +44,7 @@ void AgentService::applyActiveProvider()
 {
     if (!m_providers) return;
     const LLMProvider provider = m_providers->activeProvider();
-    m_endpoint = provider.fullEndpoint();
+    m_endpoint = m_providers->getEndpoint(provider.id);
     m_model = m_providers->getModel(provider.id);
     m_apiKey = m_providers->getApiKey(provider.id);
 }
@@ -308,6 +312,89 @@ void AgentService::sendMessage(const QString& conversationId,
                      << "error=" << err;
             emit responseError(m_currentConvId, err);
         });
+}
+
+void AgentService::sendOneShot(const QString& conversationId, const QString& systemPrompt,
+                               const QString& text, const QList<QImage>& frames)
+{
+    if (!m_network) {
+        emit responseError(conversationId, tr("网络组件未初始化"));
+        return;
+    }
+    applyActiveProvider();
+    if (m_apiKey.isEmpty()) {
+        emit responseError(conversationId, tr("未配置 API Key，请检查 AI 提供商设置"));
+        return;
+    }
+    if (frames.size() > kMaxImagesPerRequest) {
+        emit responseError(conversationId, tr("证据图片超过单次请求上限，请拆分证据页"));
+        return;
+    }
+    // Send only the task contract and its evidence. Chat formatting/tool rules do not apply.
+    auto user = makeUserMessage(text, frames);
+    if (user["content"].isArray()) {
+        QJsonArray content;
+        for (auto part : user["content"].toArray()) {
+            auto object = part.toObject();
+            object.remove("width");
+            object.remove("height");
+            content.append(object);
+        }
+        user["content"] = content;
+    }
+    const int maxTokens = qBound(1024, m_settings
+        ? m_settings->get("llm.build_max_tokens", "4096").toInt() : 4096, 16384);
+    QJsonObject payload{{"model", m_model}, {"stream", true}, {"temperature", 0.1},
+                        {"max_tokens", maxTokens},
+                        {"messages", QJsonArray{QJsonObject{{"role", "system"}, {"content", systemPrompt}}, user}}};
+    m_currentConvId = conversationId;
+    m_accumulated.clear();
+    m_pendingFinishReason.clear();
+    m_streaming = true;
+    m_requestTimer.start();
+    m_network->setAuthToken(m_apiKey);
+    QString base = m_endpoint;
+    while (base.endsWith('/')) base.chop(1);
+    m_network->streamPostRaw(QUrl(base + "/chat/completions"), payload,
+        [this, conversationId](const QJsonObject& choice) {
+            if (!m_streaming || m_currentConvId != conversationId) return;
+            m_accumulated += choice["delta"].toObject()["content"].toString();
+            if (choice["finish_reason"].isString())
+                m_pendingFinishReason = choice["finish_reason"].toString();
+        },
+        [this, conversationId] {
+            if (!m_streaming || m_currentConvId != conversationId) return;
+            m_streaming = false;
+            if (m_pendingFinishReason != "stop") {
+                emit responseError(conversationId, m_pendingFinishReason == "length"
+                    ? tr("output_truncated: 模型输出达到长度上限，请减小证据页或增加构建输出额度")
+                    : tr("incomplete_response: 模型未正常结束（%1）").arg(m_pendingFinishReason));
+                return;
+            }
+            if (m_accumulated.trimmed().isEmpty()) {
+                emit responseError(conversationId, tr("empty_response: 模型未返回正文"));
+                return;
+            }
+            ChatMessage message;
+            message.role = ChatMessage::Assistant;
+            message.content = m_accumulated;
+            message.timestamp = QDateTime::currentDateTime();
+            emit responseFinished(conversationId, message);
+        },
+        [this, conversationId](QString error) {
+            if (!m_streaming || m_currentConvId != conversationId) return;
+            m_streaming = false;
+            if (!m_apiKey.isEmpty()) error.replace(m_apiKey, "[redacted]");
+            emit responseError(conversationId, error.left(500));
+        });
+}
+
+void AgentService::abortRequest(const QString& conversationId, const QString& reason)
+{
+    if (!m_streaming || m_currentConvId != conversationId) return;
+    m_streaming = false;
+    if (m_network) m_network->cancelStream();
+    emit responseError(conversationId, reason);
 }
 
 void AgentService::stopGeneration()

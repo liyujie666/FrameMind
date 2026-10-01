@@ -133,6 +133,7 @@ void SummaryTabWidget::setViewModel(VideoAnalysisViewModel* vm)
     });
     connect(m_vm,&VideoAnalysisViewModel::buildStateChanged,this,[this](const VideoBuildManifest& m){
         QString state=m.state==ArtifactState::Ready?tr("完整"):m.state==ArtifactState::Partial?tr("部分完成"):m.state==ArtifactState::Cancelled?tr("已取消"):tr("构建失败");
+        if (m.diagnostics.contains("summary_skipped:no_successful_pages")) state = tr("理解失败（原始证据可用）");
         m_buildState->setText(tr("%1 · %2").arg(contentTypeLabel(m.profile.primaryType),state));
         m_buildState->setToolTip(m.diagnostics.join('\n'));
     });
@@ -141,7 +142,7 @@ void SummaryTabWidget::setViewModel(VideoAnalysisViewModel* vm)
         while(m_scenesLayout->count()>1) {auto* item=m_scenesLayout->takeAt(1);if(item->widget()) item->widget()->deleteLater();delete item;}
         for(const auto& u:units) {
             auto* label=new QLabel(m_scenesSection);label->setWordWrap(true);label->setTextFormat(Qt::PlainText);label->setTextInteractionFlags(Qt::TextSelectableByMouse);
-            label->setText(QString("[%1-%2s] %3 · %4\n%5\n%6").arg(u.startMs/1000).arg(u.endMs/1000).arg(u.title,u.state==ArtifactState::Ready?tr("完整"):tr("部分完成"),u.fusedDescription,u.sourceChunkIds.isEmpty()?tr("无原始证据"):tr("原始来源：%1 条；已处理 %2/%3 页").arg(u.sourceChunkIds.size()).arg(u.coverage.processedPages).arg(u.coverage.totalPages)));
+            label->setText(QString("[%1-%2s] %3 · %4\n%5\n%6").arg(u.startMs/1000).arg(u.endMs/1000).arg(u.title,u.state==ArtifactState::Ready?tr("完整"):u.coverage.processedPages==0&&!u.coverage.failedPages.isEmpty()?tr("理解失败"):tr("部分完成"),u.fusedDescription,u.sourceChunkIds.isEmpty()?tr("无原始证据"):tr("原始来源：%1 条；已处理 %2/%3 页").arg(u.sourceChunkIds.size()).arg(u.coverage.processedPages).arg(u.coverage.totalPages)));
             m_scenesLayout->addWidget(label);
         }
         m_scenesSection->setVisible(!units.isEmpty());

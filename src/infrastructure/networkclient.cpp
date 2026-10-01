@@ -76,57 +76,8 @@ void NetworkClient::streamPost(const QUrl& url, const QJsonObject& body,
         }
     });
 
-    connect(m_activeStream, &QNetworkReply::finished, this, [this]() {
-        if (!m_activeStream) return;
-        const auto err = m_activeStream->error();
-        if (err != QNetworkReply::NoError && err != QNetworkReply::OperationCanceledError) {
-            const QString msg = m_activeStream->errorString();
-            // 获取 HTTP 状态码
-            const int statusCode = m_activeStream->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-            // HTTP 错误体可能含 OpenAI 风格 error 信息
-            const QByteArray rest = m_activeStream->readAll();
-            QString detail = msg;
-            if (statusCode > 0) {
-                detail = QStringLiteral("HTTP %1: ").arg(statusCode);
-            }
-            if (!rest.isEmpty()) {
-                // 尝试解析 JSON 错误响应
-                const QJsonDocument doc = QJsonDocument::fromJson(rest);
-                if (!doc.isNull() && doc.isObject()) {
-                    const QJsonObject obj = doc.object();
-                    // 尝试多种错误格式
-                    QString apiMsg = obj.value(QStringLiteral("error"))
-                                        .toObject()
-                                        .value(QStringLiteral("message"))
-                                        .toString();
-                    if (apiMsg.isEmpty()) {
-                        apiMsg = obj.value(QStringLiteral("message")).toString();
-                    }
-                    if (!apiMsg.isEmpty()) {
-                        detail += apiMsg;
-                    } else {
-                        // 如果不是 JSON，直接显示响应内容
-                        detail += QString::fromUtf8(rest);
-                    }
-                } else {
-                    // 非 JSON 响应，显示原始内容
-                    detail += QString::fromUtf8(rest);
-                }
-            } else {
-                detail += msg;
-            }
-            if (m_onError) m_onError(detail);
-            m_activeStream->deleteLater();
-            m_activeStream = nullptr;
-            return;
-        }
-        // 正常结束：若服务端未发 [DONE]，也走完成回调
-        if (!m_done) {
-            finishStream();
-        }
-        m_activeStream->deleteLater();
-        m_activeStream = nullptr;
-    });
+    auto* reply = m_activeStream;
+    connect(reply, &QNetworkReply::finished, this, [this, reply] { handleStreamFinished(reply); });
 }
 
 void NetworkClient::streamPostRaw(const QUrl& url, const QJsonObject& body,
@@ -153,40 +104,41 @@ void NetworkClient::streamPostRaw(const QUrl& url, const QJsonObject& body,
     connect(m_activeStream, &QNetworkReply::readyRead, this, [this]() {
         if (m_activeStream) parseSSEChunk(m_activeStream->readAll());
     });
-    connect(m_activeStream, &QNetworkReply::finished, this, [this]() {
-        if (!m_activeStream) return;
-        const auto err = m_activeStream->error();
-        if (err != QNetworkReply::NoError && err != QNetworkReply::OperationCanceledError) {
-            const QString msg = m_activeStream->errorString();
-            const int statusCode = m_activeStream->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-            const QByteArray rest = m_activeStream->readAll();
-            QString detail = statusCode > 0 ? QStringLiteral("HTTP %1: ").arg(statusCode) : msg;
-            if (!rest.isEmpty()) {
-                const QJsonDocument doc = QJsonDocument::fromJson(rest);
-                if (!doc.isNull() && doc.isObject()) {
-                    QString apiMsg = doc.object().value(QStringLiteral("error"))
-                                        .toObject().value(QStringLiteral("message")).toString();
-                    if (apiMsg.isEmpty())
-                        apiMsg = doc.object().value(QStringLiteral("message")).toString();
-                    detail += apiMsg.isEmpty() ? QString::fromUtf8(rest) : apiMsg;
-                } else {
-                    detail += QString::fromUtf8(rest);
-                }
-            } else {
-                detail += msg;
-            }
-            if (m_onError) m_onError(detail);
-        } else if (!m_done) {
-            finishStream();
-        }
-        m_activeStream->deleteLater();
-        m_activeStream = nullptr;
-    });
+    auto* reply = m_activeStream;
+    connect(reply, &QNetworkReply::finished, this, [this, reply] { handleStreamFinished(reply); });
+}
+
+void NetworkClient::handleStreamFinished(QNetworkReply* reply)
+{
+    if (m_activeStream != reply) return;
+    const auto error = reply->error();
+    QString detail;
+    if (error != QNetworkReply::NoError && error != QNetworkReply::OperationCanceledError) {
+        const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const auto body = m_buffer + reply->readAll();
+        const auto object = QJsonDocument::fromJson(body).object();
+        QString message = object["error"].toObject()["message"].toString();
+        if (message.isEmpty()) message = object["message"].toString();
+        if (message.isEmpty()) message = reply->errorString();
+        detail = status > 0 ? QStringLiteral("HTTP %1: %2").arg(status).arg(message) : message;
+    }
+    // A completion callback may immediately post the next request. Release the old
+    // reply before invoking it; never delete or clear the new active reply afterwards.
+    m_activeStream = nullptr;
+    reply->deleteLater();
+    if (!detail.isEmpty()) {
+        m_done = true;
+        const auto onError = m_onError;
+        if (onError) onError(detail);
+    } else if (!m_done) {
+        finishStream();
+    }
 }
 
 void NetworkClient::parseSSEChunk(const QByteArray& chunk)
 {
     m_buffer.append(chunk);
+    m_buffer.replace("\r\n", "\n");
 
     int eventEnd;
     while ((eventEnd = m_buffer.indexOf("\n\n")) != -1) {

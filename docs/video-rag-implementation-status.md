@@ -33,6 +33,8 @@ flowchart TD
 | Generic | topic | 镜头及转写候选；最长 30 秒，保守概括 | 事件、主题 |
 
 策略只返回计划、参数和 Prompt/schema。提取、请求、分页、校验、归并、embedding、存储、取消和检索共用。
+
+模型通道修复及升级说明见 [video-rag-model-channel-fix.md](video-rag-model-channel-fix.md)。构建任务使用独立 system Prompt；失败原因保留，全部页失败不生成模型摘要。
 Lecture 承接 educational/presentation；其余叙事类型由 Generic 承接。
 探测每处最多 15 秒音频，合并重叠范围，不拼入完整转写。正式 ASR 按 60 秒区间解码并回写绝对时间。
 Meeting/Interview 取帧间隔 30 秒、Lecture 15 秒、Generic 10 秒；保存 requested time 与真实 PTS。
@@ -65,7 +67,7 @@ metadata 增加活动 build，chunks 增加 build/snapshot。`published_flag` �
 
 - 模型校正须满足真实端点、连续完整覆盖、真实区间来源；修复一次失败后本地回退并记录诊断。
 - 证据页记录文本偏移及帧 PTS；核心页全部成功且能力完整才标 Ready，否则 Partial。
-- 长主题保留父单元。摘要归并连续失败时输出明确标注的分散摘录并结束，完整证据仍可展开。
+- 长主题保留父单元。零成功页跳过摘要；短输入回退只保留一次，长输入取互不重叠的分散摘录。失败原因可见，完整证据仍可展开。
 - BGE 使用实际 tokenCount，passage 按 500 token 拆分；超过 512 token 的推理拒绝执行，不静默截断。
 - 解码及本地推理在工作线程，模型实例 mutex 串行；数据库、请求调度、规范表示发布在主线程。
 - 现有同步查询 API 等待查询向量时仍可能阻塞调用者；构建、补帧和局部解码是异步接口。
@@ -92,7 +94,7 @@ ctest --test-dir build -C Debug --output-on-failure
 
 已验证：重复迁移、重启恢复、PTS 序列化、事务回滚、发布冲突、版本不可覆写；静态镜头多主题、
 跨镜头问答、步骤关系、分页无遗漏、token 拆分、后半段事实召回；失败页 Partial、摘要失败终止、
-旧提取/模型回调丢弃、用户覆盖持久化及自动清除；旧版本过滤、QA/checkpoint 失效、同时间事实保留、来源图片展开；
+旧提取/模型回调丢弃、用户覆盖持久化及自动清除；独立模型请求角色、端点覆盖与指纹刷新、HTTP错误脱敏、串行衔接、LF/CRLF、超时与输出截断；旧版本过滤、QA/checkpoint 失效、同时间事实保留、来源图片展开；
 快速切视频、对象销毁、模型配置变化、无音轨/ASR/向量、分类失败回退；独立 seek 取帧和音频区间及尾部完整解码。
 
 `FrameExtractor` 从首个目标附近的关键帧开始解码，五处探测和局部分析不会逐次解码整个视频前缀。
@@ -102,13 +104,13 @@ ctest --test-dir build -C Debug --output-on-failure
 
 | ONNX | Whisper | 主程序构建 | CTest |
 |---|---|---|---|
-| ON | ON | 通过 | 3/3 通过 |
-| ON | OFF | 通过 | 3/3 通过 |
-| OFF | ON | 通过 | 3/3 通过 |
-| OFF | OFF | 通过 | 3/3 通过 |
+| ON | ON | 通过 | 4/4 通过 |
+| ON | OFF | 通过 | 4/4 通过 |
+| OFF | ON | 通过 | 4/4 通过 |
+| OFF | OFF | 通过 | 4/4 通过 |
 
-三套测试分别为 video_rag_tests、video_tokenizer_tests、video_media_tests，合计 15 个业务用例（含五策略数据行，不计初始化/清理）。
-日志位于 `build/matrix/*/Testing/Temporary/LastTest.log`；每个目录另保存三份 `video-*-results.xml`，可审查逐例结果。
+四套测试分别为 video_rag_tests、video_tokenizer_tests、video_model_channel_tests、video_media_tests，合计 27 个业务用例（含数据行，不计初始化/清理）。
+日志位于 `build/matrix/*/Testing/Temporary/LastTest.log`；每个目录另保存四份 `video-*-results.xml`，可审查逐例结果。
 
 本地实现提交：`ba40cd8`（版本化底座和构建链路）、`14c57b6`（策略执行、类型控制及离线回归）、
 `dc24d9b`（seek 探测及音频完整性修复）。这些是可编译、可验证的实现批次，没有按八个步骤拆成八个独立提交。

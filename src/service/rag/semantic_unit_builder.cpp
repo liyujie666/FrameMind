@@ -22,11 +22,21 @@ QSet<QString> contextTerms(const QString &text) {
 QJsonObject UnitEvidencePage::toJson() const {
     return {{"page_id", pageId}, {"unit_id", unitId}, {"core_evidence", evidence}};
 }
-QJsonObject SemanticUnitBuilder::parseObject(const QString &reply) {
+QJsonObject SemanticUnitBuilder::parseObject(const QString &reply, QString *error) {
+    if (error) error->clear();
     const int start = reply.indexOf('{'), end = reply.lastIndexOf('}');
-    if (start < 0 || end < start)
+    if (start < 0 || end < start) {
+        if (error) *error = reply.trimmed().isEmpty() ? QStringLiteral("empty_response: 模型返回为空")
+            : QStringLiteral("invalid_json: 模型未返回完整JSON对象");
         return {};
-    return QJsonDocument::fromJson(reply.mid(start, end - start + 1).toUtf8()).object();
+    }
+    QJsonParseError parseError;
+    const auto document = QJsonDocument::fromJson(reply.mid(start, end - start + 1).toUtf8(), &parseError);
+    if (!document.isObject()) {
+        if (error) *error = QStringLiteral("invalid_json: %1（位置%2）").arg(parseError.errorString()).arg(parseError.offset);
+        return {};
+    }
+    return document.object();
 }
 
 QVector<SemanticUnit> SemanticUnitBuilder::candidates(const VideoRepresentation &r,
@@ -270,7 +280,8 @@ QVector<UnitEvidencePage> SemanticUnitBuilder::pages(const SemanticUnit &u, cons
 }
 
 QJsonArray SemanticUnitBuilder::validatedFacts(const QJsonArray &facts, const UnitEvidencePage &page,
-                                               const VideoRAGBuildPlan &plan, bool *valid) {
+                                               const VideoRAGBuildPlan &plan, bool *valid, QString *error) {
+    if (error) error->clear();
     *valid = true;
     QJsonArray accepted;
     for (auto v : facts) {
@@ -279,11 +290,13 @@ QJsonArray SemanticUnitBuilder::validatedFacts(const QJsonArray &facts, const Un
         if (fact["text"].toString().trimmed().isEmpty() ||
             !plan.factKinds.contains(fact["kind"].toString()) || refs.isEmpty()) {
             *valid = false;
+            if (error) *error = QStringLiteral("invalid_fact: 事实必须包含正文、允许的kind和来源ID");
             return {};
         }
         for (auto id : refs)
             if (!page.sourceIds.contains(id.toString())) {
                 *valid = false;
+                if (error) *error = QStringLiteral("invalid_source: 事实引用了本页不存在的来源ID");
                 return {};
             }
         if (fact["kind"] == "operation" && page.framePaths.size() < 2) {

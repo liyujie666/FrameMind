@@ -396,6 +396,11 @@ class VideoRAGTests : public QObject {
             if (!u.coverage.failedPages.isEmpty())
                 failed = true;
         QVERIFY(failed);
+        QVERIFY(partial.diagnostics.contains("summary_skipped:no_successful_pages"));
+        QVERIFY(partial.summary.contains("成功处理0页"));
+        QVERIFY(!partial.summary.contains("[…]"));
+        for (const auto &chunk : store.listChunks(VideoRAGStore::TextSegments, partial.videoId))
+            QVERIFY(chunk.chunkType != VideoChunk::UnitSummary);
         QVector<std::function<void(QString)>> callbacks;
         coordinator.setModelRequest([&](const VideoBuildContext &, const QString &, const QString &,
                                         const QList<QImage> &,
@@ -436,6 +441,105 @@ class VideoRAGTests : public QObject {
             processed += unit.coverage.processedPages;
         }
         QVERIFY(processed > 10);
+    }
+    void modelValidationFailures_data() {
+        QTest::addColumn<QString>("mode");
+        QTest::newRow("plain_text") << QString("plain_text");
+        QTest::newRow("bad_schema") << QString("bad_schema");
+        QTest::newRow("fabricated_source") << QString("fabricated_source");
+        QTest::newRow("http_error") << QString("http_error");
+    }
+    void modelValidationFailures() {
+        QFETCH(QString, mode);
+        QTemporaryDir dir;
+        CloseFixtureDatabase closeBeforeTempDirectory;
+        auto *db = DatabaseManager::instance();
+        QVERIFY(db->initialize(dir.filePath("validation.sqlite")));
+        VideoRAGStore store(db); QVERIFY(store.initialize());
+        FixtureBackend backend;
+        backend.framePath = dir.filePath("frame.png");
+        QImage image(64,64,QImage::Format_RGB32); image.fill(Qt::blue); QVERIFY(image.save(backend.framePath));
+        const auto path = dir.filePath("fixture.mp4");
+        QFile file(path); QVERIFY(file.open(QIODevice::WriteOnly)); file.write("validation fixture"); file.close();
+        VideoRAGBuildCoordinator coordinator(&backend, &store);
+        int summaryCalls = 0, repairCalls = 0;
+        coordinator.setDetailedModelRequest([&](const VideoBuildContext &, const QString &system, const QString &text,
+            const QList<QImage> &, std::function<void(ModelReply)> done) {
+            ModelReply reply{FixtureBackend::modelReply(system,text), {}};
+            if (system.contains("全部输入")) ++summaryCalls;
+            if (text.contains("core_evidence")) {
+                if (system.contains("修复上次错误")) ++repairCalls;
+                if (mode == "plain_text") reply.content = "Markdown answer without JSON";
+                if (mode == "bad_schema") reply.content = "{\"summary\":\"text\"}";
+                if (mode == "fabricated_source") {
+                    auto object = SemanticUnitBuilder::parseObject(reply.content);
+                    auto fact = object["facts"].toArray().first().toObject();
+                    fact["source_chunk_ids"] = QJsonArray{"invented-source"};
+                    object["facts"] = QJsonArray{fact};
+                    reply.content = QString::fromUtf8(QJsonDocument(object).toJson());
+                }
+                if (mode == "http_error") reply.error = "HTTP 429: rate limited";
+            }
+            QTimer::singleShot(0, [done, reply] { done(reply); });
+        });
+        BuildOptions options; options.typeOverride = VideoContentType::Meeting;
+        coordinator.start(path, options); QTRY_VERIFY(!coordinator.isRunning());
+        const auto build = store.activeBuild(VideoFileIdentity::legacyId(path));
+        QCOMPARE(build.state, ArtifactState::Partial);
+        QCOMPARE(summaryCalls, 0);
+        QVERIFY(repairCalls > 0);
+        const QString error = mode == "plain_text" ? "invalid_json" : mode == "bad_schema" ? "invalid_schema"
+                            : mode == "fabricated_source" ? "invalid_source" : "HTTP 429";
+        QVERIFY(build.diagnostics.join('\n').contains(error));
+        QVERIFY(build.summary.contains(error));
+        QCOMPARE(build.summary.count(error), 1);
+        for (const auto &unit : store.listUnits(build.buildId)) {
+            QCOMPARE(unit.coverage.processedPages, 0);
+            QVERIFY(!unit.coverage.failedPages.isEmpty());
+            QVERIFY(unit.facts.isEmpty());
+        }
+        QVERIFY(!store.rawChunks(build.rawSnapshotId).isEmpty());
+    }
+    void successfulRepairAndShortSummaryFallback() {
+        QTemporaryDir dir;
+        CloseFixtureDatabase closeBeforeTempDirectory;
+        auto *db = DatabaseManager::instance(); QVERIFY(db->initialize(dir.filePath("repair.sqlite")));
+        VideoRAGStore store(db); QVERIFY(store.initialize());
+        FixtureBackend backend; backend.framePath = dir.filePath("frame.png");
+        QImage image(64,64,QImage::Format_RGB32); image.fill(Qt::blue); QVERIFY(image.save(backend.framePath));
+        const auto path = dir.filePath("fixture.mp4");
+        QFile file(path); QVERIFY(file.open(QIODevice::WriteOnly)); file.write("repair fixture"); file.close();
+        VideoRAGBuildCoordinator coordinator(&backend, &store);
+        int repairs = 0;
+        coordinator.setModelRequest([&](const VideoBuildContext &, const QString &system, const QString &text,
+            const QList<QImage> &, std::function<void(QString)> done) {
+            auto reply = FixtureBackend::modelReply(system,text);
+            if (system.contains("全部输入")) reply.clear();
+            else if (text.contains("core_evidence")) {
+                if (!system.contains("修复上次错误")) reply = "invalid";
+                else {
+                    ++repairs;
+                    QVERIFY(system.contains("invalid_json"));
+                    auto object = SemanticUnitBuilder::parseObject(reply);
+                    object["summary"] = "unique-summary-" + SemanticUnitBuilder::parseObject(text)["page_id"].toString();
+                    reply = QString::fromUtf8(QJsonDocument(object).toJson());
+                }
+            }
+            QTimer::singleShot(0, [done,reply] { done(reply); });
+        });
+        BuildOptions options; options.typeOverride = VideoContentType::Meeting;
+        coordinator.start(path,options); QTRY_VERIFY(!coordinator.isRunning());
+        const auto build = store.activeBuild(VideoFileIdentity::legacyId(path));
+        QVERIFY(repairs > 0);
+        QVERIFY(build.diagnostics.contains("summary_partial"));
+        QVERIFY(!build.diagnostics.join('\n').contains("analysis_failed"));
+        int processed = 0;
+        for (const auto &unit : store.listUnits(build.buildId)) {
+            QVERIFY(unit.coverage.complete());
+            if (unit.parentUnitId.isEmpty()) processed += unit.coverage.processedPages;
+        }
+        QCOMPARE(build.summary.count("unique-summary-"), processed);
+        QVERIFY(!build.summary.contains("[…]"));
     }
     void transactionRollbackAndLegacy() {
         QTemporaryDir dir;
