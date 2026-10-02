@@ -30,6 +30,7 @@ ClipService::~ClipService() = default;
 //
 //   clip_text.onnx
 //     - input:  "input_ids"     int64[1, 77]  (BPE token IDs, padded)
+//     - input:  "attention_mask" int64[1, 77] (export-dependent)
 //     - output: "text_embeds"   float32[1, 512]
 //
 // 模型导出：参考 https://github.com/onnx/models/tree/main/validated/clip
@@ -157,23 +158,60 @@ std::vector<float> ClipService::encodeText(const QString& text)
 
     // 1. Tokenize
     auto tokens = tokenizeText(text);
-    if (tokens.empty()) return {};
+    if (tokens.size() != TEXT_MAX_LEN) return {};
 
-    // 2. 构造输入 tensor [1, 77]
+    // Padding starts after EOS; token ID zero can also be a real vocabulary token.
+    std::vector<int64_t> attentionMask(tokens.size(), 0);
+    bool reachedEnd = false;
+    for (size_t i = 0; i < tokens.size(); ++i) {
+        if (!reachedEnd) attentionMask[i] = 1;
+        if (tokens[i] == ClipTokenizer::EOS_TOKEN) reachedEnd = true;
+    }
+    if (!reachedEnd) {
+        qWarning() << "[ClipService] Text tokens have no EOS";
+        return {};
+    }
+
+    // Bind in the model's actual input order, supporting both one- and two-input exports.
     std::vector<int64_t> shape = {1, TEXT_MAX_LEN};
-    auto inputTensor = m_textEngine->createTensor(tokens.data(), shape);
-
-    // 3. 推理
     std::vector<Ort::Value> inputs;
-    inputs.push_back(std::move(inputTensor));
+    bool hasTokenInput = false;
+    for (const auto& name : m_textEngine->inputNames()) {
+        if (name == "input_ids") {
+            hasTokenInput = true;
+            inputs.push_back(m_textEngine->createTensor(tokens.data(), shape));
+        } else if (name == "attention_mask") {
+            inputs.push_back(m_textEngine->createTensor(attentionMask.data(), shape));
+        } else {
+            qWarning() << "[ClipService] Unsupported text model input:" << QString::fromStdString(name);
+            return {};
+        }
+    }
+    if (!hasTokenInput) return {};
+
     std::vector<Ort::Value> outputs;
     m_textEngine->run(inputs, outputs);
 
     // 4. 提取结果
     if (outputs.empty()) return {};
-    auto& out = outputs[0];
+    size_t embeddingIndex = 0;
+    const auto& outputNames = m_textEngine->outputNames();
+    for (size_t i = 0; i < outputNames.size(); ++i) {
+        if (outputNames[i] == "text_embeds") {
+            embeddingIndex = i;
+            break;
+        }
+    }
+    if (embeddingIndex >= outputs.size() || !outputs[embeddingIndex].IsTensor()) return {};
+    auto& out = outputs[embeddingIndex];
+    const auto info = out.GetTensorTypeAndShapeInfo();
+    if (info.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT
+        || info.GetElementCount() != EMBEDDING_DIM) {
+        qWarning() << "[ClipService] Text model did not return a 512-dimensional float embedding";
+        return {};
+    }
     float* data = out.GetTensorMutableData<float>();
-    size_t count = out.GetTensorTypeAndShapeInfo().GetElementCount();
+    size_t count = info.GetElementCount();
 
     std::vector<float> embedding(data, data + count);
 
