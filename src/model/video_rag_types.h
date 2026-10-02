@@ -53,6 +53,14 @@ struct VideoRAGBuildPlan {
     QString strategyVersion = QStringLiteral("1");
     QString promptVersion = QStringLiteral("units_v1");
     QString schemaVersion = QStringLiteral("facts_v1");
+    QString unitUnderstandingVersion = QStringLiteral("unit_grid_carry_v2");
+    QString carryVersion = QStringLiteral("carry_v1_1000");
+    QString gridVersion = QStringLiteral("evidence_grid_v1");
+    int gridMaxEdge = 2048;
+    int gridJpegQuality = 85;
+    int gridMinCellShortEdge = 480;
+    int gridLabelHeight = 32;
+    qint64 gridMaxEncodedBytes = 0; // 0: no provider-specific byte limit configured
     QString unitKind = QStringLiteral("topic");
     bool audioFirst = false;
     bool requireSpeech = false;

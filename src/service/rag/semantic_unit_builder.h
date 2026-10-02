@@ -1,12 +1,22 @@
 #pragma once
 #include "model/retrieval_result.h"
 #include "model/video_representation.h"
+#include <QSize>
+
+struct UnitFrameEvidence {
+    QString sourceId, path;
+    int64_t ptsMs = 0;
+    int sourceOrdinal = 0;
+    QSize imageSize; // populated by header-only planning, validated again on decode
+};
 
 struct UnitEvidencePage {
     QString pageId, unitId;
     QJsonArray evidence;
     QStringList sourceIds, framePaths;
     QVector<int64_t> framePtsMs;
+    QVector<UnitFrameEvidence> frames;
+    QString preparationError;
     QJsonObject toJson() const;
 };
 

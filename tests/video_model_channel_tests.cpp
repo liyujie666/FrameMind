@@ -1,6 +1,7 @@
 #include "infrastructure/databasemanager.h"
 #include "infrastructure/networkclient.h"
 #include "service/agent/one_shot_vlm_channel.h"
+#include "service/agent/unit_analysis_worker_pool.h"
 #include "service/agentservice.h"
 #include "service/llmproviderservice.h"
 #include "service/settingsservice.h"
@@ -9,6 +10,7 @@
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTemporaryDir>
+#include <QPointer>
 #include <QUuid>
 #include <QtTest>
 
@@ -19,6 +21,8 @@ class LocalModel : public QTcpServer {
         QByteArray body;
         int status = 200;
         bool stall = false;
+        int delayMs = 0;
+        QByteArray extraHeaders;
     };
     QList<Response> responses;
     QList<QJsonObject> requests;
@@ -41,14 +45,18 @@ class LocalModel : public QTcpServer {
                     disconnect(socket, &QTcpSocket::readyRead, this, nullptr);
                     requests << QJsonDocument::fromJson(bytes->mid(end + 4, length)).object();
                     const auto response = responses.isEmpty() ? Response{} : responses.takeFirst();
-                    socket->write("HTTP/1.1 " + QByteArray::number(response.status) +
+                    const auto bytesToSend = "HTTP/1.1 " + QByteArray::number(response.status) +
                                   " Result\r\nContent-Type: " +
                                   (response.status == 200 ? "text/event-stream" : "application/json") +
                                   "\r\nContent-Length: " +
                                   QByteArray::number(response.body.size() + (response.stall ? 10000 : 0)) +
-                                  "\r\nConnection: close\r\n\r\n" + response.body);
-                    if (!response.stall)
-                        socket->disconnectFromHost();
+                                  "\r\nConnection: close\r\n" + response.extraHeaders + "\r\n" + response.body;
+                    QPointer<QTcpSocket> guard(socket);
+                    QTimer::singleShot(response.delayMs, this, [guard, bytesToSend, response] {
+                        if (!guard) return;
+                        guard->write(bytesToSend);
+                        if (!response.stall) guard->disconnectFromHost();
+                    });
                 });
                 connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
             }
@@ -75,6 +83,85 @@ class VideoModelChannelTests : public QObject {
     LLMProviderService *providers = nullptr;
     QString providerId;
   private slots:
+    void workerPoolParallelRequestsAndCancellation() {
+        LocalModel server;
+        QVERIFY(server.listen(QHostAddress::LocalHost));
+        providers->setEndpoint(providerId, QString("http://127.0.0.1:%1/v1").arg(server.serverPort()));
+        server.responses << LocalModel::Response{LocalModel::answer("old", "", false), 200, true}
+                         << LocalModel::Response{LocalModel::answer("second"), 200, false, 250};
+        UnitAnalysisWorkerPool pool(settings, providers, 3, nullptr, 2000);
+        VideoBuildContext context;
+        context.buildId = "build"; context.videoId = "video"; context.taskGeneration = 1;
+        UnitAnalysisRequest a{context, "unit-a", "a:0", "request-a", 0, 0, 0};
+        UnitAnalysisRequest b{context, "unit-b", "b:0", "request-b", 0, 0, 1};
+        QList<ModelReply> repliesA, repliesB;
+        pool.submit(a, "system A", "page A", {}, [&](ModelReply r) { repliesA << r; });
+        QTRY_COMPARE(server.requests.size(), 1); // fix response assignment while A remains in flight
+        pool.submit(b, "system B", "page B", {}, [&](ModelReply r) { repliesB << r; });
+        QTRY_COMPARE(server.requests.size(), 2);
+        QVERIFY(repliesA.isEmpty());
+        QVERIFY(repliesB.isEmpty()); // server observed actual overlap, neither request finished
+        pool.cancelRequest(a.requestId);
+        pool.cancelRequest(a.requestId);
+        QTRY_COMPARE(repliesA.size(), 1);
+        QVERIFY(repliesA[0].error.startsWith("cancelled:"));
+        QTRY_COMPARE(repliesB.size(), 1);
+        QCOMPARE(repliesB[0].content, QString("second"));
+        QCOMPARE(repliesB[0].httpStatus, 200);
+        QVERIFY(repliesB[0].diagnostics["elapsed_ms"].toDouble() >= 0);
+        pool.releaseUnit(0, a.unitId);
+        pool.releaseUnit(1, b.unitId);
+        server.responses << LocalModel::Response{LocalModel::answer("reuse"), 200};
+        a.unitId = "next-unit"; a.requestId = "next-request";
+        pool.submit(a, "system", "new unit", {}, [&](ModelReply r) { repliesA << r; });
+        QTRY_COMPARE(repliesA.size(), 2);
+        QCOMPARE(repliesA.last().content, QString("reuse"));
+        pool.releaseUnit(0, a.unitId);
+        server.responses << LocalModel::Response{LocalModel::answer("cancel-a", ""), 200, true}
+                         << LocalModel::Response{LocalModel::answer("cancel-b", ""), 200, true};
+        a.requestId = "all-a"; b.requestId = "all-b";
+        pool.submit(a, "system", "cancel all", {}, [&](ModelReply r) { repliesA << r; });
+        pool.submit(b, "system", "cancel all", {}, [&](ModelReply r) { repliesB << r; });
+        QTRY_COMPARE(server.requests.size(), 5);
+        pool.cancelBuild(context.cancellationKey());
+        pool.cancelBuild(context.cancellationKey());
+        QTRY_COMPARE(repliesA.size(), 3);
+        QTRY_COMPARE(repliesB.size(), 2);
+        QVERIFY(repliesA.last().error.startsWith("cancelled:"));
+        QVERIFY(repliesB.last().error.startsWith("cancelled:"));
+        a.context.buildId = "new-build"; a.context.taskGeneration = 2;
+        a.unitId = "new-build-unit"; a.requestId = "new-build-request";
+        server.responses << LocalModel::Response{LocalModel::answer("new-build")};
+        pool.submit(a, "system", "new build", {}, [&](ModelReply r) { repliesA << r; });
+        QTRY_COMPARE(repliesA.size(), 4);
+        QCOMPARE(repliesA.last().content, QString("new-build"));
+    }
+
+    void explicitQueuedCancellationAndRateLimitMetadata() {
+        LocalModel server;
+        QVERIFY(server.listen(QHostAddress::LocalHost));
+        providers->setEndpoint(providerId, QString("http://127.0.0.1:%1/v1").arg(server.serverPort()));
+        NetworkClient network;
+        AgentService agent(&network, settings, providers);
+        OneShotVlmChannel channel(&agent, nullptr, 2000);
+        server.responses << LocalModel::Response{"{\"error\":{\"message\":\"rate limited\"}}", 429, false,
+                                                 100, "Retry-After: 2\r\n"};
+        QList<ModelReply> active, queued;
+        channel.enqueueRequest("active", "sys", "text", {}, OneShotVlmChannel::Priority::Background,
+                               "build", [&](ModelReply r) { active << r; });
+        channel.enqueueRequest("queued", "sys", "text", {}, OneShotVlmChannel::Priority::Background,
+                               "build", [&](ModelReply r) { queued << r; });
+        channel.cancelRequest("queued");
+        channel.cancelRequest("queued");
+        QTRY_COMPARE(queued.size(), 1);
+        QVERIFY(queued[0].error.startsWith("cancelled:"));
+        QTRY_COMPARE(active.size(), 1);
+        QCOMPARE(active[0].httpStatus, 429);
+        QCOMPARE(active[0].retryAfterMs, qint64(2000));
+        QCOMPARE(server.requests.size(), 1);
+        QVERIFY(!channel.isBusy());
+    }
+
     void initTestCase() {
         QStandardPaths::setTestModeEnabled(true);
         QCoreApplication::setApplicationName("FrameMindModelTests-" +

@@ -117,6 +117,11 @@ QJsonObject VideoRAGBuildPlan::toJson() const {
             {"strategy_version", strategyVersion},
             {"prompt_version", promptVersion},
             {"schema_version", schemaVersion},
+            {"unit_understanding_version", unitUnderstandingVersion},
+            {"carry_version", carryVersion}, {"grid_version", gridVersion},
+            {"grid_max_edge", gridMaxEdge}, {"grid_jpeg_quality", gridJpegQuality},
+            {"grid_min_cell_short_edge", gridMinCellShortEdge}, {"grid_label_height", gridLabelHeight},
+            {"grid_max_encoded_bytes", gridMaxEncodedBytes},
             {"unit_kind", unitKind},
             {"audio_first", audioFirst},
             {"require_speech", requireSpeech},
@@ -139,6 +144,14 @@ VideoRAGBuildPlan VideoRAGBuildPlan::fromJson(const QJsonObject &j) {
     p.strategyVersion = j["strategy_version"].toString("1");
     p.promptVersion = j["prompt_version"].toString("units_v1");
     p.schemaVersion = j["schema_version"].toString("facts_v1");
+    p.unitUnderstandingVersion = j["unit_understanding_version"].toString("legacy_pages_v1");
+    p.carryVersion = j["carry_version"].toString("legacy_carry");
+    p.gridVersion = j["grid_version"].toString("legacy_multiframe");
+    p.gridMaxEdge = j["grid_max_edge"].toInt(2048);
+    p.gridJpegQuality = j["grid_jpeg_quality"].toInt(85);
+    p.gridMinCellShortEdge = j["grid_min_cell_short_edge"].toInt(480);
+    p.gridLabelHeight = j["grid_label_height"].toInt(32);
+    p.gridMaxEncodedBytes = j["grid_max_encoded_bytes"].toVariant().toLongLong();
     p.unitKind = j["unit_kind"].toString("topic");
     p.audioFirst = j["audio_first"].toBool();
     p.requireSpeech = j["require_speech"].toBool();

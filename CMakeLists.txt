@@ -59,6 +59,8 @@ if(BUILD_TESTING)
         src/service/rag/video_rag_store.cpp
         src/service/rag/strategies/video_rag_strategy_registry.cpp
         src/service/rag/semantic_unit_builder.cpp
+        src/service/rag/unit_carry_context.cpp
+        src/service/rag/evidence_grid_composer.cpp
         src/service/agent/video_rag_build_coordinator.cpp
         src/service/agent/tools/get_semantic_unit_tool.cpp
         src/service/rag/video_rag_retriever.cpp
@@ -68,7 +70,8 @@ if(BUILD_TESTING)
         src/service/agent/workflow/workflow_state.cpp
     )
     target_include_directories(video_rag_tests PRIVATE src)
-    target_link_libraries(video_rag_tests PRIVATE Qt6::Core Qt6::Gui Qt6::Sql Qt6::Test)
+    find_package(Qt6 6.9 REQUIRED COMPONENTS Concurrent)
+    target_link_libraries(video_rag_tests PRIVATE Qt6::Core Qt6::Gui Qt6::Sql Qt6::Test Qt6::Concurrent)
     add_test(NAME video_rag_tests COMMAND video_rag_tests -o video-rag-results.xml,xml -o -,txt)
     qt_add_executable(video_tokenizer_tests tests/video_tokenizer_tests.cpp src/infrastructure/bert_tokenizer.cpp)
     target_include_directories(video_tokenizer_tests PRIVATE src)
@@ -115,6 +118,8 @@ if(BUILD_TESTING)
         src/service/agentservice.cpp
         src/service/agent/context_budget_manager.cpp
         src/service/agent/one_shot_vlm_channel.cpp
+        src/service/agent/unit_analysis_worker_pool.cpp
+        src/model/video_rag_types.cpp
     )
     target_include_directories(video_model_channel_tests PRIVATE src "${SMARTPLAYER_SDK_DIR}/include")
     target_link_libraries(video_model_channel_tests PRIVATE Qt6::Core Qt6::Gui Qt6::Network Qt6::Sql Qt6::Test)

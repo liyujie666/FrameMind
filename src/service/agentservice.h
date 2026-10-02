@@ -11,6 +11,8 @@
 #include <QElapsedTimer>
 
 #include "model/chatmessage.h"
+#include "model/model_reply.h"
+#include "model/image_encoding_options.h"
 #include "model/videocontext.h"
 #include "service/agent/context_budget_manager.h"
 
@@ -45,8 +47,12 @@ public:
 
     // Isolated analysis request: supplied system prompt, no chat history or tool policy.
     void sendOneShot(const QString& conversationId, const QString& systemPrompt,
-                     const QString& text, const QList<QImage>& frames = {});
+                     const QString& text, const QList<QImage>& frames = {},
+                     const ImageEncodingOptions& imageOptions = {});
     void abortRequest(const QString& conversationId, const QString& reason);
+    int buildIdleTimeoutMs() const;
+    int buildTotalTimeoutMs() const;
+    ModelReply buildReplyMetadata() const;
 
     /**
      * 带 Tool Calling 的发送（M4）。
@@ -96,6 +102,7 @@ signals:
     void responseChunk(const QString& convId, const QString& delta);
     void responseFinished(const QString& convId, const ChatMessage& fullMsg);
     void responseError(const QString& convId, const QString& error);
+    void responseActivity(const QString& convId);
 
     /**
      * Tool Calling 版本的结束信号（M4）。
@@ -115,7 +122,7 @@ private:
                                     const VideoContext& videoCtx);
     static QString buildSystemPrompt(const VideoContext& ctx);
     static QJsonObject makeUserMessage(const QString& text,
-                                       const QList<QImage>& frames);
+                                       const QList<QImage>& frames, const ImageEncodingOptions& imageOptions = {});
 
     void applyActiveProvider();
 
@@ -167,11 +174,23 @@ private:
     VideoContext m_activeCtx;
 
     QElapsedTimer m_requestTimer;
+    bool m_oneShotActive = false;
+    qint64 m_receivedBytes = 0;
+    qint64 m_reasoningChars = 0;
+    qint64 m_firstByteMs = -1;
+    qint64 m_firstContentMs = -1;
+    int m_httpStatus = 0;
+    qint64 m_retryAfterMs = -1;
+    QJsonObject m_buildUsage;
+    QJsonObject m_buildImageDiagnostics;
+    qint64 m_buildRequestStartedAtMs = 0;
+    QString requestDiagnostics() const;
 
     // Tool Calling 状态（sendMessageWithTools 使用）
     // toolCalls[index] = { id, name, arguments(拼接后) }
     QJsonArray m_pendingToolCalls;
     QString    m_pendingFinishReason;
+    QString    m_toolStreamError;
 
     // 内部：Tool Calling 版本的流式发起
     void sendStreamWithTools(const QString& convId,

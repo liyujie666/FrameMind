@@ -247,6 +247,8 @@ QVector<UnitEvidencePage> SemanticUnitBuilder::pages(const SemanticUnit &u, cons
                     flush();
                 current.framePaths << c.keyframePath;
                 current.framePtsMs << c.startMs;
+                current.frames << UnitFrameEvidence{c.chunkId, c.keyframePath, c.startMs,
+                                                     int(current.frames.size()), {}};
                 current.sourceIds << c.chunkId;
                 current.evidence.append(entry);
                 chars += entryChars;

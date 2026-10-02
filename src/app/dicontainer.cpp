@@ -27,6 +27,7 @@
 #include "service/rag/audio_visual_aligner.h"
 #include "service/agent/video_indexer.h"
 #include "service/agent/one_shot_vlm_channel.h"
+#include "service/agent/unit_analysis_worker_pool.h"
 #include "service/agent/video_analysis_service.h"
 #include "service/agent/video_rag_build_coordinator.h"
 #include "service/agent/perception_strategy.h"
@@ -155,6 +156,7 @@ void DIContainer::initialize()
                                                        m_providerService.get());
     m_oneShotVlmChannel = std::make_unique<OneShotVlmChannel>(
         m_vlmAgentService.get());
+    m_unitAnalysisPool = std::make_unique<UnitAnalysisWorkerPool>(m_settingsService.get(), m_providerService.get());
     m_convService    = std::make_unique<ConversationService>(m_db);
     m_fileService    = std::make_unique<FileManagerService>(m_db);
 
@@ -243,6 +245,19 @@ void DIContainer::initialize()
         m_ragStore.get(), m_playerService.get(), m_db);
     m_videoAnalysis->setAudioVisualAligner(m_avAligner.get());
     m_buildCoordinator = std::make_unique<VideoRAGBuildCoordinator>(m_videoIndexer.get(),m_ragStore.get(),m_oneShotVlmChannel.get());
+    m_buildCoordinator->setUnitWorkerPool(m_unitAnalysisPool.get());
+    bool concurrencyValid = false;
+    const int concurrency = m_settingsService->get("video_rag.unit_concurrency", "3").toInt(&concurrencyValid);
+    m_buildCoordinator->setUnitConcurrency(concurrencyValid ? concurrency : 3);
+    EvidenceGridConfig grid;
+    grid.maxEdge = m_settingsService->get("video_rag.grid_max_edge", "2048").toInt();
+    grid.jpegQuality = m_settingsService->get("video_rag.grid_jpeg_quality", "85").toInt();
+    grid.minCellShortEdge = m_settingsService->get("video_rag.grid_min_cell_short_edge", "480").toInt();
+    grid.labelHeight = m_settingsService->get("video_rag.grid_label_height", "32").toInt();
+    bool gridByteLimitValid = false;
+    grid.maxEncodedBytes = m_settingsService->get("video_rag.grid_max_encoded_bytes", "0").toLongLong(&gridByteLimitValid);
+    if (!gridByteLimitValid) grid.maxEncodedBytes = -1; // malformed limits must not silently mean unlimited
+    m_buildCoordinator->setUnitGridConfig(grid);
     m_videoAnalysis->setBuildCoordinator(m_buildCoordinator.get());
     m_buildCoordinator->setDetailedModelRequest([this](const VideoBuildContext& context,const QString& system,const QString& text,const QList<QImage>& frames,std::function<void(ModelReply)> done) {
         m_videoAnalysis->executeBuildRequest(context,system,text,frames,[done](VideoAnalysisService::BuildModelResult result) {done({result.content,result.error});});

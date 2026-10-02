@@ -135,6 +135,11 @@ class FixtureBackend final : public VideoRAGBuildBackend {
                                           {"visual_description", QStringLiteral("蓝色演示页")},
                                           {"audio_summary", summary},
                                           {"summary", summary},
+                                          {"carry_context", QJsonObject{
+                                              {"topic", "fixture topic"},
+                                              {"current_state", QJsonObject{{"text", ""}, {"fact_refs", QJsonArray{}}}},
+                                              {"key_fact_refs", QJsonArray{}},
+                                              {"pending_threads", QJsonArray{}}, {"uncertainties", QJsonArray{}}}},
                                           {"facts", QJsonArray{QJsonObject{{"kind", kind},
                                                                            {"text", summary},
                                                                            {"source_chunk_ids", refs}}}}})

@@ -266,17 +266,25 @@ void ToolOrchestrator::onAgentFinished(const QString& convId,
             const QJsonObject fn = o.value(QStringLiteral("function")).toObject();
             c.name = fn.value(QStringLiteral("name")).toString();
             const QJsonValue argsValue = fn.value(QStringLiteral("arguments"));
+            bool validArguments = false;
             if (argsValue.isObject()) {
                 c.arguments = argsValue.toObject();
+                validArguments = true;
             } else if (argsValue.isString()) {
                 QJsonParseError parseError{};
                 const QJsonDocument argsDoc = QJsonDocument::fromJson(
                     argsValue.toString().toUtf8(), &parseError);
                 if (parseError.error == QJsonParseError::NoError && argsDoc.isObject()) {
                     c.arguments = argsDoc.object();
+                    validArguments = true;
                 }
             }
-            if (c.isValid()) calls.append(c);
+            if (!c.isValid() || c.id.trimmed().isEmpty() || c.name.trimmed().isEmpty() || !validArguments) {
+                abortWithError(QStringLiteral("invalid_tool_call: 第%1个工具调用缺少 ID/名称或参数不是完整 JSON 对象")
+                                   .arg(calls.size() + 1));
+                return;
+            }
+            calls.append(c);
         }
         if (calls.isEmpty()) {
             abortWithError(QStringLiteral("模型返回了无法解析的工具调用"));

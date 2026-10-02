@@ -1,14 +1,18 @@
 #pragma once
 #include "model/model_reply.h"
+#include "model/unit_analysis_request.h"
 #include "model/video_representation.h"
 #include "service/agent/video_rag_build_backend.h"
 #include "service/rag/semantic_unit_builder.h"
+#include "service/rag/evidence_grid_composer.h"
 #include <QImage>
 #include <QObject>
+#include <QThreadPool>
 #include <functional>
 
 class VideoRAGStore;
 class OneShotVlmChannel;
+class UnitAnalysisWorkerPool;
 
 class VideoRAGBuildCoordinator final : public QObject {
     Q_OBJECT
@@ -32,6 +36,14 @@ class VideoRAGBuildCoordinator final : public QObject {
         };
     }
     void setDetailedModelRequest(DetailedModelRequest request) { m_modelRequest = std::move(request); }
+    using UnitModelRequest = std::function<void(const UnitAnalysisRequest&, const QString&, const QString&,
+                                               const QList<QImage>&, std::function<void(ModelReply)>)>;
+    void setUnitModelRequest(UnitModelRequest request) { m_unitModelRequest = std::move(request); }
+    void setUnitWorkerPool(UnitAnalysisWorkerPool*);
+    void setUnitConcurrency(int value) { m_unitConcurrency = qBound(1, value, 3); }
+    void setUnitGridConfig(const EvidenceGridConfig& config) { m_gridConfig = config; }
+    void setUnitRequestCancellation(std::function<void(const QString&)> fn) { m_cancelUnitRequest = std::move(fn); }
+    void setUnitWatchdogTimeoutProvider(std::function<int(int)> fn) { m_unitWatchdogTimeout = std::move(fn); }
     void setModelSignatureProvider(std::function<QString()> fn) { m_modelSignature = std::move(fn); }
     bool isRunning() const { return bool(m_job); }
   signals:
@@ -43,13 +55,21 @@ class VideoRAGBuildCoordinator final : public QObject {
 
   private:
     struct Job;
+    struct UnitAnalysisTask;
     bool current(const std::shared_ptr<Job> &) const;
     void classify(const std::shared_ptr<Job> &, int attempt = 0);
     void route(const std::shared_ptr<Job> &);
     void segment(const std::shared_ptr<Job> &);
     void correctNext(const std::shared_ptr<Job> &, int attempt = 0);
     void prepareUnitEvidence(const std::shared_ptr<Job> &);
-    void analyzeNext(const std::shared_ptr<Job> &, int attempt = 0);
+    void beginUnitAnalysis(const std::shared_ptr<Job>&);
+    void scheduleUnits(const std::shared_ptr<Job>&);
+    void analyzeUnitPage(const std::shared_ptr<Job>&, const std::shared_ptr<UnitAnalysisTask>&);
+    void finishUnitAnalysis(const std::shared_ptr<Job>&);
+    void stopUnitRequests(const std::shared_ptr<Job>&);
+    void writeUnitDiagnostic(const std::shared_ptr<Job>&, QJsonObject);
+    void requestUnit(const std::shared_ptr<Job>&, const std::shared_ptr<UnitAnalysisTask>&,
+                     const QString&, const QString&, const QList<QImage>&, std::function<void(ModelReply)>);
     void summarizeNext(const std::shared_ptr<Job> &, int attempt = 0);
     void publish(const std::shared_ptr<Job> &);
     void fail(const std::shared_ptr<Job> &, const QString &);
@@ -61,8 +81,17 @@ class VideoRAGBuildCoordinator final : public QObject {
     VideoRAGBuildBackend *m_indexer;
     VideoRAGStore *m_store;
     DetailedModelRequest m_modelRequest;
+    UnitModelRequest m_unitModelRequest;
+    int m_unitConcurrency = 3;
+    int m_poolCapacity = 3;
+    EvidenceGridConfig m_gridConfig;
+    std::function<int(int)> m_unitWatchdogTimeout;
+    std::function<void(const QString&)> m_cancelUnitRequest, m_cancelUnitBuild;
+    std::function<void(int, const QString&)> m_releaseUnitWorker;
     std::function<QString()> m_modelSignature;
+    std::function<int()> m_modelWatchdogTimeout;
     std::function<void(const QString &)> m_cancelModel;
     quint64 m_generation = 0;
     std::shared_ptr<Job> m_job;
+    QThreadPool m_imagePool;
 };

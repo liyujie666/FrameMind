@@ -44,13 +44,19 @@ public:
     void streamPostRaw(const QUrl& url, const QJsonObject& body,
                         std::function<void(const QJsonObject& choice)> onChoice,
                         std::function<void()> onDone,
-                        std::function<void(const QString& error)> onError);
+                        std::function<void(const QString& error)> onError,
+                        int idleTimeoutMs = 60000, bool allowHttp2 = true);
 
     /// 简单 GET 请求用于连通性检测（同步）
     bool testConnection(const QUrl& url, QString* errorString = nullptr);
 
     /// 立即终止当前流式请求
     void cancelStream();
+
+signals:
+    // Includes reasoning chunks and SSE heartbeats; never exposes response content.
+    void streamActivity(qint64 bytes, int httpStatus);
+    void streamMetadata(int httpStatus, qint64 retryAfterMs, const QJsonObject& usage);
 
 private:
     void applyCommonHeaders(class QNetworkRequest& req,

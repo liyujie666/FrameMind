@@ -5,6 +5,7 @@
 #include "service/rag/evidence_composer.h"
 #include "service/rag/qa_cache_manager.h"
 #include "service/rag/semantic_unit_builder.h"
+#include "service/rag/unit_carry_context.h"
 #include "service/rag/strategies/video_rag_strategy_registry.h"
 #include "service/rag/video_rag_retriever.h"
 #include "service/rag/video_rag_store.h"
@@ -20,6 +21,272 @@ struct CloseFixtureDatabase {
 class VideoRAGTests : public QObject {
     Q_OBJECT
   private slots:
+    void rollingCarryValidationAndBudget() {
+        const QJsonArray facts{QJsonObject{{"text", "early important fact"},
+                                         {"source_chunk_ids", QJsonArray{"source0"}}}};
+        auto carry = [](const QString& ref, const QString& stateText) {
+            return QJsonObject{{"topic", "topic"},
+                {"current_state", QJsonObject{{"text", stateText}, {"fact_refs", QJsonArray{ref}}}},
+                {"key_fact_refs", QJsonArray{ref}}, {"pending_threads", QJsonArray{"open question"}},
+                {"uncertainties", QJsonArray{}}};
+        };
+        UnitCarryContext context;
+        QCOMPARE(context.input()["last_successful_page"].toInt(), -1);
+        QVERIFY(context.acceptPage(0, facts, carry("P0.F0", "confirmed")));
+        QVERIFY(context.acceptPage(1, {}, carry("P0.F0", "still confirmed")));
+        QCOMPARE(context.input()["key_facts"].toArray()[0].toObject()["text"].toString(),
+                 QString("early important fact"));
+        context.failPage();
+        context.failPage();
+        QCOMPARE(context.input()["gap_count"].toInt(), 2);
+        QCOMPARE(context.input()["last_successful_page"].toInt(), 1);
+        // Unknown/future refs and missing carry preserve accepted page, using program fallback.
+        QVERIFY(!context.acceptPage(4, facts, carry("P99.F0", "invented")));
+        QVERIFY(context.input()["current_state"].toObject()["text"].toString() != "invented");
+        QCOMPARE(context.input()["gap_count"].toInt(), 0);
+        QCOMPARE(context.input()["last_successful_page"].toInt(), 4);
+        QVERIFY(!context.acceptPage(5, {}, QJsonValue{}));
+        UnitCarryContext otherUnit;
+        QVERIFY(!otherUnit.acceptPage(1, {}, carry("P0.F0", "cross unit")));
+        auto invalid = carry("P0.F0", "new state");
+        invalid["topic"] = QString(81, 'x');
+        QVERIFY(!context.acceptPage(6, {}, invalid));
+        // Valid replacement drops resolved threads rather than accumulating history.
+        auto resolved = carry("P0.F0", "resolved");
+        auto resolvedState = resolved["current_state"].toObject();
+        resolvedState["extra_model_field"] = "untrusted extra";
+        resolved["current_state"] = resolvedState;
+        resolved["pending_threads"] = QJsonArray{};
+        QVERIFY(context.acceptPage(7, {}, resolved));
+        QVERIFY(context.input()["pending_threads"].toArray().isEmpty());
+        QVERIFY(!context.input()["current_state"].toObject().contains("extra_model_field"));
+        const QJsonArray huge{QJsonObject{{"text", QString(2000, 'x')}}};
+        QVERIFY(!context.acceptPage(8, huge, carry("P8.F0", "huge fact")));
+        QVERIFY(QString::fromUtf8(QJsonDocument(context.input()).toJson(QJsonDocument::Compact)).size() <= 1000);
+        QVERIFY(!context.input()["current_state"].toObject()["text"].toString().contains("huge"));
+        auto oldPlan = VideoRAGBuildPlan::fromJson(QJsonObject{});
+        VideoRAGBuildPlan newPlan;
+        QVERIFY(oldPlan.unitUnderstandingVersion != newPlan.unitUnderstandingVersion);
+        QCOMPARE(VideoRAGBuildPlan::fromJson(newPlan.toJson()).fingerprint(), newPlan.fingerprint());
+    }
+
+    void concurrentUnitsSerialPagesAndCarry_data() {
+        QTest::addColumn<int>("concurrency");
+        QTest::newRow("one") << 1;
+        QTest::newRow("two") << 2;
+        QTest::newRow("three") << 3;
+    }
+    void concurrentUnitsSerialPagesAndCarry() {
+        QFETCH(int, concurrency);
+        QTemporaryDir dir;
+        CloseFixtureDatabase closeBeforeTempDirectory;
+        auto* db = DatabaseManager::instance();
+        QVERIFY(db->initialize(dir.filePath("concurrent.sqlite")));
+        VideoRAGStore store(db);
+        QVERIFY(store.initialize());
+        FixtureBackend backend;
+        backend.longSpeechChars = 9000;
+        backend.framePath = dir.filePath("frame.png");
+        QImage image(64, 64, QImage::Format_RGB32); image.fill(Qt::blue);
+        QVERIFY(image.save(backend.framePath));
+        const auto path = dir.filePath("fixture.mp4");
+        QFile file(path); QVERIFY(file.open(QIODevice::WriteOnly)); file.write("concurrency"); file.close();
+        VideoRAGBuildCoordinator coordinator(&backend, &store);
+        coordinator.setUnitConcurrency(concurrency);
+        FixtureBackend::installModel(coordinator);
+        QSet<QString> active;
+        QHash<QString, int> nextPages;
+        QHash<QString, QJsonObject> previousInput;
+        QHash<QString, int> attempts;
+        QVector<UnitAnalysisRequest> identities;
+        int maximum = 0, sent = 0, summaries = 0;
+        QString retriedPage;
+        QElapsedTimer backoff;
+        coordinator.setModelRequest([&](const auto&, const QString& system, const QString& text,
+                                        const auto&, std::function<void(QString)> done) {
+            if (!text.contains("local_candidates")) {
+                ++summaries;
+                QVERIFY(active.isEmpty());
+            }
+            QTimer::singleShot(0, &coordinator, [=] { done(FixtureBackend::modelReply(system, text)); });
+        });
+        coordinator.setUnitModelRequest([&](const UnitAnalysisRequest& r, const QString& system,
+                                            const QString& text, const auto&, std::function<void(ModelReply)> done) {
+            identities << r;
+            QVERIFY(!r.requestId.isEmpty());
+            QVERIFY(!active.contains(r.unitId));
+            QCOMPARE(r.pageOrdinal, nextPages.value(r.unitId));
+            const auto input = SemanticUnitBuilder::parseObject(text);
+            const auto carry = input["carry_context"].toObject();
+            QVERIFY(QString::fromUtf8(QJsonDocument(carry).toJson(QJsonDocument::Compact)).size() <= 1000);
+            if (r.attempt == 1) {
+                QCOMPARE(carry, previousInput.value(r.pageId));
+                QVERIFY(backoff.elapsed() >= 1000);
+            }
+            else previousInput[r.pageId] = carry;
+            if (r.pageOrdinal == 0) QCOMPARE(carry["last_successful_page"].toInt(), -1);
+            else QCOMPARE(carry["last_successful_page"].toInt(), r.pageOrdinal - 1);
+            active.insert(r.unitId);
+            maximum = qMax(maximum, int(active.size()));
+            QVERIFY(maximum <= concurrency);
+            ++sent;
+            const int ordinal = r.pageOrdinal;
+            const bool failOnce = retriedPage.isEmpty() && ordinal == 1;
+            if (failOnce) retriedPage = r.pageId;
+            ++attempts[r.pageId];
+            // Reverse completion delays to break original unit order.
+            QTimer::singleShot(10 + (2 - r.workerId) * 10, &coordinator, [&, r, system, text, done, failOnce] {
+                active.remove(r.unitId);
+                if (failOnce) {
+                    backoff.start();
+                    ModelReply limited{{}, "fixture rate limit"};
+                    limited.httpStatus = 429;
+                    limited.retryAfterMs = 10;
+                    done(limited);
+                    done({"{}", {}}); // duplicate result must not advance retry/page/coverage
+                    return;
+                }
+                auto result = SemanticUnitBuilder::parseObject(FixtureBackend::modelReply(system, text));
+                result["summary"] = QString("unit %1 page %2").arg(r.unitId).arg(r.pageOrdinal);
+                auto accepted = result["facts"].toArray();
+                auto fact = accepted[0].toObject();
+                fact["text"] = result["summary"];
+                accepted[0] = fact;
+                result["facts"] = accepted;
+                const auto ref = QString("P%1.F0").arg(r.pageOrdinal);
+                result["carry_context"] = QJsonObject{{"topic", "fixture"},
+                    {"current_state", QJsonObject{{"text", "confirmed"}, {"fact_refs", QJsonArray{ref}}}},
+                    {"key_fact_refs", QJsonArray{ref}}, {"pending_threads", QJsonArray{}},
+                    {"uncertainties", QJsonArray{}}};
+                // Intentionally invalid carry on one page: no extra model retry.
+                if (r.pageOrdinal == 2) result.remove("carry_context");
+                ++nextPages[r.unitId];
+                const auto body = QString::fromUtf8(QJsonDocument(result).toJson(QJsonDocument::Compact));
+                done({body, {}});
+                done({body, {}});
+            });
+        });
+        QVector<int> progress;
+        connect(&coordinator, &VideoRAGBuildCoordinator::progress, &coordinator,
+                [&](int value, const QString& message) {
+            if (message.startsWith(QStringLiteral("理解语义单元"))) progress << value;
+        });
+        QSignalSpy finished(&coordinator, &VideoRAGBuildCoordinator::finished);
+        BuildOptions options; options.typeOverride = VideoContentType::Unknown;
+        coordinator.start(path, options);
+        QTRY_VERIFY_WITH_TIMEOUT(!coordinator.isRunning(), 10000);
+        QCOMPARE(finished.size(), 1);
+        QCOMPARE(maximum, concurrency);
+        QCOMPARE(summaries, 1);
+        QVERIFY(nextPages.size() >= 3);
+        QVERIFY(!retriedPage.isEmpty());
+        QCOMPARE(attempts.value(retriedPage), 2);
+        const auto build = store.activeBuild(VideoFileIdentity::legacyId(path));
+        const auto metrics = build.artifacts["unit_analysis"].toObject();
+        QCOMPARE(metrics["max_in_flight"].toInt(), concurrency);
+        QCOMPARE(metrics["retries"].toInt(), 1);
+        QCOMPARE(metrics["rate_limits"].toInt(), 1);
+        QVERIFY(metrics["carry_fallbacks"].toInt() > 0);
+        QCOMPARE(sent, metrics["total_pages"].toInt() + 1);
+        QCOMPARE(metrics["completed_pages"].toInt(), metrics["total_pages"].toInt());
+        QVERIFY(std::is_sorted(progress.begin(), progress.end()));
+        auto units = store.listUnits(build.buildId);
+        int64_t last = -1;
+        for (const auto& unit : units) {
+            if (unit.kind == "chapter") continue;
+            QVERIFY(unit.startMs >= last); last = unit.startMs;
+            QVERIFY(unit.coverage.complete());
+        }
+        QSet<QString> requestIds;
+        for (const auto& r : identities) {
+            QVERIFY(!requestIds.contains(r.requestId)); requestIds.insert(r.requestId);
+        }
+    }
+
+    void unitTimeoutIsolationGapAndLateReply() {
+        QTemporaryDir dir;
+        CloseFixtureDatabase closeBeforeTempDirectory;
+        auto* db = DatabaseManager::instance();
+        QVERIFY(db->initialize(dir.filePath("timeout.sqlite")));
+        VideoRAGStore store(db); QVERIFY(store.initialize());
+        FixtureBackend backend;
+        backend.longSpeechChars = 9000;
+        backend.framePath = dir.filePath("frame.png");
+        QImage image(64, 64, QImage::Format_RGB32); image.fill(Qt::blue);
+        QVERIFY(image.save(backend.framePath));
+        const auto path = dir.filePath("fixture.mp4");
+        QFile file(path); QVERIFY(file.open(QIODevice::WriteOnly)); file.write("timeout"); file.close();
+        VideoRAGBuildCoordinator coordinator(&backend, &store);
+        FixtureBackend::installModel(coordinator);
+        coordinator.setUnitConcurrency(3);
+        coordinator.setUnitWatchdogTimeoutProvider([](int) { return 100; });
+        QStringList cancellations;
+        coordinator.setUnitRequestCancellation([&](const QString& id) { cancellations << id; });
+        QString failedUnit;
+        QVector<std::function<void(ModelReply)>> late;
+        bool sawGap = false;
+        coordinator.setUnitModelRequest([&](const UnitAnalysisRequest& r, const QString& system,
+                                            const QString& text, const auto&, std::function<void(ModelReply)> done) {
+            if (failedUnit.isEmpty()) failedUnit = r.unitId;
+            const auto input = SemanticUnitBuilder::parseObject(text);
+            if (r.unitId == failedUnit && r.pageOrdinal == 1) {
+                late << done; // let both attempts time out
+                return;
+            }
+            const auto carry = input["carry_context"].toObject();
+            if (r.unitId == failedUnit && r.pageOrdinal == 2) {
+                QCOMPARE(carry["gap_count"].toInt(), 1);
+                QCOMPARE(carry["last_successful_page"].toInt(), 0);
+                sawGap = true;
+            }
+            QTimer::singleShot(5, &coordinator, [done, system, text] {
+                done({FixtureBackend::modelReply(system, text), {}});
+            });
+        });
+        QSignalSpy finished(&coordinator, &VideoRAGBuildCoordinator::finished);
+        BuildOptions options; options.typeOverride = VideoContentType::Unknown;
+        coordinator.start(path, options);
+        QTRY_VERIFY_WITH_TIMEOUT(!coordinator.isRunning(), 10000);
+        QVERIFY(sawGap);
+        QCOMPARE(cancellations.size(), 2);
+        QCOMPARE(late.size(), 2);
+        QCOMPARE(finished.size(), 1);
+        const auto build = store.activeBuild(VideoFileIdentity::legacyId(path));
+        QCOMPARE(build.state, ArtifactState::Partial);
+        int completeOtherUnits = 0;
+        for (const auto& u : store.listUnits(build.buildId)) {
+            if (u.kind == "chapter") continue;
+            if (u.unitId == failedUnit) QCOMPARE(u.coverage.failedPages.size(), 1);
+            else { QVERIFY(u.coverage.complete()); ++completeOtherUnits; }
+        }
+        QVERIFY(completeOtherUnits >= 2);
+        for (const auto& done : late) done({"{\"summary\":\"stale\",\"facts\":[]}", {}});
+        QCOMPARE(finished.size(), 1);
+        QCOMPARE(store.activeBuild(build.videoId).buildId, build.buildId);
+        // Superseding a build while its pages are active must reject their old generation.
+        QVector<std::function<void(ModelReply)>> replaced;
+        coordinator.setUnitModelRequest([&](const auto&, const auto&, const auto&, const auto&,
+                                            std::function<void(ModelReply)> done) { replaced << done; });
+        options.forceDerivedRebuild = true;
+        coordinator.start(path, options);
+        QTRY_VERIFY(replaced.size() >= 2);
+        coordinator.cancel();
+        coordinator.setUnitModelRequest([&](const auto&, const QString& system, const QString& text,
+                                            const auto&, std::function<void(ModelReply)> done) {
+            QTimer::singleShot(0, &coordinator, [=] { done({FixtureBackend::modelReply(system, text), {}}); });
+        });
+        coordinator.start(path, options);
+        for (const auto& done : replaced) done({"{\"summary\":\"stale\",\"facts\":[]}", {}});
+        QTRY_VERIFY_WITH_TIMEOUT(!coordinator.isRunning(), 10000);
+        QCOMPARE(finished.size(), 3); // initial Partial, cancelled candidate, fresh successful build
+        QVERIFY(store.activeBuild(build.videoId).buildId != build.buildId);
+        // This oversized fixture may remain Partial due to upstream segmentation budget fallback.
+        // Its replacement build must have no page failures from the cancelled generation.
+        const auto fresh = store.activeBuild(build.videoId);
+        QVERIFY(!fresh.diagnostics.join(";").contains("analysis_failed:"));
+        for (const auto& u : store.listUnits(fresh.buildId)) QVERIFY(u.coverage.complete());
+    }
+
     void migrationAndPublication() {
         QTemporaryDir dir;
         CloseFixtureDatabase closeBeforeTempDirectory;

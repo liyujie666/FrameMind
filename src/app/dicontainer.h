@@ -35,6 +35,7 @@ class VideoIndexer;
 class OneShotVlmChannel;
 class VideoAnalysisService;
 class VideoRAGBuildCoordinator;
+class UnitAnalysisWorkerPool;
 class PerceptionStrategy;
 class ReflectionEngine;
 class ToolRegistry;
@@ -119,6 +120,7 @@ private:
     std::unique_ptr<AgentService>       m_agentService;
     std::unique_ptr<AgentService>       m_vlmAgentService;
     std::unique_ptr<OneShotVlmChannel>  m_oneShotVlmChannel;
+    std::unique_ptr<UnitAnalysisWorkerPool> m_unitAnalysisPool;
     std::unique_ptr<ConversationService> m_convService;
     std::unique_ptr<FileManagerService> m_fileService;
 

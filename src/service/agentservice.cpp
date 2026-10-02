@@ -6,7 +6,9 @@ QString AgentService::modelSignature() const {return QString::fromLatin1(QCrypto
 #include "infrastructure/imageprocessor.h"
 #include "service/settingsservice.h"
 #include "service/llmproviderservice.h"
+#include "model/build_request_policy.h"
 #include <QJsonDocument>
+#include <QSet>
 #include <QUrl>
 #include <QDateTime>
 #include <QUuid>
@@ -17,6 +19,24 @@ QString AgentService::modelSignature() const {return QString::fromLatin1(QCrypto
 
 namespace {
 constexpr int kMaxImagesPerRequest = 10;  // 架构防御：单次请求图片硬上限
+
+bool isDashScope(const QString& endpoint)
+{
+    const QString host = QUrl(endpoint).host().toLower();
+    return host == QStringLiteral("dashscope.aliyuncs.com")
+        || host == QStringLiteral("dashscope-intl.aliyuncs.com")
+        || host == QStringLiteral("dashscope-us.aliyuncs.com");
+}
+
+bool supportsThinkingSwitch(const QString& model)
+{
+    const auto name = model.toLower();
+    if (name.contains(QStringLiteral("thinking"))) return false;
+    return name.startsWith(QStringLiteral("qwen3.8-"))
+        || name.startsWith(QStringLiteral("qwen3.7-"))
+        || name.startsWith(QStringLiteral("qwen3.6-"))
+        || name.startsWith(QStringLiteral("qwen3.5-"));
+}
 } // namespace
 
 AgentService::AgentService(NetworkClient* network,
@@ -28,6 +48,28 @@ AgentService::AgentService(NetworkClient* network,
     , m_settings(settings)
     , m_providers(providers)
 {
+    if (m_network) {
+        connect(m_network, &NetworkClient::streamMetadata, this,
+                [this](int status, qint64 retryMs, const QJsonObject& usage) {
+            if (!m_streaming || !m_oneShotActive) return;
+            if (status > 0) m_httpStatus = status;
+            if (retryMs >= 0) m_retryAfterMs = retryMs;
+            if (!usage.isEmpty()) m_buildUsage = usage;
+        });
+        connect(m_network, &NetworkClient::streamActivity, this, [this](qint64 bytes, int status) {
+            if (!m_streaming || !m_oneShotActive) return;
+            if (status > 0) m_httpStatus = status;
+            if (bytes > 0) {
+                if (m_firstByteMs < 0) {
+                    m_firstByteMs = m_requestTimer.elapsed();
+                    qDebug() << "[AgentService][Build] first_byte" << m_currentConvId
+                             << "latency_ms=" << m_firstByteMs << "http_status=" << m_httpStatus;
+                }
+                m_receivedBytes += bytes;
+                emit responseActivity(m_currentConvId);
+            }
+        });
+    }
     if (m_providers) {
         // 监听激活提供商变更
         connect(m_providers, &LLMProviderService::activeProviderChanged,
@@ -71,7 +113,7 @@ QString AgentService::buildSystemPrompt(const VideoContext& ctx)
 }
 
 QJsonObject AgentService::makeUserMessage(const QString& text,
-                                          const QList<QImage>& frames)
+                                          const QList<QImage>& frames, const ImageEncodingOptions& imageOptions)
 {
     QJsonObject msg;
     msg.insert(QStringLiteral("role"), QStringLiteral("user"));
@@ -89,11 +131,18 @@ QJsonObject AgentService::makeUserMessage(const QString& text,
     int count = 0;
     for (const QImage& frame : frames) {
         if (count >= kMaxImagesPerRequest) break;
-        // 缩放到 1024 内 + JPEG quality 80
-        QImage scaled = (frame.width() > 1024 || frame.height() > 1024)
-                            ? ImageProcessor::scaleToFit(frame, QSize(1024, 1024))
-                            : frame;
-        const QByteArray b64 = ImageProcessor::toBase64Jpeg(scaled, 80);
+        QSize encodedSize;
+        QByteArray b64;
+        if (count < imageOptions.preparedImages.size()) {
+            const auto& prepared = imageOptions.preparedImages[count];
+            encodedSize = prepared.size;
+            b64 = prepared.jpeg.toBase64(); // preserve final grid pixels and JPEG quality exactly
+        } else {
+            QImage scaled = (frame.width() > imageOptions.maxEdge || frame.height() > imageOptions.maxEdge)
+                ? ImageProcessor::scaleToFit(frame, QSize(imageOptions.maxEdge, imageOptions.maxEdge)) : frame;
+            encodedSize = scaled.size();
+            b64 = ImageProcessor::toBase64Jpeg(scaled, imageOptions.jpegQuality);
+        }
         const QString dataUri =
             QStringLiteral("data:image/jpeg;base64,") + QString::fromLatin1(b64);
 
@@ -106,8 +155,8 @@ QJsonObject AgentService::makeUserMessage(const QString& text,
                                 { QStringLiteral("detail"), QStringLiteral("auto") }
                             });
         // 添加尺寸元数据（不影响API调用，仅用于本地token估算）
-        imageContent.insert(QStringLiteral("width"), scaled.width());
-        imageContent.insert(QStringLiteral("height"), scaled.height());
+        imageContent.insert(QStringLiteral("width"), encodedSize.width());
+        imageContent.insert(QStringLiteral("height"), encodedSize.height());
 
         content.append(imageContent);
         ++count;
@@ -241,6 +290,7 @@ void AgentService::sendMessage(const QString& conversationId,
              << "payload_build_ms=" << payloadBuildMs;
 
     m_currentConvId = conversationId;
+    m_oneShotActive = false;
     m_firstChunkArrived = false;
     m_ttftMs = 0;
     m_requestTimer.start();
@@ -315,8 +365,16 @@ void AgentService::sendMessage(const QString& conversationId,
 }
 
 void AgentService::sendOneShot(const QString& conversationId, const QString& systemPrompt,
-                               const QString& text, const QList<QImage>& frames)
+                               const QString& text, const QList<QImage>& frames, const ImageEncodingOptions& imageOptions)
 {
+    m_retryAfterMs = -1;
+    m_buildUsage = {};
+    m_httpStatus = 0;
+    m_buildImageDiagnostics = {};
+    m_buildRequestStartedAtMs = 0;
+    m_requestTimer.invalidate();
+    m_firstByteMs = m_firstContentMs = -1;
+    m_receivedBytes = m_reasoningChars = 0;
     if (!m_network) {
         emit responseError(conversationId, tr("网络组件未初始化"));
         return;
@@ -330,8 +388,29 @@ void AgentService::sendOneShot(const QString& conversationId, const QString& sys
         emit responseError(conversationId, tr("证据图片超过单次请求上限，请拆分证据页"));
         return;
     }
+    if (imageOptions.maxEdge < 1 || imageOptions.maxEdge > 8192 || imageOptions.jpegQuality < 1 ||
+        imageOptions.jpegQuality > 100 ||
+        ((imageOptions.requirePrepared || !imageOptions.preparedImages.isEmpty()) &&
+         imageOptions.preparedImages.size() != frames.size())) {
+        emit responseError(conversationId, tr("invalid_image_encoding: 图片编码参数或数量无效"));
+        return;
+    }
+    qint64 encodedBytes = 0;
+    QJsonArray encodedSizes;
+    for (int i = 0; i < imageOptions.preparedImages.size(); ++i) {
+        const auto& prepared = imageOptions.preparedImages[i];
+        if (prepared.jpeg.isEmpty() || !prepared.size.isValid() || prepared.size != frames[i].size() ||
+            prepared.size.width() > imageOptions.maxEdge || prepared.size.height() > imageOptions.maxEdge) {
+            emit responseError(conversationId, tr("invalid_image_encoding: 预编码图片无效或尺寸不一致"));
+            return;
+        }
+        encodedBytes += prepared.jpeg.size();
+        encodedSizes.append(QJsonObject{{"width", prepared.size.width()}, {"height", prepared.size.height()}});
+    }
+    m_buildImageDiagnostics = {{"transmitted_images", frames.size()}, {"prepared_image_bytes", encodedBytes},
+                              {"prepared_image_sizes", encodedSizes}};
     // Send only the task contract and its evidence. Chat formatting/tool rules do not apply.
-    auto user = makeUserMessage(text, frames);
+    auto user = makeUserMessage(text, frames, imageOptions);
     if (user["content"].isArray()) {
         QJsonArray content;
         for (auto part : user["content"].toArray()) {
@@ -347,24 +426,42 @@ void AgentService::sendOneShot(const QString& conversationId, const QString& sys
     QJsonObject payload{{"model", m_model}, {"stream", true}, {"temperature", 0.1},
                         {"max_tokens", maxTokens},
                         {"messages", QJsonArray{QJsonObject{{"role", "system"}, {"content", systemPrompt}}, user}}};
+    // Vendor extension belongs only to supported hybrid models on DashScope.
+    const bool disableThinking = isDashScope(m_endpoint) && supportsThinkingSwitch(m_model);
+    if (disableThinking) payload.insert("enable_thinking", false);
     m_currentConvId = conversationId;
     m_accumulated.clear();
     m_pendingFinishReason.clear();
     m_streaming = true;
+    m_oneShotActive = true;
+    m_receivedBytes = m_reasoningChars = 0;
+    m_firstByteMs = m_firstContentMs = -1;
+    m_httpStatus = 0;
     m_requestTimer.start();
+    qDebug() << "[AgentService][Build] request_start" << conversationId << "model=" << m_model
+             << "frames=" << frames.size() << "input_chars=" << systemPrompt.size() + text.size()
+             << "max_tokens=" << maxTokens << "thinking_disabled=" << disableThinking
+             << "idle_timeout_ms=" << buildIdleTimeoutMs() << "total_timeout_ms=" << buildTotalTimeoutMs();
     m_network->setAuthToken(m_apiKey);
     QString base = m_endpoint;
     while (base.endsWith('/')) base.chop(1);
+    m_buildRequestStartedAtMs = QDateTime::currentMSecsSinceEpoch();
     m_network->streamPostRaw(QUrl(base + "/chat/completions"), payload,
         [this, conversationId](const QJsonObject& choice) {
             if (!m_streaming || m_currentConvId != conversationId) return;
-            m_accumulated += choice["delta"].toObject()["content"].toString();
+            const auto delta = choice["delta"].toObject();
+            m_reasoningChars += delta["reasoning_content"].toString().size();
+            const auto content = delta["content"].toString();
+            if (!content.isEmpty() && m_firstContentMs < 0) m_firstContentMs = m_requestTimer.elapsed();
+            m_accumulated += content;
             if (choice["finish_reason"].isString())
                 m_pendingFinishReason = choice["finish_reason"].toString();
         },
         [this, conversationId] {
             if (!m_streaming || m_currentConvId != conversationId) return;
             m_streaming = false;
+            qDebug() << "[AgentService][Build] request_finished" << conversationId
+                     << "finish_reason=" << m_pendingFinishReason << requestDiagnostics();
             if (m_pendingFinishReason != "stop") {
                 emit responseError(conversationId, m_pendingFinishReason == "length"
                     ? tr("output_truncated: 模型输出达到长度上限，请减小证据页或增加构建输出额度")
@@ -372,7 +469,7 @@ void AgentService::sendOneShot(const QString& conversationId, const QString& sys
                 return;
             }
             if (m_accumulated.trimmed().isEmpty()) {
-                emit responseError(conversationId, tr("empty_response: 模型未返回正文"));
+                emit responseError(conversationId, tr("empty_response: 模型未返回正文；%1").arg(requestDiagnostics()));
                 return;
             }
             ChatMessage message;
@@ -385,8 +482,46 @@ void AgentService::sendOneShot(const QString& conversationId, const QString& sys
             if (!m_streaming || m_currentConvId != conversationId) return;
             m_streaming = false;
             if (!m_apiKey.isEmpty()) error.replace(m_apiKey, "[redacted]");
-            emit responseError(conversationId, error.left(500));
-        });
+            const auto detail = error.left(500) + QStringLiteral("；") + requestDiagnostics();
+            qWarning() << "[AgentService][Build] request_error" << conversationId << detail;
+            emit responseError(conversationId, detail);
+        }, buildIdleTimeoutMs(), !isDashScope(m_endpoint));
+}
+
+int AgentService::buildIdleTimeoutMs() const
+{
+    bool ok = false;
+    const int value = m_settings ? m_settings->get("llm.build_idle_timeout_ms").toInt(&ok) : 0;
+    return ok ? qBound(10000, value, 300000) : BuildRequestPolicy::IdleTimeoutMs;
+}
+
+ModelReply AgentService::buildReplyMetadata() const
+{
+    ModelReply reply;
+    reply.httpStatus = m_httpStatus;
+    reply.retryAfterMs = m_retryAfterMs;
+    reply.diagnostics = {{"elapsed_ms", m_requestTimer.isValid() ? m_requestTimer.elapsed() : 0},
+                         {"request_started_at_ms", m_buildRequestStartedAtMs},
+                         {"first_byte_ms", m_firstByteMs}, {"first_content_ms", m_firstContentMs},
+                         {"received_bytes", m_receivedBytes}, {"usage_available", !m_buildUsage.isEmpty()}};
+    if (!m_buildUsage.isEmpty()) reply.diagnostics["usage"] = m_buildUsage;
+    for (auto it = m_buildImageDiagnostics.begin(); it != m_buildImageDiagnostics.end(); ++it)
+        reply.diagnostics[it.key()] = it.value();
+    return reply;
+}
+
+int AgentService::buildTotalTimeoutMs() const
+{
+    bool ok = false;
+    const int value = m_settings ? m_settings->get("llm.build_total_timeout_ms").toInt(&ok) : 0;
+    return qMax(buildIdleTimeoutMs(), ok ? qBound(10000, value, 1800000) : BuildRequestPolicy::TotalTimeoutMs);
+}
+
+QString AgentService::requestDiagnostics() const
+{
+    return QStringLiteral("elapsed_ms=%1 http=%2 bytes=%3 first_byte_ms=%4 first_content_ms=%5 reasoning_chars=%6 content_chars=%7")
+        .arg(m_requestTimer.isValid() ? m_requestTimer.elapsed() : 0).arg(m_httpStatus)
+        .arg(m_receivedBytes).arg(m_firstByteMs).arg(m_firstContentMs).arg(m_reasoningChars).arg(m_accumulated.size());
 }
 
 void AgentService::abortRequest(const QString& conversationId, const QString& reason)
@@ -394,7 +529,9 @@ void AgentService::abortRequest(const QString& conversationId, const QString& re
     if (!m_streaming || m_currentConvId != conversationId) return;
     m_streaming = false;
     if (m_network) m_network->cancelStream();
-    emit responseError(conversationId, reason);
+    const QString detail = m_oneShotActive ? reason + QStringLiteral("；") + requestDiagnostics() : reason;
+    if (m_oneShotActive) qWarning() << "[AgentService][Build] request_aborted" << conversationId << detail;
+    emit responseError(conversationId, detail);
 }
 
 void AgentService::stopGeneration()
@@ -604,9 +741,11 @@ void AgentService::sendStreamWithTools(const QString& convId,
                                        const QJsonObject& payload)
 {
     m_currentConvId       = convId;
+    m_oneShotActive = false;
     m_accumulated.clear();
     m_pendingToolCalls    = QJsonArray();
     m_pendingFinishReason.clear();
+    m_toolStreamError.clear();
     m_firstChunkArrived = false;
     m_ttftMs = 0;
     m_streaming = true;
@@ -622,7 +761,8 @@ void AgentService::sendStreamWithTools(const QString& convId,
     m_network->streamPostRaw(
         url, payload,
         // onChoice: 完整 delta 对象
-        [this](const QJsonObject& choice) {
+        [this, convId](const QJsonObject& choice) {
+            if (!m_streaming || m_currentConvId != convId) return;
             const QJsonObject delta = choice.value(QStringLiteral("delta")).toObject();
             const QString content = delta.value(QStringLiteral("content")).toString();
 
@@ -638,30 +778,75 @@ void AgentService::sendStreamWithTools(const QString& convId,
             if (!content.isEmpty()) {
                 m_accumulated += content;
                 emit responseChunk(m_currentConvId, content);
+                if (!m_streaming || m_currentConvId != convId) return;
             }
             // 累积 tool_calls 增量
             const QJsonArray tcArr = delta.value(QStringLiteral("tool_calls")).toArray();
             for (const auto& v : tcArr) {
+                if (!m_toolStreamError.isEmpty()) break;
+                if (!v.isObject()) {
+                    m_toolStreamError = QStringLiteral("工具调用片段不是对象");
+                    break;
+                }
                 const QJsonObject tc = v.toObject();
-                const int index = tc.value(QStringLiteral("index")).toInt(0);
+                const QString id = tc.value(QStringLiteral("id")).toString();
+                int index = -1;
+                if (tc.contains(QStringLiteral("index"))) {
+                    const auto value = tc.value(QStringLiteral("index"));
+                    index = value.toInt(-1);
+                    if (!value.isDouble() || value.toDouble() != index) index = -1;
+                } else if (!id.isEmpty()) {
+                    for (int i = 0; i < m_pendingToolCalls.size(); ++i) {
+                        if (m_pendingToolCalls[i].toObject()["id"].toString() == id) {
+                            index = i;
+                            break;
+                        }
+                    }
+                    if (index < 0) index = m_pendingToolCalls.size();
+                } else if (tcArr.size() == 1 && m_pendingToolCalls.size() <= 1) {
+                    index = 0;
+                }
+                if (index < 0 || index >= 64) {
+                    m_toolStreamError = QStringLiteral("工具调用缺少可确定的索引或索引越界");
+                    break;
+                }
                 // 扩容
                 while (m_pendingToolCalls.size() <= index) {
                     m_pendingToolCalls.append(QJsonObject{});
                 }
                 QJsonObject slot = m_pendingToolCalls.at(index).toObject();
-                if (tc.contains(QStringLiteral("id"))) {
-                    slot.insert(QStringLiteral("id"), tc.value(QStringLiteral("id")));
+                if (!id.isEmpty()) {
+                    const QString existing = slot["id"].toString();
+                    if (!existing.isEmpty() && existing != id) {
+                        m_toolStreamError = QStringLiteral("工具调用%1的 ID 冲突").arg(index);
+                        break;
+                    }
+                    slot.insert(QStringLiteral("id"), id);
                 }
                 const QJsonObject fn = tc.value(QStringLiteral("function")).toObject();
                 if (!fn.isEmpty()) {
                     QJsonObject slotFn = slot.value(QStringLiteral("function")).toObject();
-                    if (fn.contains(QStringLiteral("name"))) {
-                        slotFn.insert(QStringLiteral("name"), fn.value(QStringLiteral("name")));
+                    const QString name = fn["name"].toString();
+                    if (!name.isEmpty()) {
+                        const QString existing = slotFn["name"].toString();
+                        if (!existing.isEmpty() && existing != name) {
+                            m_toolStreamError = QStringLiteral("工具调用%1的名称冲突").arg(index);
+                            break;
+                        }
+                        slotFn.insert(QStringLiteral("name"), name);
                     }
                     if (fn.contains(QStringLiteral("arguments"))) {
-                        const QString add = fn.value(QStringLiteral("arguments")).toString();
                         const QString cur = slotFn.value(QStringLiteral("arguments")).toString();
-                        slotFn.insert(QStringLiteral("arguments"), cur + add);
+                        const auto args = fn.value(QStringLiteral("arguments"));
+                        if (args.isString()) {
+                            slotFn.insert(QStringLiteral("arguments"), cur + args.toString());
+                        } else if (args.isObject() && cur.isEmpty()) {
+                            slotFn.insert(QStringLiteral("arguments"), QString::fromUtf8(
+                                QJsonDocument(args.toObject()).toJson(QJsonDocument::Compact)));
+                        } else if (!args.isNull()) {
+                            m_toolStreamError = QStringLiteral("工具调用%1的参数片段类型无效").arg(index);
+                            break;
+                        }
                     }
                     slot.insert(QStringLiteral("function"), slotFn);
                 }
@@ -672,8 +857,31 @@ void AgentService::sendStreamWithTools(const QString& convId,
             if (!fr.isEmpty()) m_pendingFinishReason = fr;
         },
         // onDone
-        [this]() {
+        [this, convId]() {
+            if (!m_streaming || m_currentConvId != convId) return;
             m_streaming = false;
+            QJsonArray normalized;
+            QSet<QString> ids;
+            for (int i = 0; i < m_pendingToolCalls.size() && m_toolStreamError.isEmpty(); ++i) {
+                const auto call = m_pendingToolCalls[i].toObject();
+                if (call.isEmpty()) continue; // Sparse stream indices are not tool calls.
+                const auto function = call["function"].toObject();
+                const QString id = call["id"].toString();
+                QJsonParseError error{};
+                const auto args = QJsonDocument::fromJson(function["arguments"].toString().toUtf8(), &error);
+                if (id.trimmed().isEmpty() || function["name"].toString().trimmed().isEmpty()
+                    || ids.contains(id) || error.error != QJsonParseError::NoError || !args.isObject()) {
+                    m_toolStreamError = QStringLiteral("工具调用%1缺少 ID/名称、ID 重复或参数不是完整 JSON 对象").arg(i);
+                    break;
+                }
+                ids.insert(id);
+                normalized.append(call);
+            }
+            if (!m_toolStreamError.isEmpty()) {
+                emit responseError(convId, QStringLiteral("invalid_tool_call: ") + m_toolStreamError);
+                return;
+            }
+            m_pendingToolCalls = normalized;
             const qint64 totalLatencyMs = m_requestTimer.elapsed();
             const int outputTokens = m_budgetManager.estimateTextTokens(m_accumulated);
             const qint64 generationTimeMs = totalLatencyMs - m_ttftMs;
@@ -710,13 +918,14 @@ void AgentService::sendStreamWithTools(const QString& convId,
                      << "工具调用数=" << m_pendingToolCalls.size()
                      << "回答字符数=" << m_accumulated.size();
 
-            emit responseFinishedWithTools(m_currentConvId,
-                                           m_pendingToolCalls,
-                                           m_pendingFinishReason,
-                                           m_accumulated);
+            const auto calls = m_pendingToolCalls;
+            const auto reason = m_pendingFinishReason;
+            const auto text = m_accumulated;
+            emit responseFinishedWithTools(convId, calls, reason, text);
         },
         // onError
-        [this](const QString& err) {
+        [this, convId](const QString& err) {
+            if (!m_streaming || m_currentConvId != convId) return;
             m_streaming = false;
             const qint64 errorLatencyMs = m_requestTimer.elapsed();
             qDebug() << "[AgentService][Timing] tool_stream_request_error"

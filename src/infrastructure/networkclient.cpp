@@ -1,4 +1,5 @@
 #include "infrastructure/networkclient.h"
+#include <QDateTime>
 
 #include <QNetworkAccessManager>
 #include <QNetworkRequest>
@@ -83,7 +84,8 @@ void NetworkClient::streamPost(const QUrl& url, const QJsonObject& body,
 void NetworkClient::streamPostRaw(const QUrl& url, const QJsonObject& body,
                                     std::function<void(const QJsonObject&)> onChoice,
                                     std::function<void()> onDone,
-                                    std::function<void(const QString&)> onError)
+                                    std::function<void(const QString&)> onError,
+                                    int idleTimeoutMs, bool allowHttp2)
 {
     cancelStream();
 
@@ -96,15 +98,36 @@ void NetworkClient::streamPostRaw(const QUrl& url, const QJsonObject& body,
 
     QNetworkRequest req(url);
     applyCommonHeaders(req, {});
+    req.setTransferTimeout(idleTimeoutMs);
+    req.setAttribute(QNetworkRequest::Http2AllowedAttribute, allowHttp2);
     req.setRawHeader("Accept", "text/event-stream");
 
     const QByteArray payload = QJsonDocument(body).toJson(QJsonDocument::Compact);
     m_activeStream = m_nam->post(req, payload);
 
-    connect(m_activeStream, &QNetworkReply::readyRead, this, [this]() {
-        if (m_activeStream) parseSSEChunk(m_activeStream->readAll());
-    });
     auto* reply = m_activeStream;
+    connect(reply, &QNetworkReply::metaDataChanged, this, [this, reply] {
+        if (m_activeStream != reply) return;
+        const auto header = reply->rawHeader("Retry-After").trimmed();
+        bool ok = false;
+        const qint64 seconds = header.toLongLong(&ok);
+        qint64 retryMs = -1;
+        if (ok && seconds >= 0)
+            retryMs = qMin(seconds, qint64(86400)) * 1000;
+        else if (!header.isEmpty()) {
+            const auto date = QDateTime::fromString(QString::fromLatin1(header), Qt::RFC2822Date);
+            if (date.isValid()) retryMs = qMax(qint64(0), QDateTime::currentDateTimeUtc().msecsTo(date));
+        }
+        emit streamMetadata(reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt(), retryMs, {});
+        emit streamActivity(0, reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt());
+    });
+    connect(reply, &QNetworkReply::readyRead, this, [this, reply] {
+        if (m_activeStream != reply || m_done) return;
+        const auto chunk = reply->readAll();
+        if (!chunk.isEmpty())
+            emit streamActivity(chunk.size(), reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt());
+        if (m_activeStream == reply && !m_done) parseSSEChunk(chunk);
+    });
     connect(reply, &QNetworkReply::finished, this, [this, reply] { handleStreamFinished(reply); });
 }
 
@@ -113,7 +136,9 @@ void NetworkClient::handleStreamFinished(QNetworkReply* reply)
     if (m_activeStream != reply) return;
     const auto error = reply->error();
     QString detail;
-    if (error != QNetworkReply::NoError && error != QNetworkReply::OperationCanceledError) {
+    // Explicit cancellation disconnects this reply in cancelStream(). A still-active
+    // OperationCanceledError (e.g. Qt transfer timeout) must not become a success.
+    if (error != QNetworkReply::NoError) {
         const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         const auto body = m_buffer + reply->readAll();
         const auto object = QJsonDocument::fromJson(body).object();
@@ -137,6 +162,7 @@ void NetworkClient::handleStreamFinished(QNetworkReply* reply)
 
 void NetworkClient::parseSSEChunk(const QByteArray& chunk)
 {
+    auto* reply = m_activeStream;
     m_buffer.append(chunk);
     m_buffer.replace("\r\n", "\n");
 
@@ -161,13 +187,18 @@ void NetworkClient::parseSSEChunk(const QByteArray& chunk)
             }
 
             const QJsonObject obj = QJsonDocument::fromJson(payload).object();
+            if (obj["usage"].isObject())
+                emit streamMetadata(reply ? reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() : 0,
+                                    -1, obj["usage"].toObject());
             const QJsonArray choices = obj.value(QStringLiteral("choices")).toArray();
             if (choices.isEmpty()) continue;
             const QJsonObject choice = choices.at(0).toObject();
 
             // Raw 路径：把整个 choice 对象透传给调用方（Tool Calling 场景）
             if (m_onChoice) {
-                m_onChoice(choice);
+                const auto onChoice = m_onChoice;
+                onChoice(choice);
+                if (m_activeStream != reply || m_done) return;
                 continue;
             }
 
@@ -175,7 +206,9 @@ void NetworkClient::parseSSEChunk(const QByteArray& chunk)
             const QJsonObject delta = choice.value(QStringLiteral("delta")).toObject();
             const QString content = delta.value(QStringLiteral("content")).toString();
             if (!content.isEmpty() && m_onChunk) {
-                m_onChunk(content);
+                const auto onChunk = m_onChunk;
+                onChunk(content);
+                if (m_activeStream != reply || m_done) return;
             }
         }
     }
@@ -185,7 +218,8 @@ void NetworkClient::finishStream()
 {
     if (m_done) return;
     m_done = true;
-    if (m_onDone) m_onDone();
+    const auto onDone = m_onDone;
+    if (onDone) onDone();
 }
 
 void NetworkClient::cancelStream()

@@ -6,10 +6,12 @@
 #include <QList>
 #include <QString>
 #include <QVector>
+#include <QTimer>
 #include <QElapsedTimer>
 
 #include <functional>
 #include "model/model_reply.h"
+#include "model/image_encoding_options.h"
 
 class AgentService;
 
@@ -25,7 +27,7 @@ class OneShotVlmChannel final : public QObject
 public:
     enum class Priority { Background, Interactive };
 
-    explicit OneShotVlmChannel(AgentService* agent, QObject* parent = nullptr, int requestTimeoutMs = 55000);
+    explicit OneShotVlmChannel(AgentService* agent, QObject* parent = nullptr, int requestTimeoutMs = 0);
 
     void enqueue(const QString& systemPrompt,
                  const QString& userText,
@@ -37,22 +39,32 @@ public:
     void enqueueDetailed(const QString& systemPrompt, const QString& userText,
                          const QList<QImage>& frames, Priority priority,
                          const QString& cancellationKey, std::function<void(ModelReply)> onDone);
+    void enqueueRequest(const QString& requestId, const QString& systemPrompt, const QString& userText,
+                        const QList<QImage>& frames, Priority priority, const QString& cancellationKey,
+                        std::function<void(ModelReply)> onDone, const ImageEncodingOptions& imageOptions = {});
+    void cancelRequest(const QString& requestId);
 
-    /// 取消尚未发起的同一视频后台任务；正在请求只会被标记为丢弃结果。
+    /// 移除排队任务，并立即终止同一视频正在进行的后台请求。
     void cancelBackground(const QString& cancellationKey);
 
     bool isBusy() const { return m_running; }
     int pendingCount() const { return m_pending.size(); }
     QString modelSignature() const;
+    int watchdogTimeoutMs() const;
 
 private:
     struct Request {
         QString systemPrompt;
         QString userText;
         QList<QImage> frames;
+        ImageEncodingOptions imageOptions;
+        QElapsedTimer queueTimer;
+        qint64 queueMs = 0;
         Priority priority = Priority::Background;
         QString cancellationKey;
         QString conversationId;
+        QString requestId;
+        bool notifyCancellation = false; // explicit requests always receive one terminal callback
         std::function<void(ModelReply)> onDone;
         bool discardResult = false;
     };
@@ -60,13 +72,15 @@ private:
     void startNext();
     void finishActive(ModelReply reply);
 
-    QElapsedTimer m_requestTimer;
+    QTimer m_idleTimer;
+    QTimer m_deadlineTimer;
+    int m_idleTimeoutMs = 0;
 
     AgentService* m_agent = nullptr;
     QVector<Request> m_pending;
     Request m_active;
     bool m_running = false;
-    int m_requestTimeoutMs = 55000;
+    int m_requestTimeoutMs = 0;
 };
 
 #endif // FRAMEMIND_ONE_SHOT_VLM_CHANNEL_H
