@@ -19,6 +19,15 @@ set(CMAKE_AUTORCC ON)
 if(MSVC)
     # 源码按 UTF-8 处理，避免中文注释/字符串告警
     add_compile_options(/utf-8)
+    if(CMAKE_GENERATOR MATCHES "Ninja")
+        # Ninja parses /showIncludes to track headers. Keep the compiler output
+        # language and parser prefix consistent across Qt Creator and CLI builds;
+        # otherwise header changes can silently leave ABI-incompatible objects.
+        set(CMAKE_CXX_CL_SHOWINCLUDES_PREFIX "Note: including file: ")
+        set(CMAKE_CL_SHOWINCLUDES_PREFIX "${CMAKE_CXX_CL_SHOWINCLUDES_PREFIX}")
+        list(PREPEND CMAKE_CXX_COMPILER_LAUNCHER
+            "${CMAKE_COMMAND}" -E env "VSLANG=1033")
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------
