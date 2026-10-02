@@ -523,3 +523,10 @@ foreach(_dll ${SMARTPLAYER_RUNTIME_DLLS})
             "${_dll}" "$<TARGET_FILE_DIR:FrameMind>"
     )
 endforeach()
+
+# Explicit test source lists also use the shared trace/category implementation.
+foreach(_test video_rag_tests video_model_channel_tests video_media_tests)
+    if(TARGET ${_test})
+        target_sources(${_test} PRIVATE src/util/video_rag_log.cpp)
+    endif()
+endforeach()

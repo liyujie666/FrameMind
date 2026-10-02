@@ -56,6 +56,8 @@ class VideoRAGBuildCoordinator final : public QObject {
   private:
     struct Job;
     struct UnitAnalysisTask;
+    void beginStage(const std::shared_ptr<Job>&, const QString&, const QString&, QJsonObject = {});
+    void endStage(const std::shared_ptr<Job>&, const QString& status = "success", QJsonObject = {});
     bool current(const std::shared_ptr<Job> &) const;
     void classify(const std::shared_ptr<Job> &, int attempt = 0);
     void route(const std::shared_ptr<Job> &);

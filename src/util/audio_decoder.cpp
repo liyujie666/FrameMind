@@ -1,3 +1,4 @@
+#include "util/video_rag_log.h"
 #include "util/audio_decoder.h"
 
 #include <QDebug>
@@ -255,7 +256,7 @@ std::vector<float> AudioDecoder::decodeToFloat32(const QString &filePath, int64_
     if (m_cancelled)
         output.clear();
 
-    qDebug() << "[AudioDecoder] 解码完成:" << filePath << "| 采样数:" << output.size()
+    qCDebug(ragDetailLog) << "[AudioDecoder] 解码完成:" << filePath << "| 采样数:" << output.size()
              << "| 时长:" << (output.size() / TARGET_SAMPLE_RATE) << "s";
 
     return output;

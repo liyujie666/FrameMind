@@ -1,3 +1,4 @@
+#include "util/video_rag_log.h"
 #include "service/whisper_service.h"
 #include "util/model_fingerprint.h"
 #include <QMutexLocker>
@@ -15,6 +16,19 @@ WhisperService::~WhisperService() = default;
 #include <QCoreApplication>
 #include <QThread>
 #include <cstring>
+#include <mutex>
+
+namespace {
+// whisper.cpp uses a process-wide callback. Install once and keep it valid for
+// the process lifetime; informational native output is diagnostic noise.
+void whisperLog(enum ggml_log_level level, const char* text, void*) {
+    const auto message = QString::fromUtf8(text).trimmed();
+    if (message.isEmpty()) return;
+    if (level == GGML_LOG_LEVEL_ERROR) qCCritical(ragDetailLog).noquote() << "[Whisper]" << message;
+    else if (level == GGML_LOG_LEVEL_WARN) qCWarning(ragDetailLog).noquote() << "[Whisper]" << message;
+    else qCDebug(ragDetailLog).noquote() << "[Whisper]" << message;
+}
+} // namespace
 
 // ---------------------------------------------------------------------------
 // whisper.cpp 集成说明
@@ -49,6 +63,8 @@ WhisperService::~WhisperService()
 
 bool WhisperService::initialize(const QString& modelPath)
 {
+    static std::once_flag logging;
+    std::call_once(logging, [] { whisper_log_set(whisperLog, nullptr); });
     m_modelFingerprint=modelFileFingerprint(modelPath);
     if (m_ctx) {
         whisper_free(m_ctx);
@@ -61,7 +77,7 @@ bool WhisperService::initialize(const QString& modelPath)
         return false;
     }
 
-    qDebug() << "[WhisperService] 模型加载成功:" << modelPath;
+    qCDebug(ragDetailLog) << "[WhisperService] 模型加载成功:" << modelPath;
     return true;
 }
 
@@ -141,7 +157,7 @@ QVector<SpeechSegment> WhisperService::transcribe(
         }
     }
 
-    qDebug() << "[WhisperService] 转写完成，共" << segments.size() << "段";
+    qCDebug(ragDetailLog) << "[WhisperService] 转写完成，共" << segments.size() << "段";
 
     return segments;
 }

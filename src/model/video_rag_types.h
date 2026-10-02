@@ -87,9 +87,11 @@ struct BuildOptions {
     bool clearTypeOverride = false;
 };
 
+class VideoRagLog;
 struct VideoBuildContext {
     QString videoId, filePath, fileFingerprint, buildId, rawSnapshotId, expectedActiveBuildId;
     quint64 taskGeneration = 0;
+    std::shared_ptr<VideoRagLog> log;
     std::shared_ptr<std::atomic_bool> cancelled = std::make_shared<std::atomic_bool>(false);
     QString cancellationKey() const;
     bool isCancelled() const { return cancelled->load(); }

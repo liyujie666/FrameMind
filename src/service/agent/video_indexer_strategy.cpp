@@ -7,6 +7,8 @@
 #include "service/whisper_service.h"
 #include "util/audio_decoder.h"
 #include <QDir>
+#include <QElapsedTimer>
+#include "util/video_rag_log.h"
 #include <QMutexLocker>
 #include <QStandardPaths>
 #include <algorithm>
@@ -48,15 +50,24 @@ void VideoIndexer::extract(const VideoBuildContext &context, const VideoRAGBuild
     m_pool.setMaxThreadCount(1);
     m_cancellations << context.cancelled;
     m_pool.start([this, context, plan, probe, done = std::move(done)] {
+        const QString stage = probe ? "probe" : "extract";
+        auto log = [&](const QString& name, const QString& message, QJsonObject fields = {},
+                       VideoRagLog::Level level = VideoRagLog::Level::Info) {
+            if (context.log) context.log->event(stage, name, message, std::move(fields), level);
+        };
         ExtractionResult result;
         auto &r = result.representation;
         r.videoId = context.videoId;
         QString error;
+        QElapsedTimer metadataTimer; metadataTimer.start();
         r.metadata = MediaProbe::inspect(context.filePath, context.cancelled.get(), &error);
         if (!error.isEmpty()) {
             result.diagnostics << error;
             result.state = ArtifactState::Failed;
         }
+        log("metadata", "媒体信息已读取", {{"video_duration_ms", qint64(r.metadata.durationMs)},
+            {"has_audio", r.metadata.hasAudio}, {"duration_ms", metadataTimer.elapsed()}, {"error", error.left(500)}},
+            error.isEmpty() ? VideoRagLog::Level::Info : VideoRagLog::Level::Warning);
         const int64_t duration = r.metadata.durationMs;
         QVector<int64_t> targets;
         if (probe) {
@@ -82,21 +93,33 @@ void VideoIndexer::extract(const VideoBuildContext &context, const VideoRAGBuild
                 else
                     for (int64_t t = 0; t < duration; t += 60000)
                         ranges << qMakePair(t, qMin(duration, t + 60000));
+                QElapsedTimer speechTimer; speechTimer.start();
+                log("asr_started", "开始分窗解码与语音转写", {{"windows", ranges.size()}});
+                int window = 0;
                 for (const auto &range : ranges) {
                     if (context.isCancelled())
                         break;
+                    QElapsedTimer windowTimer; windowTimer.start();
                     AudioDecoder decoder;
                     decoder.setProgressCallback([&](int) {
                         if (context.isCancelled())
                             decoder.cancel();
                     });
-                auto pcm = decoder.decodeToFloat32(context.filePath, range.first, range.second);
-                if(context.isCancelled()) break;
+                    auto pcm = decoder.decodeToFloat32(context.filePath, range.first, range.second);
+                    if(context.isCancelled()) break;
                     if (pcm.empty()) {
+                        log("asr_window_failed", "音频窗口解码失败", {{"start_ms", qint64(range.first)},
+                            {"end_ms", qint64(range.second)}}, VideoRagLog::Level::Warning);
+                        ++window;
                         result.diagnostics << "audio_decode_failed:" + QString::number(range.first);
                         continue;
                     }
                     auto segments = m_whisper->transcribe(pcm);
+                    ++window;
+                    log("asr_window", "音频窗口转写结果", {{"window", window}, {"windows", ranges.size()},
+                        {"start_ms", qint64(range.first)}, {"end_ms", qint64(range.second)},
+                        {"segments", segments.size()}, {"duration_ms", windowTimer.elapsed()}}, VideoRagLog::Level::Debug);
+                    if (context.log) context.log->progress(stage + ".asr", window, int(ranges.size()), "语音转写进度");
                     for (auto s : segments) {
                         s.startMs = qBound(range.first, s.startMs + range.first, range.second);
                         s.endMs = qBound(range.first, s.endMs + range.first, range.second);
@@ -117,7 +140,13 @@ void VideoIndexer::extract(const VideoBuildContext &context, const VideoRAGBuild
                         result.chunks << c;
                     }
                 }
-            }
+                log("asr_finished", "语音转写结束", {{"speech_segments", r.speechSegments.size()},
+                    {"windows_processed", window}, {"windows", ranges.size()}, {"duration_ms", speechTimer.elapsed()},
+                    {"cancelled", context.isCancelled()}});
+            } else
+                log("asr_skipped", "跳过语音转写", {{"reason", !r.metadata.hasAudio ? "no_audio" : "model_unavailable"}});
+#else
+            log("asr_skipped", "跳过语音转写", {{"reason", "whisper_disabled"}});
 #endif
         };
         if (plan.audioFirst)
@@ -131,6 +160,8 @@ void VideoIndexer::extract(const VideoBuildContext &context, const VideoRAGBuild
         QVector<SceneFrame> saved;
         // Bound image memory while retaining every sampled PTS on disk.
         const int batchSize = probe ? 1 : 128;
+        QElapsedTimer framesTimer; framesTimer.start();
+        log("frames_started", "开始采样画面（可用时同时编码视觉向量）", {{"target_frames", targets.size()}});
         for (int begin = 0; begin < targets.size() && !context.isCancelled(); begin += batchSize) {
             auto frames = FrameExtractor::extract(context.filePath, targets.mid(begin, batchSize),
                                                   FrameExtractor::Options{}, context.cancelled.get(), &error);
@@ -172,9 +203,14 @@ void VideoIndexer::extract(const VideoBuildContext &context, const VideoRAGBuild
                     result.chunks << c;
             }
         }
+        log("frames_finished", "画面采样结束", {{"target_frames", targets.size()}, {"saved_frames", saved.size()},
+            {"duration_ms", framesTimer.elapsed()}, {"cancelled", context.isCancelled()}});
         // Shot detection stays independent of semantic segmentation.
         SceneDetector detector;
+        QElapsedTimer sceneTimer; sceneTimer.start();
         r.scenes = detector.detectScenes(thumbnails, timestamps);
+        log("shots_finished", "镜头检测结束（镜头与语义单元分别统计）", {{"shots", r.scenes.size()},
+            {"sampled_frames", thumbnails.size()}, {"mode", "histogram"}, {"duration_ms", sceneTimer.elapsed()}});
         if (r.scenes.isEmpty() && duration > 0) {
             Scene s;
             s.id = 0;
@@ -205,6 +241,9 @@ void VideoIndexer::extract(const VideoBuildContext &context, const VideoRAGBuild
         else if (result.state != ArtifactState::Failed && !result.diagnostics.isEmpty())
             result.state = ArtifactState::Partial;
         r.level = VideoRepresentation::Level1;
+        log("evidence_finished", "原始证据提取结束", {{"status", artifactStateKey(result.state)},
+            {"chunks", result.chunks.size()}, {"diagnostics", QJsonArray::fromStringList(result.diagnostics)}},
+            result.diagnostics.isEmpty() ? VideoRagLog::Level::Info : VideoRagLog::Level::Warning);
         QMetaObject::invokeMethod(
             this, [done, result = std::move(result)]() mutable { done(std::move(result)); },
             Qt::QueuedConnection);
@@ -216,6 +255,8 @@ void VideoIndexer::encodeChunks(const VideoBuildContext &context, QVector<VideoC
     m_cancellations << context.cancelled;
     m_pool.setMaxThreadCount(1);
     m_pool.start([this, context, chunks = std::move(chunks), done = std::move(done)]() mutable {
+        QElapsedTimer timer; timer.start();
+        if (context.log) context.log->event("embedding", "started", "开始文本向量编码", {{"input_chunks", chunks.size()}});
         QVector<VideoChunk> encoded;
         for (const auto &c : chunks) {
             if (context.isCancelled())
@@ -251,6 +292,15 @@ void VideoIndexer::encodeChunks(const VideoBuildContext &context, QVector<VideoC
                 encoded << part;
             }
         }
+        int ready = 0, failed = 0, skipped = 0;
+        for (const auto& chunk : encoded) {
+            const auto status = chunk.metadata.value("embedding_status").toString();
+            ready += status == "ready"; failed += status == "failed"; skipped += status == "skipped";
+        }
+        if (context.log) context.log->event("embedding", "finished", "文本向量编码结束",
+            {{"ready", ready}, {"failed", failed}, {"skipped", skipped}, {"output_chunks", encoded.size()},
+             {"duration_ms", timer.elapsed()}, {"cancelled", context.isCancelled()}},
+            failed ? VideoRagLog::Level::Warning : VideoRagLog::Level::Info);
         QMetaObject::invokeMethod(
             this, [done, encoded = std::move(encoded)]() mutable { done(std::move(encoded)); },
             Qt::QueuedConnection);

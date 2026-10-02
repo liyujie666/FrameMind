@@ -1,3 +1,4 @@
+#include "util/video_rag_log.h"
 #include "service/scene_detector.h"
 
 #ifdef FRAMEMIND_HAS_ONNXRUNTIME
@@ -43,7 +44,7 @@ bool SceneDetector::loadTransNetV2(const QString& modelPath)
     m_transnetEngine = std::make_unique<OnnxRuntimeEngine>(false);
     if (m_transnetEngine->loadModel(modelPath)) {
         m_useTransNet = true;
-        qDebug() << "[SceneDetector] TransNetV2 加载成功，切换到深度学习模式"
+        qCDebug(ragDetailLog) << "[SceneDetector] TransNetV2 加载成功，切换到深度学习模式"
                  << "| input: [1,100,27,48,3]";
         return true;
     }
@@ -110,7 +111,7 @@ QVector<Scene> SceneDetector::detectScenes(
                                   / (timestampsMs.size() - 1);
     const bool isSparse = avgIntervalMs > 2000;
 
-    qDebug() << "[SceneDetector] detectScenes | frames:" << frames.size()
+    qCDebug(ragDetailLog) << "[SceneDetector] detectScenes | frames:" << frames.size()
              << "| avgInterval:" << avgIntervalMs << "ms"
              << "| mode:" << (isSparse ? "histogram" : "TransNetV2");
 
@@ -158,7 +159,7 @@ QVector<Scene> SceneDetector::detectScenes(
         scenes.append(s);
     }
 
-    qDebug() << "[SceneDetector] 检测完成，共" << scenes.size() << "个场景";
+    qCDebug(ragDetailLog) << "[SceneDetector] 检测完成，共" << scenes.size() << "个场景";
     return scenes;
 }
 
@@ -189,7 +190,7 @@ QVector<QPair<int64_t, float>> SceneDetector::detectCandidateBoundaries(
         }
     }
 
-    qDebug() << "[SceneDetector] 粗分割候选边界:" << candidates.size() << "个";
+    qCDebug(ragDetailLog) << "[SceneDetector] 粗分割候选边界:" << candidates.size() << "个";
     return candidates;
 }
 
@@ -205,7 +206,7 @@ QVector<int64_t> SceneDetector::refineBoundariesWithTransNet(
 
 #ifdef FRAMEMIND_HAS_ONNXRUNTIME
     if (!m_useTransNet || !m_transnetEngine || !m_transnetEngine->isLoaded()) {
-        qDebug() << "[SceneDetector] TransNetV2 不可用，跳过精确确认";
+        qCDebug(ragDetailLog) << "[SceneDetector] TransNetV2 不可用，跳过精确确认";
         return confirmed;
     }
     if (denseFrames.size() < 2 || denseFrames.size() != denseTimestampsMs.size()) {
@@ -222,7 +223,7 @@ QVector<int64_t> SceneDetector::refineBoundariesWithTransNet(
         }
     }
 
-    qDebug() << "[SceneDetector] TransNetV2 精确确认:" << confirmed.size()
+    qCDebug(ragDetailLog) << "[SceneDetector] TransNetV2 精确确认:" << confirmed.size()
              << "个边界 (输入帧:" << denseFrames.size() << ")";
 #else
     Q_UNUSED(denseFrames)
@@ -374,14 +375,14 @@ std::vector<float> SceneDetector::transnetBatchPredict(const QVector<QImage>& fr
             if (prob > maxProb) maxProb = prob;
         }
 
-        qDebug() << "[SceneDetector] TransNetV2 batch"
+        qCDebug(ragDetailLog) << "[SceneDetector] TransNetV2 batch"
                  << frameIdx << "-" << (frameIdx + actualBatch - 1)
                  << "| maxProb:" << maxProb;
 
         frameIdx += actualBatch;
     }
 
-    qDebug() << "[SceneDetector] TransNetV2 推理完成 | frames:" << N;
+    qCDebug(ragDetailLog) << "[SceneDetector] TransNetV2 推理完成 | frames:" << N;
     return probs;
 #endif
 }

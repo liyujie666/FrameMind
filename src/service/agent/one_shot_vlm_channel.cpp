@@ -1,3 +1,4 @@
+#include "util/video_rag_log.h"
 #include "service/agent/one_shot_vlm_channel.h"
 
 #include "service/agentservice.h"
@@ -109,7 +110,7 @@ void OneShotVlmChannel::enqueueRequest(const QString& requestId, const QString& 
         m_pending.append(std::move(request));
     }
     
-    qDebug() << "[OneShotVlmChannel] 加入队列, 优先级:" << (priority == Priority::Interactive ? "交互" : "后台")
+    qCDebug(ragDetailLog) << "[OneShotVlmChannel] 加入队列, 优先级:" << (priority == Priority::Interactive ? "交互" : "后台")
              << "队列长度:" << m_pending.size()
              << "是否运行中:" << m_running;
     
@@ -160,7 +161,7 @@ void OneShotVlmChannel::startNext()
     m_active = m_pending.takeFirst();
     m_active.queueMs = m_active.queueTimer.elapsed();
     m_running = true;
-    qDebug() << "[OneShotVlmChannel] 开始处理 VLM 请求, convId:" << m_active.conversationId 
+    qCDebug(ragDetailLog) << "[OneShotVlmChannel] 开始处理 VLM 请求, convId:" << m_active.conversationId 
              << "帧数:" << m_active.frames.size() 
              << "优先级:" << (m_active.priority == Priority::Interactive ? "交互" : "后台");
     const QString conversationId = m_active.conversationId;
@@ -187,7 +188,7 @@ void OneShotVlmChannel::finishActive(ModelReply reply)
     m_idleTimer.stop();
     m_deadlineTimer.stop();
 
-    qDebug() << "[OneShotVlmChannel] 完成 VLM 请求, convId:" << m_active.conversationId 
+    qCDebug(ragDetailLog) << "[OneShotVlmChannel] 完成 VLM 请求, convId:" << m_active.conversationId 
              << "内容长度:" << reply.content.length()
              << "是否丢弃:" << m_active.discardResult
              << "队列剩余:" << m_pending.size();
@@ -197,7 +198,7 @@ void OneShotVlmChannel::finishActive(ModelReply reply)
     m_running = false;
     if (m_agent) m_agent->clearHistory(completed.conversationId);
     if (!completed.discardResult && completed.onDone) {
-        qDebug() << "[OneShotVlmChannel] 调用完成回调";
+        qCDebug(ragDetailLog) << "[OneShotVlmChannel] 调用完成回调";
         QTimer::singleShot(0, this, [done = std::move(completed.onDone), reply = std::move(reply)] { done(reply); });
     }
     startNext();

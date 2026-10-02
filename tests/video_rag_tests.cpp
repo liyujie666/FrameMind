@@ -13,6 +13,8 @@
 #include "video_rag_fixture.h"
 #include <QTemporaryDir>
 #include <QtTest>
+#include "util/video_rag_log.h"
+#include <future>
 
 struct CloseFixtureDatabase {
     ~CloseFixtureDatabase() { DatabaseManager::instance()->close(); }
@@ -21,6 +23,39 @@ struct CloseFixtureDatabase {
 class VideoRAGTests : public QObject {
     Q_OBJECT
   private slots:
+    void buildLogConcurrentAndThrottled() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        VideoRagLog log("build-test", "video-test", dir.path());
+        QVERIFY(log.available());
+        std::vector<std::future<void>> writers;
+        for (int worker = 0; worker < 4; ++worker)
+            writers.push_back(std::async(std::launch::async, [&, worker] {
+                for (int i = 0; i < 40; ++i)
+                    log.event("understand", "page", "diagnostic", {{"worker", worker}}, VideoRagLog::Level::Debug);
+            }));
+        for (auto& writer : writers) writer.get();
+        for (int i = 0; i <= 100; ++i) log.progress("understand", i, 100, "progress");
+        log.event("build", "finished", "done", {{"status", "partial"}}, VideoRagLog::Level::Warning);
+        QFile file(log.filePath()); QVERIFY(file.open(QIODevice::ReadOnly));
+        const auto lines = file.readAll().trimmed().split('\n');
+        QCOMPARE(lines.size(), 163); // 160 detail rows + first/final progress + terminal result
+        qint64 sequence = 0;
+        for (const auto& line : lines) {
+            QJsonParseError error;
+            const auto row = QJsonDocument::fromJson(line, &error).object();
+            QCOMPARE(error.error, QJsonParseError::NoError);
+            QCOMPARE(row["sequence"].toInteger(), ++sequence);
+            QCOMPARE(row["build_id"].toString(), QString("build-test"));
+            QCOMPARE(row["video_id"].toString(), QString("video-test"));
+            QVERIFY(!row["timestamp_utc"].toString().isEmpty());
+        }
+        QCOMPARE(QJsonDocument::fromJson(lines.last()).object()["fields"].toObject()["status"].toString(), QString("partial"));
+        // A file in place of a directory must not prevent console logging.
+        VideoRagLog unavailable("other-build", "video", log.filePath());
+        QVERIFY(!unavailable.available());
+        unavailable.event("build", "failed", "failure", {}, VideoRagLog::Level::Error);
+    }
     void rollingCarryValidationAndBudget() {
         const QJsonArray facts{QJsonObject{{"text", "early important fact"},
                                          {"source_chunk_ids", QJsonArray{"source0"}}}};
@@ -426,6 +461,25 @@ class VideoRAGTests : public QObject {
         const auto manifest = store.activeBuild(VideoFileIdentity::legacyId(path));
         QCOMPARE(manifest.state, ArtifactState::Ready);
         QCOMPARE(manifest.profile.primaryType, type);
+        QFile trace(manifest.artifacts["build_log_file"].toString());
+        QVERIFY(trace.open(QIODevice::ReadOnly));
+        const auto traceBytes = trace.readAll();
+        QVERIFY(!traceBytes.contains(QStringLiteral("后半段批准42万元").toUtf8()));
+        QStringList started, ended;
+        QJsonObject last;
+        for (const auto& line : traceBytes.trimmed().split('\n')) {
+            const auto row = QJsonDocument::fromJson(line).object();
+            QCOMPARE(row["build_id"].toString(), manifest.buildId);
+            if (row["event"] == "started" && row["stage"] != "build") started << row["stage"].toString();
+            if (row["event"] == "finished" && row["stage"] != "build") ended << row["stage"].toString();
+            last = row;
+        }
+        QCOMPARE(started, ended);
+        QVERIFY(started.contains("extract"));
+        QVERIFY(started.contains("understand"));
+        QCOMPARE(last["event"].toString(), QString("finished"));
+        QCOMPARE(last["fields"].toObject()["status"].toString(), QString("ready"));
+
         const auto units = store.listUnits(manifest.buildId);
         QVERIFY(!units.isEmpty());
         for (const auto &unit : units) {
@@ -753,6 +807,14 @@ class VideoRAGTests : public QObject {
         coordinator.start(path, options); QTRY_VERIFY(!coordinator.isRunning());
         const auto build = store.activeBuild(VideoFileIdentity::legacyId(path));
         QCOMPARE(build.state, ArtifactState::Partial);
+        QFile trace(build.artifacts["build_log_file"].toString());
+        QVERIFY(trace.open(QIODevice::ReadOnly));
+        const auto traceLines = trace.readAll().trimmed().split('\n');
+        const auto terminal = QJsonDocument::fromJson(traceLines.last()).object();
+        QCOMPARE(terminal["event"].toString(), QString("finished"));
+        QCOMPARE(terminal["level"].toString(), QString("WARN"));
+        QCOMPARE(terminal["fields"].toObject()["status"].toString(), QString("partial"));
+
         QCOMPARE(summaryCalls, 0);
         QVERIFY(repairCalls > 0);
         const QString error = mode == "plain_text" ? "invalid_json" : mode == "bad_schema" ? "invalid_schema"

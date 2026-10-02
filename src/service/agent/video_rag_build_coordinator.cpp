@@ -5,6 +5,7 @@
 #include "service/rag/video_rag_store.h"
 #include "util/video_file_identity.h"
 #include <QElapsedTimer>
+#include "util/video_rag_log.h"
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QPointer>
@@ -56,7 +57,9 @@ struct VideoRAGBuildCoordinator::Job {
     QVector<QStringList> summaryInputUnits, summaryOutputUnits;
     int summaryOffset = 0, summaryRound = 0;
     QVector<VideoChunk> derived;
-    QElapsedTimer timer;
+    QElapsedTimer timer, stageTimer;
+    QString stage;
+    QPointer<QTimer> heartbeat;
     int modelCalls = 0;
     QString retryReason;
     QStringList failureReasons;
@@ -75,16 +78,36 @@ VideoRAGBuildCoordinator::~VideoRAGBuildCoordinator() { cancel(); }
 bool VideoRAGBuildCoordinator::current(const std::shared_ptr<Job> &j) const {
     return j && m_job == j && j->context.taskGeneration == m_generation && !j->context.isCancelled();
 }
+void VideoRAGBuildCoordinator::beginStage(const std::shared_ptr<Job>& j, const QString& stage,
+                                        const QString& message, QJsonObject fields) {
+    endStage(j);
+    j->stage = stage;
+    j->stageTimer.start();
+    j->context.log->event(stage, "started", message, std::move(fields));
+}
+void VideoRAGBuildCoordinator::endStage(const std::shared_ptr<Job>& j, const QString& status,
+                                      QJsonObject fields) {
+    if (j->stage.isEmpty() || !j->context.log) return;
+    fields["duration_ms"] = j->stageTimer.elapsed();
+    fields["status"] = status;
+    j->context.log->event(j->stage, "finished", "阶段结束", std::move(fields),
+        status == "failed" ? VideoRagLog::Level::Error : status == "partial" ? VideoRagLog::Level::Warning : VideoRagLog::Level::Info);
+    j->stage.clear();
+}
 void VideoRAGBuildCoordinator::cancel() {
     auto j = m_job;
     if (!j)
         return;
+    endStage(j, "cancelled");
+    if (j->heartbeat) { j->heartbeat->stop(); j->heartbeat->deleteLater(); }
     m_job.reset();
     ++m_generation;
     j->context.cancelled->store(true);
     if (m_cancelModel)
         m_cancelModel(j->context.cancellationKey());
     stopUnitRequests(j);
+    j->context.log->event("build", "cancelled", "构建已取消",
+        {{"duration_ms", j->timer.elapsed()}, {"completed_pages", j->completedPages}});
     j->manifest.state = ArtifactState::Cancelled;
     m_store->saveCandidateBuild(j->manifest);
     emit finished(j->manifest);
@@ -112,6 +135,21 @@ void VideoRAGBuildCoordinator::start(const QString &path, const BuildOptions &op
     ctx.buildId = QUuid::createUuid().toString(QUuid::WithoutBraces);
     ctx.rawSnapshotId = QUuid::createUuid().toString(QUuid::WithoutBraces);
     ctx.taskGeneration = ++m_generation;
+    ctx.log = std::make_shared<VideoRagLog>(ctx.buildId, ctx.videoId);
+    ctx.log->event("build", "started", "开始构建视频 RAG",
+        {{"file", QFileInfo(path).fileName()}, {"force_rebuild", options.forceDerivedRebuild},
+         {"log_file", ctx.log->filePath()}});
+    auto* heartbeat = new QTimer(this);
+    j->heartbeat = heartbeat;
+    heartbeat->setInterval(15000);
+    connect(heartbeat, &QTimer::timeout, this, [this, j, heartbeat] {
+        if (!current(j)) { heartbeat->stop(); heartbeat->deleteLater(); return; }
+        j->context.log->event(j->stage, "waiting", "构建仍在进行",
+            {{"stage_elapsed_ms", j->stageTimer.isValid() ? j->stageTimer.elapsed() : 0},
+             {"active_units", j->activeTasks}, {"in_flight", j->inFlight},
+             {"completed_pages", j->completedPages}, {"total_pages", j->totalPages}});
+    });
+    heartbeat->start();
     m_store->loadVideo(ctx.videoId);
     j->previous = m_store->activeBuild(ctx.videoId);
     ctx.expectedActiveBuildId = j->previous.buildId;
@@ -122,6 +160,8 @@ void VideoRAGBuildCoordinator::start(const QString &path, const BuildOptions &op
     m.fileFingerprint = ctx.fileFingerprint;
     m.rawSnapshotId = ctx.rawSnapshotId;
     m.state = ArtifactState::Running;
+    m.artifacts["build_log_file"] = ctx.log->filePath();
+    m.artifacts["build_log_available"] = ctx.log->available();
     if (ctx.fileFingerprint.isEmpty()) {
         fail(j, tr("无法读取视频文件"));
         return;
@@ -165,6 +205,7 @@ void VideoRAGBuildCoordinator::start(const QString &path, const BuildOptions &op
         route(j);
         return;
     }
+    beginStage(j, "probe", "轻量探测：分散位置画面与短转写");
     emit progress(2, tr("轻量探测：分散位置画面与短转写"));
     QPointer<VideoRAGBuildCoordinator> guard(this);
     m_indexer->extract(ctx, VideoRAGBuildPlan{}, true, [guard, j](VideoEvidenceExtractionResult result) {
@@ -177,6 +218,8 @@ void VideoRAGBuildCoordinator::start(const QString &path, const BuildOptions &op
         j->probe = std::move(result.representation);
         j->probeChunks = std::move(result.chunks);
         j->manifest.profile.missingSignals = result.diagnostics;
+        guard->endStage(j, artifactStateKey(result.state), {{"evidence_chunks", j->probeChunks.size()},
+            {"speech_segments", j->probe.speechSegments.size()}, {"diagnostics", QJsonArray::fromStringList(result.diagnostics)}});
         guard->classify(j);
     });
 }
@@ -194,8 +237,12 @@ void VideoRAGBuildCoordinator::request(const std::shared_ptr<Job> &j, const QStr
     }
     auto completed = std::make_shared<bool>(false);
     const QString submittedModel = modelSignature();
-    ++j->modelCalls;
-    auto callback = [guard, j, completed, submittedModel, done = std::move(done)](ModelReply reply) {
+    const int call = ++j->modelCalls;
+    const QString stage = j->stage;
+    auto requestTimer = std::make_shared<QElapsedTimer>(); requestTimer->start();
+    j->context.log->event(stage, "model_submitted", "模型请求已提交",
+        {{"call", call}, {"images", images.size()}, {"input_chars", system.size() + text.size()}});
+    auto callback = [guard, j, completed, submittedModel, call, stage, requestTimer, done = std::move(done)](ModelReply reply) {
         if (*completed)
             return;
         *completed = true;
@@ -204,6 +251,10 @@ void VideoRAGBuildCoordinator::request(const std::shared_ptr<Job> &j, const QStr
                 guard->fail(j, QStringLiteral("模型响应版本与构建上下文不一致"));
                 return;
             }
+            j->context.log->event(stage, "model_returned", "模型请求返回（后续校验内容）",
+                {{"call", call}, {"duration_ms", requestTimer->elapsed()}, {"http_status", reply.httpStatus},
+                 {"error", reply.error.left(500)}, {"request", reply.diagnostics}},
+                reply.error.isEmpty() ? VideoRagLog::Level::Info : VideoRagLog::Level::Warning);
             done(std::move(reply));
         }
     };
@@ -223,6 +274,7 @@ void VideoRAGBuildCoordinator::request(const std::shared_ptr<Job> &j, const QStr
 }
 
 void VideoRAGBuildCoordinator::classify(const std::shared_ptr<Job> &j, int attempt) {
+    if (!attempt) beginStage(j, "classify", "识别视频内容类型");
     QString text;
     QList<QImage> images;
     QStringList ids;
@@ -254,6 +306,8 @@ void VideoRAGBuildCoordinator::classify(const std::shared_ptr<Job> &j, int attem
         if (!valid && attempt == 0) {
             j->retryReason =
                 reply.error.isEmpty() ? QStringLiteral("classification_schema: 缺少合法type") : reply.error;
+            j->context.log->event("classify", "retry", "分类结果无效，重试一次",
+                {{"error", j->retryReason.left(500)}}, VideoRagLog::Level::Warning);
             classify(j, 1);
             return;
         }
@@ -268,6 +322,8 @@ void VideoRAGBuildCoordinator::classify(const std::shared_ptr<Job> &j, int attem
                 p.probeEvidenceIds << id.toString();
         if (!valid) {
             j->manifest.diagnostics << "classification_failed:" + j->retryReason;
+            j->context.log->event("classify", "fallback", "分类失败，采用通用策略",
+                {{"error", j->retryReason.left(500)}}, VideoRagLog::Level::Warning);
         }
         route(j);
     });
@@ -275,6 +331,8 @@ void VideoRAGBuildCoordinator::classify(const std::shared_ptr<Job> &j, int attem
 
 void VideoRAGBuildCoordinator::route(const std::shared_ptr<Job> &j) {
     auto &m = j->manifest;
+    endStage(j, m.profile.source == "fallback" ? "partial" : "success", {{"type", contentTypeKey(m.profile.primaryType)}, {"source", m.profile.source}});
+    beginStage(j, "route", "选择构建策略");
     m.plan = VideoRAGStrategyRegistry::resolve(m.profile, m_indexer->capabilities());
     const auto gridError = m_gridConfig.validationError();
     if (!gridError.isEmpty()) { fail(j, gridError); return; }
@@ -288,12 +346,20 @@ void VideoRAGBuildCoordinator::route(const std::shared_ptr<Job> &j) {
     m.plan.modelVersions["vlm"] = modelSignature();
     m.plan.modelVersions["build_request"] = "isolated_json_v3_grid";
     m.specFingerprint = m.plan.fingerprint();
+    j->context.log->event("route", "selected", "构建策略已确定",
+        {{"type", contentTypeKey(m.profile.primaryType)}, {"strategy", m.plan.strategyId},
+         {"frame_interval_ms", qint64(m.plan.frameIntervalMs)}, {"asr", m.plan.asrAvailable},
+         {"text_vector", m.plan.textVectorAvailable}, {"visual_vector", m.plan.visualVectorAvailable}});
     emit profileReady(j->context.filePath, m.profile);
     if (!j->options.forceDerivedRebuild && !j->previous.buildId.isEmpty() &&
         j->previous.fileFingerprint == m.fileFingerprint &&
         j->previous.specFingerprint == m.specFingerprint &&
         j->previous.profile.primaryType == m.profile.primaryType) {
         m_job.reset();
+        endStage(j);
+        j->context.log->event("build", "restored", "配置一致，恢复已有活动构建",
+            {{"active_build_id", j->previous.buildId}, {"duration_ms", j->timer.elapsed()}});
+        if (j->heartbeat) { j->heartbeat->stop(); j->heartbeat->deleteLater(); }
         emit progress(100, tr("已恢复活动构建"));
         emit finished(j->previous);
         return;
@@ -332,10 +398,12 @@ void VideoRAGBuildCoordinator::route(const std::shared_ptr<Job> &j) {
                 c.chunkId = j->context.rawSnapshotId + ":reused:" + c.chunkId;
                 c.metadata.insert("raw_snapshot_id", j->context.rawSnapshotId);
             }
+            j->context.log->event("extract", "reused", "复用原始证据快照", {{"chunks", j->raw.size()}});
             segment(j);
             return;
         }
     }
+    beginStage(j, "extract", "提取完整原始证据");
     emit progress(10, tr("按 %1 策略提取完整原始证据").arg(m.plan.strategyId));
     QPointer<VideoRAGBuildCoordinator> guard(this);
     m_indexer->extract(j->context, m.plan, false, [guard, j](VideoEvidenceExtractionResult result) {
@@ -347,6 +415,10 @@ void VideoRAGBuildCoordinator::route(const std::shared_ptr<Job> &j) {
         }
         j->representation = std::move(result.representation);
         j->manifest.diagnostics += result.diagnostics;
+        guard->endStage(j, artifactStateKey(result.state),
+            {{"shots", j->representation.scenes.size()}, {"speech_segments", j->representation.speechSegments.size()},
+             {"chunks", result.chunks.size()}, {"diagnostics", QJsonArray::fromStringList(result.diagnostics)}});
+        guard->beginStage(j, "raw_embedding", "编码原始证据文本向量");
         guard->m_indexer->encodeChunks(
             j->context, std::move(result.chunks), [guard, j](QVector<VideoChunk> chunks) {
                 if (!guard || !guard->current(j))
@@ -361,6 +433,7 @@ void VideoRAGBuildCoordinator::route(const std::shared_ptr<Job> &j) {
 }
 
 void VideoRAGBuildCoordinator::segment(const std::shared_ptr<Job> &j) {
+    beginStage(j, "segment", "候选分段与模型边界校正");
     j->local =
         SemanticUnitBuilder::candidates(j->representation, j->raw, j->manifest.plan, j->context.buildId);
     if (j->local.isEmpty()) {
@@ -374,6 +447,7 @@ void VideoRAGBuildCoordinator::correctNext(const std::shared_ptr<Job> &j, int at
     if (j->correctionOffset >= j->local.size()) {
         j->representation.semanticUnits = j->corrected;
         SemanticUnitBuilder::attachSources(j->representation.semanticUnits, j->representation, j->raw);
+        endStage(j, "success", {{"candidate_units", j->local.size()}, {"units", j->corrected.size()}});
         prepareUnitEvidence(j);
         return;
     }
@@ -400,6 +474,8 @@ void VideoRAGBuildCoordinator::correctNext(const std::shared_ptr<Job> &j, int at
         j->corrected += batch;
         j->correctionOffset += batch.size();
         j->manifest.diagnostics << "segmentation_local_fallback:input_budget";
+        j->context.log->event("segment", "fallback", "输入超过预算，使用本地分段",
+            {{"input_chars", input.size()}}, VideoRagLog::Level::Warning);
         QTimer::singleShot(0, this, [this, j] {
             if (current(j))
                 correctNext(j);
@@ -448,11 +524,15 @@ void VideoRAGBuildCoordinator::correctNext(const std::shared_ptr<Job> &j, int at
                 error = reply.error;
             if (attempt == 0) {
                 j->retryReason = error;
+                j->context.log->event("segment", "retry", "分段校验失败，重试一次",
+                    {{"error", error.left(500)}}, VideoRagLog::Level::Warning);
                 correctNext(j, 1);
                 return;
             }
             corrected = batch;
             j->manifest.diagnostics << "segmentation_local_fallback:" + error;
+            j->context.log->event("segment", "fallback", "模型校正失败，保留本地分段",
+                {{"error", error.left(500)}}, VideoRagLog::Level::Warning);
         }
         j->corrected += corrected;
         j->correctionOffset += batch.size();
@@ -461,6 +541,7 @@ void VideoRAGBuildCoordinator::correctNext(const std::shared_ptr<Job> &j, int at
 }
 
 void VideoRAGBuildCoordinator::prepareUnitEvidence(const std::shared_ptr<Job> &j) {
+    beginStage(j, "unit_evidence", "补取单元证据并提交原始快照");
     QPointer<VideoRAGBuildCoordinator> guard(this);
     auto finish = [guard, j](VideoEvidenceExtractionResult result) {
         if (!guard || !guard->current(j))
@@ -506,7 +587,13 @@ void VideoRAGBuildCoordinator::writeUnitDiagnostic(const std::shared_ptr<Job>& j
     row["generation"] = qint64(j->context.taskGeneration);
     row["timestamp_utc"] = QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
     const auto line = QJsonDocument(row).toJson(QJsonDocument::Compact) + '\n';
-    qDebug().noquote() << "[UnitAnalysis]" << line;
+    const QString name = row["event"].toString();
+    const bool problem = row.value("failed_pages").toInt() > 0 || row.value("status") == "failed" || row.value("status") == "retry_scheduled" ||
+        !row.value("error").toString().isEmpty() || row.value("carry_fallback").toBool();
+    auto fields = row;
+    fields.remove("build_id"); fields.remove("generation"); fields.remove("timestamp_utc"); fields.remove("event");
+    j->context.log->event("understand", name, problem ? "单元分析异常或降级" : name == "unit_finished" ? "语义单元理解结束" : "单元分析诊断", fields,
+        problem ? VideoRagLog::Level::Warning : name == "unit_finished" ? VideoRagLog::Level::Info : VideoRagLog::Level::Debug);
     if (!j->diagnosticFile || !j->diagnosticFile->isOpen()) return;
     if (j->diagnosticFile->size() + line.size() > 16 * 1024 * 1024) {
         j->manifest.artifacts["unit_diagnostics_truncated"] = true;
@@ -516,17 +603,18 @@ void VideoRAGBuildCoordinator::writeUnitDiagnostic(const std::shared_ptr<Job>& j
     if (j->diagnosticFile->write(line) != line.size()) {
         j->manifest.artifacts["unit_diagnostics_available"] = false;
         j->diagnosticFile->close();
-        qWarning() << "[UnitAnalysis] 无法写入诊断文件";
+        j->context.log->event("understand", "diagnostic_write_failed", "单元诊断文件写入失败", {}, VideoRagLog::Level::Warning);
     }
 }
 
 void VideoRAGBuildCoordinator::beginUnitAnalysis(const std::shared_ptr<Job>& j) {
     if (!current(j)) return;
+    beginStage(j, "understand", "规划证据网格并理解语义单元", {{"units", j->representation.semanticUnits.size()}});
     j->analysisTimer.start();
     j->concurrency = qMin(m_unitConcurrency, m_poolCapacity);
     j->workerBusy.fill(false, j->concurrency);
-    const auto root = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-    const auto directory = root.isEmpty() ? QString() : root + "/diagnostics/video-rag/" + j->context.buildId;
+    const auto trace = j->context.log->filePath();
+    const auto directory = trace.isEmpty() ? QString() : QFileInfo(trace).absolutePath();
     j->manifest.artifacts["unit_diagnostics_available"] = false;
     if (!directory.isEmpty() && QDir().mkpath(directory)) {
         j->diagnosticFile = std::make_unique<QFile>(directory + "/unit-analysis.jsonl");
@@ -570,6 +658,8 @@ void VideoRAGBuildCoordinator::beginUnitAnalysis(const std::shared_ptr<Job>& j) 
         }
         writeUnitDiagnostic(j, {{"event", "planning_finished"}, {"planning_ms", j->pagePlanningMs},
                                 {"original_pages", j->originalPages}, {"total_pages", j->totalPages}});
+        j->context.log->event("understand", "planned", "证据页面已规划",
+            {{"units", units.size()}, {"pages", j->totalPages}, {"concurrency", j->concurrency}, {"planning_ms", j->pagePlanningMs}});
         scheduleUnits(j);
     });
     const auto config = EvidenceGridConfig::fromPlan(j->manifest.plan);
@@ -610,6 +700,9 @@ void VideoRAGBuildCoordinator::scheduleUnits(const std::shared_ptr<Job>& j) {
         task->startedMs = j->analysisTimer.elapsed();
         task->queuedMs = qMax(qint64(0), task->startedMs - task->queuedAtMs);
         task->unitTimer.start();
+        j->context.log->event("understand", "unit_started", "开始理解语义单元",
+            {{"unit_id", task->unitId}, {"ordinal", task->unitOrdinal + 1}, {"units", j->tasks.size()},
+             {"pages", task->pages.size()}, {"worker", worker}, {"queue_ms", task->queuedMs}});
         j->workerBusy[worker] = true;
         ++j->activeTasks;
         QTimer::singleShot(0, this, [this, j, task] { if (current(j)) analyzeUnitPage(j, task); });
@@ -629,6 +722,12 @@ void VideoRAGBuildCoordinator::scheduleUnits(const std::shared_ptr<Job>& j) {
             {"compose_ms", j->composeMs}, {"encode_ms", j->encodeMs}, {"prepared_jpeg_bytes", j->encodedBytes}};
         writeUnitDiagnostic(j, {{"event", "analysis_finished"}, {"metrics", j->manifest.artifacts["unit_analysis"]}});
         if (j->diagnosticFile) j->diagnosticFile->close();
+        int failedPages = 0;
+        for (const auto& task : j->tasks) failedPages += task->coverage.failedPages.size();
+        auto metrics = j->manifest.artifacts["unit_analysis"].toObject();
+        metrics["successful_pages"] = j->completedPages - failedPages;
+        metrics["failed_pages"] = failedPages;
+        endStage(j, failedPages ? "partial" : "success", metrics);
         finishUnitAnalysis(j);
     }
 }
@@ -650,6 +749,9 @@ void VideoRAGBuildCoordinator::requestUnit(const std::shared_ptr<Job>& j,
     if (task->prepared) r.imageOptions = task->prepared->encoding;
     task->state = UnitAnalysisTask::State::Requesting;
     ++j->modelCalls;
+    j->context.log->event("understand", "model_submitted", "单元模型请求已提交",
+        {{"request_id", r.requestId}, {"unit_id", r.unitId}, {"page_id", r.pageId},
+         {"attempt", r.attempt}, {"worker", r.workerId}}, VideoRagLog::Level::Debug);
     ++j->inFlight;
     j->maxInFlight = qMax(j->maxInFlight, j->inFlight);
     auto completed = std::make_shared<bool>(false);
@@ -813,6 +915,8 @@ void VideoRAGBuildCoordinator::analyzeUnitPage(const std::shared_ptr<Job>& j,
         task->attempt = 0;
         task->retryReason.clear();
         ++j->completedPages;
+        j->context.log->progress("understand", j->completedPages, j->totalPages, "语义理解进度",
+            {{"active_units", j->activeTasks}, {"finished_units", j->finishedTasks}});
         emit progress(45 + j->completedPages * 40 / qMax(1, j->totalPages),
                       tr("理解语义单元：%1/%2 个正在处理，已处理 %3/%4 页")
                       .arg(j->activeTasks).arg(j->concurrency).arg(j->completedPages).arg(j->totalPages));
@@ -915,6 +1019,7 @@ void VideoRAGBuildCoordinator::finishUnitAnalysis(const std::shared_ptr<Job>& j)
                 j->summaryInputUnits << QStringList{u.unitId};
             }
         if (j->summaryInputs.isEmpty()) {
+            j->context.log->event("summarize", "skipped", "没有成功理解的页面，跳过模型摘要", {}, VideoRagLog::Level::Warning);
             int failedPages = 0;
             for (const auto &unit : units)
                 if (unit.kind != "chapter")
@@ -932,6 +1037,7 @@ void VideoRAGBuildCoordinator::finishUnitAnalysis(const std::shared_ptr<Job>& j)
 }
 
 void VideoRAGBuildCoordinator::summarizeNext(const std::shared_ptr<Job> &j, int attempt) {
+    if (j->stage != "summarize") beginStage(j, "summarize", "生成章节与全局摘要");
     if (j->summaryOffset >= j->summaryInputs.size()) {
         if (j->summaryOutputs.size() > 1) {
             j->summaryInputs = j->summaryOutputs;
@@ -987,6 +1093,8 @@ void VideoRAGBuildCoordinator::summarizeNext(const std::shared_ptr<Job> &j, int 
                 error = QStringLiteral("invalid_summary: 摘要为空或超过长度上限");
             if (attempt == 0) {
                 j->retryReason = error;
+                j->context.log->event("summarize", "retry", "摘要校验失败，重试一次",
+                    {{"error", error.left(500)}}, VideoRagLog::Level::Warning);
                 summarizeNext(j, 1);
                 return;
             }
@@ -999,6 +1107,8 @@ void VideoRAGBuildCoordinator::summarizeNext(const std::shared_ptr<Job> &j, int 
                     summary += input.mid(start, 400) + QStringLiteral("\n[…]\n");
                 }
             j->manifest.diagnostics << "summary_partial" << "summary_failed:" + error;
+            j->context.log->event("summarize", "fallback", "摘要失败，保留已理解内容摘录",
+                {{"error", error.left(500)}}, VideoRagLog::Level::Warning);
         }
         QStringList unitIds, sourceIds;
         int64_t begin = j->representation.metadata.durationMs, end = 0;
@@ -1035,6 +1145,7 @@ void VideoRAGBuildCoordinator::summarizeNext(const std::shared_ptr<Job> &j, int 
 }
 
 void VideoRAGBuildCoordinator::publish(const std::shared_ptr<Job> &j) {
+    beginStage(j, "publish", "编码派生证据并发布活动索引");
     if (VideoFileIdentity::fingerprint(j->context.filePath) != j->context.fileFingerprint) {
         fail(j, QStringLiteral("视频文件在构建期间发生变化"));
         return;
@@ -1083,6 +1194,7 @@ void VideoRAGBuildCoordinator::publish(const std::shared_ptr<Job> &j) {
                 j->manifest.state = ArtifactState::Partial;
                 j->manifest.diagnostics << "derived_embedding_failed:" + c.chunkId;
             }
+        j->manifest.artifacts["build_log_available"] = j->context.log->available();
         j->manifest.artifacts["model_calls"] = j->modelCalls;
         j->manifest.artifacts["elapsed_ms"] = qint64(j->timer.elapsed());
         if (!guard->m_store->saveUnitBatch(j->manifest, j->representation.semanticUnits, derived) ||
@@ -1102,6 +1214,14 @@ void VideoRAGBuildCoordinator::publish(const std::shared_ptr<Job> &j) {
             shot.description = descriptions.join('\n');
             r.sceneDescriptions[shot.id] = shot.description;
         }
+        guard->endStage(j, artifactStateKey(j->manifest.state));
+        if (j->heartbeat) { j->heartbeat->stop(); j->heartbeat->deleteLater(); }
+        j->context.log->event("build", "finished", "视频 RAG 构建完成",
+            {{"status", artifactStateKey(j->manifest.state)}, {"duration_ms", j->timer.elapsed()},
+             {"units", r.semanticUnits.size()}, {"raw_chunks", j->raw.size()}, {"derived_chunks", derived.size()},
+             {"model_calls", j->modelCalls}, {"retries", j->retries},
+             {"diagnostics", QJsonArray::fromStringList(j->manifest.diagnostics)}},
+            j->manifest.state == ArtifactState::Partial ? VideoRagLog::Level::Warning : VideoRagLog::Level::Info);
         guard->m_indexer->setPublished(r);
         emit guard->published(r);
         guard->m_job.reset();
@@ -1112,9 +1232,13 @@ void VideoRAGBuildCoordinator::publish(const std::shared_ptr<Job> &j) {
 void VideoRAGBuildCoordinator::fail(const std::shared_ptr<Job> &j, const QString &error) {
     if (!current(j))
         return;
+    endStage(j, "failed", {{"error", error.left(500)}});
+    if (j->heartbeat) { j->heartbeat->stop(); j->heartbeat->deleteLater(); }
     j->context.cancelled->store(true);
     if (m_cancelModel) m_cancelModel(j->context.cancellationKey());
     stopUnitRequests(j);
+    j->context.log->event("build", "failed", "视频 RAG 构建失败",
+        {{"error", error.left(500)}, {"duration_ms", j->timer.elapsed()}}, VideoRagLog::Level::Error);
     j->manifest.state = ArtifactState::Failed;
     j->manifest.diagnostics << error;
     m_store->saveCandidateBuild(j->manifest);

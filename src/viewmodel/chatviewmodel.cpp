@@ -147,7 +147,6 @@ void ChatViewModel::setPlayerViewModel(PlayerViewModel* playerVM)
             m_videoAnalysis->onVideoOpened(filePath);
         }
 
-        qDebug() << "[ChatViewModel] 视频就绪，启动 RAG 索引:" << filePath;
     });
 }
 

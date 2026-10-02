@@ -1,3 +1,4 @@
+#include "util/video_rag_log.h"
 #include "service/agentservice.h"
 #include <QCryptographicHash>
 
@@ -62,7 +63,7 @@ AgentService::AgentService(NetworkClient* network,
             if (bytes > 0) {
                 if (m_firstByteMs < 0) {
                     m_firstByteMs = m_requestTimer.elapsed();
-                    qDebug() << "[AgentService][Build] first_byte" << m_currentConvId
+                    qCDebug(ragDetailLog) << "[AgentService][Build] first_byte" << m_currentConvId
                              << "latency_ms=" << m_firstByteMs << "http_status=" << m_httpStatus;
                 }
                 m_receivedBytes += bytes;
@@ -438,7 +439,7 @@ void AgentService::sendOneShot(const QString& conversationId, const QString& sys
     m_firstByteMs = m_firstContentMs = -1;
     m_httpStatus = 0;
     m_requestTimer.start();
-    qDebug() << "[AgentService][Build] request_start" << conversationId << "model=" << m_model
+    qCDebug(ragDetailLog) << "[AgentService][Build] request_start" << conversationId << "model=" << m_model
              << "frames=" << frames.size() << "input_chars=" << systemPrompt.size() + text.size()
              << "max_tokens=" << maxTokens << "thinking_disabled=" << disableThinking
              << "idle_timeout_ms=" << buildIdleTimeoutMs() << "total_timeout_ms=" << buildTotalTimeoutMs();
@@ -460,7 +461,7 @@ void AgentService::sendOneShot(const QString& conversationId, const QString& sys
         [this, conversationId] {
             if (!m_streaming || m_currentConvId != conversationId) return;
             m_streaming = false;
-            qDebug() << "[AgentService][Build] request_finished" << conversationId
+            qCDebug(ragDetailLog) << "[AgentService][Build] request_finished" << conversationId
                      << "finish_reason=" << m_pendingFinishReason << requestDiagnostics();
             if (m_pendingFinishReason != "stop") {
                 emit responseError(conversationId, m_pendingFinishReason == "length"
