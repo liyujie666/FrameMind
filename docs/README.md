@@ -14,6 +14,10 @@
 | 7 | [`agent_design.md`](./agent_design.md) | **愿景稿**（早期头脑风暴，含 P2 不做的能力） | 想了解长期方向时读，**不作为落地依据** |
 | 8 | [`video-rag-type-strategy-design.md`](./video-rag-type-strategy-design.md) | **类型策略设计**：按视频类型路由 RAG 构建策略，涵盖语义单元、接口、缓存迁移、线程与验收 | 实施多类型视频 RAG 改造时读；当前行为以源码为准 |
 | 9 | [`video-rag-implementation-status.md`](./video-rag-implementation-status.md) | 已实现接口、实际默认流程、测试矩阵及尚待真实素材验收的边界 | 验证本次改造或继续效果评测时读 |
+| 10 | [`video-rag-unit-understanding-performance-plan.md`](./video-rag-unit-understanding-performance-plan.md) | 单元并发、滚动上下文和网格的实施阶段、依赖与验收 | 推进理解阶段性能优化时读 |
+| 11 | [`video-rag-unit-analysis-contract.md`](./video-rag-unit-analysis-contract.md) | 请求身份、工作池、取消、carry 和失败合同 | 修改单元理解接口或夹具时读 |
+| 12 | [`video-rag-unit-analysis-implementation-status.md`](./video-rag-unit-analysis-implementation-status.md) | P0～P3 基线、代码实现、离线测试及未验收边界 | 核查本次实现或继续网格／真实模型验收时读 |
+| 13 | [`video-rag-grid-code-review.md`](./video-rag-grid-code-review.md) | P4～P5 网格、编码、兼容和诊断代码审查；本轮未运行测试 | 核查当前网格实现和待运行验收边界时读 |
 
 ## 文档一致性约定
 
