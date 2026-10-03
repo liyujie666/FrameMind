@@ -118,6 +118,12 @@ QJsonObject VideoRAGBuildPlan::toJson() const {
             {"prompt_version", promptVersion},
             {"schema_version", schemaVersion},
             {"unit_understanding_version", unitUnderstandingVersion},
+            {"unit_synthesis_prompt_version", unitSynthesisPromptVersion},
+            {"chapter_prompt_version", chapterPromptVersion},
+            {"overview_prompt_version", overviewPromptVersion},
+            {"presentation_policy_version", presentationPolicyVersion},
+            {"presentation_schema_version", presentationSchemaVersion},
+            {"presentation_budget", presentationBudget.toJson()},
             {"carry_version", carryVersion}, {"grid_version", gridVersion},
             {"grid_max_edge", gridMaxEdge}, {"grid_jpeg_quality", gridJpegQuality},
             {"grid_min_cell_short_edge", gridMinCellShortEdge}, {"grid_label_height", gridLabelHeight},
@@ -145,6 +151,13 @@ VideoRAGBuildPlan VideoRAGBuildPlan::fromJson(const QJsonObject &j) {
     p.promptVersion = j["prompt_version"].toString("units_v1");
     p.schemaVersion = j["schema_version"].toString("facts_v1");
     p.unitUnderstandingVersion = j["unit_understanding_version"].toString("legacy_pages_v1");
+    p.unitSynthesisPromptVersion = j["unit_synthesis_prompt_version"].toString("legacy");
+    p.chapterPromptVersion = j["chapter_prompt_version"].toString("legacy");
+    p.overviewPromptVersion = j["overview_prompt_version"].toString("legacy");
+    p.presentationPolicyVersion = j["presentation_policy_version"].toString("legacy");
+    p.presentationSchemaVersion = j["presentation_schema_version"].toString("legacy");
+    p.presentationBudget = VideoPresentationBudget::fromJson(j["presentation_budget"].toObject());
+    if (j.contains("presentation_budget") && !j["presentation_budget"].isObject()) p.presentationBudget.maxRequests = -1;
     p.carryVersion = j["carry_version"].toString("legacy_carry");
     p.gridVersion = j["grid_version"].toString("legacy_multiframe");
     p.gridMaxEdge = j["grid_max_edge"].toInt(2048);
@@ -202,7 +215,9 @@ QJsonObject SemanticUnit::toJson() const {
     QJsonArray shots;
     for (auto i : shotIds)
         shots.append(i);
-    return {{"unit_id", unitId},
+    QJsonArray pages;
+    for (const auto &page : pageUnderstandings) pages.append(page.toJson());
+    return {{"codec_valid", codecValid}, {"unit_id", unitId},
             {"build_id", buildId},
             {"kind", kind},
             {"start_ms", qint64(startMs)},
@@ -217,6 +232,9 @@ QJsonObject SemanticUnit::toJson() const {
             {"audio_summary", audioSummary},
             {"fused_description", fusedDescription},
             {"facts", facts},
+            {"page_understandings", pages},
+            {"synthesis_state", artifactStateKey(synthesisState)},
+            {"synthesis_points", synthesisPoints},
             {"state", artifactStateKey(state)},
             {"coverage", coverage.toJson()}};
 }
@@ -238,12 +256,20 @@ SemanticUnit SemanticUnit::fromJson(const QJsonObject &j) {
     u.audioSummary = j["audio_summary"].toString();
     u.fusedDescription = j["fused_description"].toString();
     u.facts = j["facts"].toArray();
+    for (const auto &page : j["page_understandings"].toArray())
+        u.pageUnderstandings.append(UnitPageAnalysisResult::fromJson(page.toObject()));
+    u.synthesisState = artifactStateFromKey(j["synthesis_state"].toString());
+    u.synthesisPoints = j["synthesis_points"].toArray();
+    u.codecValid = (!j.contains("codec_valid") || (j["codec_valid"].isBool() && j["codec_valid"].toBool())) &&
+        (!j.contains("page_understandings") || j["page_understandings"].isArray()) &&
+        (!j.contains("synthesis_points") || j["synthesis_points"].isArray()) &&
+        (!j.contains("synthesis_state") || (j["synthesis_state"].isString() && artifactStateKey(u.synthesisState) == j["synthesis_state"].toString()));
     u.state = artifactStateFromKey(j["state"].toString());
     u.coverage = EvidenceCoverage::fromJson(j["coverage"].toObject());
     return u;
 }
 QJsonObject VideoBuildManifest::toJson() const {
-    return {{"build_id", buildId},
+    return {{"codec_valid", codecValid}, {"build_id", buildId},
             {"video_id", videoId},
             {"file_path", filePath},
             {"file_fingerprint", fileFingerprint},
@@ -254,6 +280,8 @@ QJsonObject VideoBuildManifest::toJson() const {
             {"state", artifactStateKey(state)},
             {"revision", revision},
             {"summary", summary},
+            {"overview_state", artifactStateKey(overviewState)},
+            {"presentation", presentation.toJson()},
             {"diagnostics", QJsonArray::fromStringList(diagnostics)},
             {"artifacts", artifacts}};
 }
@@ -270,7 +298,61 @@ VideoBuildManifest VideoBuildManifest::fromJson(const QJsonObject &j) {
     m.state = artifactStateFromKey(j["state"].toString());
     m.revision = j["revision"].toInt(1);
     m.summary = j["summary"].toString();
+    m.overviewState = artifactStateFromKey(j["overview_state"].toString());
+    m.presentation = VideoPresentation::fromJson(j["presentation"].toObject());
     m.diagnostics = strings(j["diagnostics"]);
     m.artifacts = j["artifacts"].toObject();
+    m.codecValid = (!j.contains("codec_valid") || (j["codec_valid"].isBool() && j["codec_valid"].toBool())) &&
+        (!j.contains("presentation") || j["presentation"].isObject()) &&
+        (!j.contains("overview_state") || (j["overview_state"].isString() && artifactStateKey(m.overviewState) == j["overview_state"].toString()));
+    if (!m.codecValid) m.presentation.codecValid = false;
     return m;
+}
+
+QJsonObject UnitPageAnalysisResult::toJson() const {
+    return {{"page_id", pageId}, {"page_ordinal", pageOrdinal},
+        {"source_ids", QJsonArray::fromStringList(sourceIds)}, {"state", artifactStateKey(state)},
+        {"title", title}, {"summary", summary}, {"visual_description", visualDescription},
+        {"audio_summary", audioSummary}, {"error", error}, {"facts", facts}, {"codec_valid", codecValid},
+        {"input_fingerprint", inputFingerprint}, {"carry_context", carryContext}};
+}
+UnitPageAnalysisResult UnitPageAnalysisResult::fromJson(const QJsonObject &j) {
+    UnitPageAnalysisResult r;
+    r.pageId = j["page_id"].toString(); r.pageOrdinal = j["page_ordinal"].toInt();
+    r.sourceIds = strings(j["source_ids"]); r.state = artifactStateFromKey(j["state"].toString());
+    r.title = j["title"].toString(); r.summary = j["summary"].toString();
+    r.visualDescription = j["visual_description"].toString(); r.audioSummary = j["audio_summary"].toString();
+    r.error = j["error"].toString(); r.facts = j["facts"].toArray();
+    r.inputFingerprint = j["input_fingerprint"].toString(); r.carryContext = j["carry_context"].toObject();
+    r.codecValid = !j.contains("codec_valid") || (j["codec_valid"].isBool() && j["codec_valid"].toBool());
+    for (const auto &key : {"page_id", "title", "summary", "visual_description", "audio_summary", "error"})
+        if (j.contains(key) && !j[key].isString()) r.codecValid = false;
+    if (j.contains("page_ordinal") && (!j["page_ordinal"].isDouble() || j["page_ordinal"].toDouble() != r.pageOrdinal)) r.codecValid = false;
+    if (!j["source_ids"].isArray() || (j.contains("facts") && !j["facts"].isArray())) r.codecValid = false;
+    for (const auto &id : j["source_ids"].toArray()) if (!id.isString()) r.codecValid = false;
+    if (j.contains("state") && (!j["state"].isString() || artifactStateKey(r.state) != j["state"].toString())) r.codecValid = false;
+    if ((j.contains("input_fingerprint") && !j["input_fingerprint"].isString()) ||
+        (j.contains("carry_context") && !j["carry_context"].isObject())) r.codecValid = false;
+    return r;
+}
+QString UnitPageAnalysisResult::validationError(const QSet<QString> &allowed) const {
+    if (!codecValid || pageId.isEmpty() || pageOrdinal < 0 || (state == ArtifactState::Ready && sourceIds.isEmpty())) return "invalid_page_result";
+    QSet<QString> own;
+    for (const auto &id : sourceIds) {
+        if (id.isEmpty() || !allowed.contains(id) || own.contains(id)) return "invalid_page_sources";
+        own.insert(id);
+    }
+    if (state == ArtifactState::Ready && summary.trimmed().isEmpty()) return "empty_ready_page";
+    for (const auto &value : facts) {
+        if (!value.isObject()) return "invalid_page_fact";
+        const auto fact = value.toObject();
+        if (fact["text"].toString().trimmed().isEmpty() || !fact["source_chunk_ids"].isArray() || fact["source_chunk_ids"].toArray().isEmpty()) return "invalid_page_fact";
+        QSet<QString> seen;
+        for (const auto &ref : fact["source_chunk_ids"].toArray()) {
+            auto id = ref.toString();
+            if (!ref.isString() || !own.contains(id) || seen.contains(id)) return "invalid_page_fact_source";
+            seen.insert(id);
+        }
+    }
+    return {};
 }

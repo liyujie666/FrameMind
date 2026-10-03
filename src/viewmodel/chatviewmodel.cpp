@@ -136,13 +136,10 @@ void ChatViewModel::setPlayerViewModel(PlayerViewModel* playerVM)
     connect(m_playerVM, &PlayerViewModel::videoOpened,
             this, [this](const QString& filePath) {
         if (filePath.isEmpty() || filePath == m_indexingPath) return;
+        onVideoOpened(filePath);
         m_activeVideoPath = filePath;
         m_indexingPath = filePath;
 
-        if (m_videoAgent) {
-            const QString videoId = VideoIndexer::computeVideoId(filePath);
-            m_videoAgent->setActiveVideo(filePath, videoId);
-        }
         if (m_videoAnalysis) {
             m_videoAnalysis->onVideoOpened(filePath);
         }
@@ -200,6 +197,8 @@ void ChatViewModel::onVideoOpened(const QString& videoPath)
     // 计算 videoId
     const QString videoId = VideoIndexer::computeVideoId(videoPath);
     
+    if (m_videoAgent && (m_videoAgent->activeVideoPath() != videoPath || m_videoAgent->activeVideoId() != videoId))
+        m_videoAgent->setActiveVideo(videoPath, videoId);
     // 仅路径或ID变化时才处理
     if (videoPath == m_activeVideoPath && videoId == m_activeVideoId) return;
     
@@ -231,6 +230,11 @@ void ChatViewModel::onVideoOpened(const QString& videoPath)
         emit conversationChanged(m_currentConversationId);
         emit conversationsChanged();
     }
+}
+
+bool ChatViewModel::hasVideoContext(const QString& path, const QString& videoId) const {
+    return m_playerVM && m_playerVM->videoPath() == path && m_activeVideoPath == path && m_activeVideoId == videoId &&
+        m_videoAgent && m_videoAgent->activeVideoPath() == path && m_videoAgent->activeVideoId() == videoId;
 }
 
 VideoContext ChatViewModel::getVideoContext() const

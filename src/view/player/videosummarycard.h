@@ -3,15 +3,13 @@
 
 #include <QString>
 #include <QWidget>
-#include <memory>
 
 class QLabel;
 class QTextBrowser;
 class QToolButton;
 class ThemeService;
-class MarkdownRenderer;
 
-/// 视频概览阅读卡片：原生标题栏 + 随内容展开的富文本正文。
+/// 视频概览阅读卡片：原生标题栏 + 随内容展开的纯文本正文。
 class VideoSummaryCard : public QWidget {
     Q_OBJECT
 public:
@@ -21,18 +19,15 @@ public:
     void setThemeService(ThemeService* theme);
     void setSummary(const QString& summary);
     void clear();
-    void setContentType(const QString&);
 
 private:
     void applyTheme();
     void renderSummary();
 
     ThemeService* m_theme = nullptr;
-    std::unique_ptr<MarkdownRenderer> m_renderer;
     QString m_summary;
-    QString m_markdownBody;
+    QString m_displayBody;
     QLabel* m_title = nullptr;
-    QLabel* m_typeLabel = nullptr;
     QToolButton* m_copyButton = nullptr;
     QTextBrowser* m_browser = nullptr;
 };

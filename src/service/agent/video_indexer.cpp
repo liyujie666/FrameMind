@@ -33,17 +33,22 @@ QSharedPointer<VideoRepresentation> VideoIndexer::representation(const QString &
             (!value->build.fileFingerprint.isEmpty() &&
              value->build.fileFingerprint != VideoFileIdentity::fingerprint(path)))
             return nullptr;
-        return value;
+        const auto active = m_ragStore ? m_ragStore->activeBuild(value->videoId) : VideoBuildManifest{};
+        if (active.buildId == value->build.buildId && active.revision == value->build.revision)
+            return value;
+        // Another completed build may have replaced the persisted activity.
+        // Restore its whole snapshot instead of serving stale cached fields.
+        const_cast<VideoIndexer *>(this)->m_repr.remove(path);
     }
     if (!m_db || !m_ragStore || path.isEmpty())
         return nullptr;
 
     const QString videoId = computeVideoId(path);
     m_ragStore->loadVideo(videoId);
-    const auto active = m_ragStore->activeBuild(videoId);
+    const auto active = m_ragStore->restoredBuild(videoId);
     if (!active.buildId.isEmpty()) {
         auto restored = representationFromJson(m_ragStore->loadRawSnapshot(active.rawSnapshotId));
-        if (!restored.isValid() || active.fileFingerprint != VideoFileIdentity::fingerprint(path))
+        if (!restored.isValid() || restored.videoId != videoId || active.videoId != videoId || active.fileFingerprint != VideoFileIdentity::fingerprint(path))
             return nullptr;
         restored.metadata.filePath = path;
         restored.build = active;

@@ -8,6 +8,7 @@
 #include "service/playerservice.h"
 #include "service/agent/video_indexer.h"
 #include "service/rag/video_rag_store.h"
+#include "util/video_file_identity.h"
 #include "service/rag/audio_visual_aligner.h"
 #include "infrastructure/databasemanager.h"
 
@@ -524,12 +525,76 @@ VideoAnalysisService::VideoAnalysisService(OneShotVlmChannel* vlmChannel,
 // ============================================================
 
 void VideoAnalysisService::setBuildCoordinator(VideoRAGBuildCoordinator* coordinator) {
+    if (m_coordinator == coordinator) return;
+    if (m_coordinator) {
+        m_coordinator->cancel();
+        disconnect(m_coordinator, nullptr, this, nullptr);
+    }
+    m_runningBuild.reset();
+    m_runningProfile.reset();
+    m_buildPreview.reset();
+    m_runningBuildPercent = 0;
+    m_runningBuildStage.clear();
+    m_buildClock.invalidate(); m_timedBuildId.clear(); m_timedBuildElapsedMs = -1;
     m_coordinator=coordinator;
+    if (!coordinator) return;
+    connect(coordinator, &VideoRAGBuildCoordinator::buildStarted, this, [this](const VideoBuildContext &context) {
+        m_runningBuild = context;
+        m_buildPreview.reset();
+        m_runningProfile.reset();
+        m_runningBuildPercent = 0;
+        m_runningBuildStage.clear();
+        m_timedBuildId = context.buildId; m_timedBuildElapsedMs = -1; m_buildClock.start();
+        emit buildStarted(context);
+    });
+    connect(coordinator, &VideoRAGBuildCoordinator::buildProgress, this,
+            [this](const VideoBuildContext &context, int percent, const QString &stage) {
+        if (!m_runningBuild || m_runningBuild->filePath != context.filePath ||
+            m_runningBuild->buildId != context.buildId ||
+            m_runningBuild->taskGeneration != context.taskGeneration) return;
+        m_runningBuildPercent = percent;
+        m_runningBuildStage = stage;
+        emit buildProgress(context, percent, stage);
+    });
+    connect(coordinator, &VideoRAGBuildCoordinator::buildProfileReady, this,
+        [this](const VideoBuildContext& context, const VideoContentProfile& profile) {
+            if (!m_runningBuild || m_runningBuild->buildId != context.buildId ||
+                m_runningBuild->taskGeneration != context.taskGeneration || m_runningBuild->filePath != context.filePath) return;
+            m_runningProfile = profile;
+            emit buildProfileReady(context, profile);
+        });
+    connect(coordinator, &VideoRAGBuildCoordinator::buildTerminated, this,
+            [this](const VideoBuildContext &context, const VideoBuildManifest &result) {
+        if (m_runningBuild && m_runningBuild->buildId == context.buildId &&
+            m_runningBuild->taskGeneration == context.taskGeneration) {
+            if (m_timedBuildId == context.buildId && m_buildClock.isValid())
+                m_timedBuildElapsedMs = m_buildClock.elapsed();
+            m_runningBuild.reset();
+            m_buildPreview.reset();
+        }
+        emit buildTerminated(context, result);
+    });
     connect(coordinator,&VideoRAGBuildCoordinator::progress,this,&VideoAnalysisService::analysisProgress);
     connect(coordinator,&VideoRAGBuildCoordinator::buildFailed,this,&VideoAnalysisService::analysisError);
     connect(coordinator,&VideoRAGBuildCoordinator::profileReady,this,&VideoAnalysisService::contentProfileReady);
     connect(coordinator,&VideoRAGBuildCoordinator::finished,this,&VideoAnalysisService::buildFinished);
-    connect(coordinator,&VideoRAGBuildCoordinator::published,this,[this](const VideoRepresentation& r) {
+    connect(coordinator, &VideoRAGBuildCoordinator::previewReady, this,
+        [this](const VideoBuildContext& context, const VideoRepresentation& snapshot) {
+            if (!m_runningBuild || context.isCancelled() || m_runningBuild->filePath != context.filePath ||
+                m_runningBuild->buildId != context.buildId || m_runningBuild->taskGeneration != context.taskGeneration ||
+                snapshot.metadata.filePath != context.filePath || snapshot.build.buildId != context.buildId) return;
+            m_buildPreview = QSharedPointer<VideoRepresentation>::create(snapshot);
+            emit previewReady(context, snapshot);
+        });
+    connect(coordinator,&VideoRAGBuildCoordinator::representationReady,this,[this](const VideoBuildContext &context, const VideoRepresentation& r) {
+        if (!m_runningBuild || m_runningBuild->filePath != context.filePath ||
+            m_runningBuild->buildId != context.buildId ||
+            m_runningBuild->taskGeneration != context.taskGeneration ||
+            r.metadata.filePath != context.filePath || r.build.buildId.isEmpty() ||
+            (r.build.buildId != context.buildId && r.build.buildId != context.expectedActiveBuildId)) return;
+        m_buildPreview.reset();
+        m_displayedRepresentation = QSharedPointer<VideoRepresentation>::create(r);
+        emit representationReady(context, r);
         emit contentProfileReady(r.metadata.filePath,r.build.profile);
         emit semanticUnitsReady(r.metadata.filePath,r.semanticUnits);
         emit summaryReady(r.videoSummary);
@@ -565,6 +630,14 @@ void VideoAnalysisService::analyzeAutomatically(const QString& path) {if(m_coord
 QSharedPointer<VideoRepresentation> VideoAnalysisService::representation(
     const QString& videoPath) const
 {
+    if (m_displayedRepresentation && (videoPath.isEmpty() ||
+        m_displayedRepresentation->metadata.filePath == videoPath)) {
+        const auto active = m_ragStore ? m_ragStore->activeBuild(m_displayedRepresentation->videoId) : VideoBuildManifest{};
+        if (active.buildId == m_displayedRepresentation->build.buildId && active.revision == m_displayedRepresentation->build.revision &&
+            (active.fileFingerprint.isEmpty() || active.fileFingerprint == VideoFileIdentity::fingerprint(m_displayedRepresentation->metadata.filePath)))
+            return m_displayedRepresentation;
+        return m_indexer ? m_indexer->representation(m_displayedRepresentation->metadata.filePath) : nullptr;
+    }
     return m_indexer ? m_indexer->representation(videoPath) : nullptr;
 }
 

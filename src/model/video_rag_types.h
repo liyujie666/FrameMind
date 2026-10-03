@@ -1,5 +1,6 @@
 #pragma once
 
+#include "model/video_presentation_types.h"
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QMetaType>
@@ -24,10 +25,6 @@ enum class VideoContentType {
 QString contentTypeKey(VideoContentType type);
 QString contentTypeLabel(VideoContentType type);
 VideoContentType contentTypeFromKey(const QString &key);
-
-enum class ArtifactState { Pending, Running, Ready, Partial, Failed, Skipped, Cancelled };
-QString artifactStateKey(ArtifactState state);
-ArtifactState artifactStateFromKey(const QString &key);
 
 struct VideoContentProfile {
     VideoContentType primaryType = VideoContentType::Unknown;
@@ -54,6 +51,12 @@ struct VideoRAGBuildPlan {
     QString promptVersion = QStringLiteral("units_v1");
     QString schemaVersion = QStringLiteral("facts_v1");
     QString unitUnderstandingVersion = QStringLiteral("unit_grid_carry_v2");
+    QString unitSynthesisPromptVersion = QStringLiteral("unit_synthesis_v1");
+    QString chapterPromptVersion = QStringLiteral("chapter_v2_summary");
+    QString overviewPromptVersion = QStringLiteral("overview_v1");
+    QString presentationPolicyVersion = QStringLiteral("policy_v1");
+    QString presentationSchemaVersion = QStringLiteral("presentation_v1");
+    VideoPresentationBudget presentationBudget;
     QString carryVersion = QStringLiteral("carry_v1_1000");
     QString gridVersion = QStringLiteral("evidence_grid_v1");
     int gridMaxEdge = 2048;
@@ -111,6 +114,22 @@ struct EvidenceCoverage {
     static EvidenceCoverage fromJson(const QJsonObject &);
 };
 
+struct UnitPageAnalysisResult {
+    QString pageId;
+    int pageOrdinal = 0;
+    QStringList sourceIds;
+    ArtifactState state = ArtifactState::Pending;
+    QString title, summary, visualDescription, audioSummary, error;
+    QJsonArray facts;
+    bool codecValid = true;
+    // Optional in legacy snapshots. Only a matching request fingerprint permits reuse.
+    QString inputFingerprint;
+    QJsonObject carryContext;
+    QJsonObject toJson() const;
+    static UnitPageAnalysisResult fromJson(const QJsonObject &);
+    QString validationError(const QSet<QString> &allowedSources) const;
+};
+
 struct SemanticUnit {
     QString unitId, buildId;
     QString kind = QStringLiteral("topic");
@@ -120,8 +139,12 @@ struct SemanticUnit {
     QStringList sourceChunkIds;
     QString visualDescription, audioSummary, fusedDescription;
     QJsonArray facts;
+    QVector<UnitPageAnalysisResult> pageUnderstandings;
+    ArtifactState synthesisState = ArtifactState::Pending;
+    QJsonArray synthesisPoints;
     ArtifactState state = ArtifactState::Pending;
     EvidenceCoverage coverage;
+    bool codecValid = true;
     bool isValid() const { return !unitId.isEmpty() && endMs > startMs && startMs >= 0; }
     QJsonObject toJson() const;
     static SemanticUnit fromJson(const QJsonObject &);
@@ -134,8 +157,11 @@ struct VideoBuildManifest {
     ArtifactState state = ArtifactState::Pending;
     int revision = 1;
     QString summary;
+    VideoPresentation presentation;
+    ArtifactState overviewState = ArtifactState::Pending;
     QStringList diagnostics;
     QJsonObject artifacts;
+    bool codecValid = true;
     QJsonObject toJson() const;
     static VideoBuildManifest fromJson(const QJsonObject &);
 };
@@ -148,4 +174,6 @@ Q_DECLARE_METATYPE(VideoRAGBuildPlan)
 Q_DECLARE_METATYPE(SemanticUnit)
 Q_DECLARE_METATYPE(QVector<SemanticUnit>)
 Q_DECLARE_METATYPE(VideoBuildManifest)
-Q_DECLARE_METATYPE(ArtifactState)
+
+Q_DECLARE_METATYPE(UnitPageAnalysisResult)
+Q_DECLARE_METATYPE(QVector<UnitPageAnalysisResult>)

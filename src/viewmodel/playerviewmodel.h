@@ -40,6 +40,7 @@ public:
     int volume() const         { return m_volume; }
     float speed() const        { return m_speed; }
     bool muted() const         { return m_muted; }
+    QString videoPath() const { return m_openedPath; }
     QString mediaTitle() const { return m_mediaTitle; }
 
 public slots:
@@ -89,6 +90,7 @@ private:
     float m_speed = 1.0f;
     bool  m_muted = false;
     QString m_mediaTitle;
+    QString m_openedPath;
 
     bool    m_seeking = false;
     int64_t m_seekTarget = 0;

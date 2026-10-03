@@ -36,7 +36,7 @@ protected:
 private:
     void buildRows();
     void clearRows();
-    void updateHighlight(int64_t posMs);
+    void updateHighlight(int64_t posMs, bool followPlayback = true);
     void applyScrollStyle();
     QWidget* makeSubtitleRow(const SpeechSegment& seg);
     static QString formatMs(int64_t ms);
@@ -50,6 +50,8 @@ private:
     int64_t m_currentPosMs = 0;
     int m_currentRow = -1;
     QVector<QWidget*> m_rows;
+    QString m_videoPath;
+    quint64 m_themeRevision = 0, m_refreshRevision = 0;
     bool m_userScrolling = false;
     QTimer* m_scrollResetTimer = nullptr;
 };

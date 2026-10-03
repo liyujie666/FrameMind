@@ -14,7 +14,7 @@ VideoRAGBuildCoordinator::VideoRAGBuildCoordinator(VideoRAGBuildBackend *backend
     m_unitModelRequest = [guard](const UnitAnalysisRequest& r, const QString& system, const QString& text,
                                const QList<QImage>& images, std::function<void(ModelReply)> done) {
         if (guard) guard->enqueueRequest(r.requestId, system, text, images,
-            OneShotVlmChannel::Priority::Background, r.context.cancellationKey(), std::move(done), r.imageOptions);
+            OneShotVlmChannel::Priority::Background, r.context.cancellationKey(), std::move(done), r.imageOptions, r.maxOutputTokens);
         else done({{}, QStringLiteral("模型通道未初始化")});
     };
     m_modelSignature = [guard] { return guard ? guard->modelSignature() : QStringLiteral("unavailable"); };

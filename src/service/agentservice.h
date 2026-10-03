@@ -48,7 +48,7 @@ public:
     // Isolated analysis request: supplied system prompt, no chat history or tool policy.
     void sendOneShot(const QString& conversationId, const QString& systemPrompt,
                      const QString& text, const QList<QImage>& frames = {},
-                     const ImageEncodingOptions& imageOptions = {});
+                     const ImageEncodingOptions& imageOptions = {}, int maxOutputTokens = 0);
     void abortRequest(const QString& conversationId, const QString& reason);
     int buildIdleTimeoutMs() const;
     int buildTotalTimeoutMs() const;

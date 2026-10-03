@@ -366,7 +366,7 @@ void AgentService::sendMessage(const QString& conversationId,
 }
 
 void AgentService::sendOneShot(const QString& conversationId, const QString& systemPrompt,
-                               const QString& text, const QList<QImage>& frames, const ImageEncodingOptions& imageOptions)
+                               const QString& text, const QList<QImage>& frames, const ImageEncodingOptions& imageOptions, int maxOutputTokens)
 {
     m_retryAfterMs = -1;
     m_buildUsage = {};
@@ -422,7 +422,10 @@ void AgentService::sendOneShot(const QString& conversationId, const QString& sys
         }
         user["content"] = content;
     }
-    const int maxTokens = qBound(1024, m_settings
+    if (maxOutputTokens < 0 || maxOutputTokens > 131072) {
+        emit responseError(conversationId, tr("invalid_output_token_limit")); return;
+    }
+    const int maxTokens = maxOutputTokens > 0 ? maxOutputTokens : qBound(1024, m_settings
         ? m_settings->get("llm.build_max_tokens", "4096").toInt() : 4096, 16384);
     QJsonObject payload{{"model", m_model}, {"stream", true}, {"temperature", 0.1},
                         {"max_tokens", maxTokens},

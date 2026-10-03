@@ -96,7 +96,8 @@ void PlayerViewModel::connectService()
                 m_playerService->play();
                 // 新文件打开成功，开放帧接收：令 acceptGeneration 追上 openGeneration
                 m_acceptGeneration = m_openGeneration;
-                emit videoOpened(m_playerService->videoInfo().filePath);
+                m_openedPath = m_playerService->videoInfo().filePath;
+                emit videoOpened(m_openedPath);
             });
 
     // 播放到末尾：仅切换 UI 状态为 Ended，不再 seek(0)
@@ -148,6 +149,7 @@ void PlayerViewModel::openFile(const QString& filePath)
     // 递增代际：此后到来的旧视频 rawFrameReady 信号将被过滤丢弃，
     // 直到新文件的 openResult 成功后才重新开放（m_acceptGeneration 同步）
     ++m_openGeneration;
+    m_openedPath.clear();
     emit videoFileChanging();
     m_playerService->open(filePath);
 }

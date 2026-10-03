@@ -195,6 +195,11 @@ void CustomTitleBar::updateWindowButtonStates()
     m_closeBtn->setIcon(closeIcon);
 }
 
+void CustomTitleBar::setChatPanelVisible(bool visible) {
+    m_chatPanelVisible = visible;
+    updateChatPanelIcon();
+}
+
 void CustomTitleBar::updateChatPanelIcon()
 {
     if (!m_chatPanelBtn) return;

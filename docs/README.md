@@ -18,6 +18,9 @@
 | 11 | [`video-rag-unit-analysis-contract.md`](./video-rag-unit-analysis-contract.md) | 请求身份、工作池、取消、carry 和失败合同 | 修改单元理解接口或夹具时读 |
 | 12 | [`video-rag-unit-analysis-implementation-status.md`](./video-rag-unit-analysis-implementation-status.md) | P0～P3 基线、代码实现、离线测试及未验收边界 | 核查本次实现或继续网格／真实模型验收时读 |
 | 13 | [`video-rag-grid-code-review.md`](./video-rag-grid-code-review.md) | P4～P5 网格、编码、兼容和诊断代码审查；本轮未运行测试 | 核查当前网格实现和待运行验收边界时读 |
+| 14 | [`video-analysis-content-quality-design.md`](./video-analysis-content-quality-design.md) | 基于当前并发／carry／网格链路的内容章节、全局概览、类型总结与交互合同 | 实施视频内容质量和展示改造时读 |
+| 15 | [`video-analysis-content-quality-plan.md`](./video-analysis-content-quality-plan.md) | P0～P9 实施任务、依赖、阶段出口、工作量与完整交付验收 | 按设计推进开发和核查完成范围时读 |
+| 16 | [`video-analysis-content-quality-implementation-status.md`](./video-analysis-content-quality-implementation-status.md) | P0 基线、P1 编码与代码审查、实际执行记录及未验证边界 | 核查本次实施结果和继续后续阶段时读 |
 
 ## 文档一致性约定
 

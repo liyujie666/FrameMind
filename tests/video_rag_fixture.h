@@ -3,6 +3,52 @@
 #include <QJsonDocument>
 #include <QTimer>
 
+// P0 request envelope. Presentation-specific fields/limits are finalized in P2.
+struct FixtureStageContract {
+    static QStringList newStages() {
+        return {"unit_synthesis", "synthesis_reduce", "chapter_plan", "chapter_merge",
+                "chapter_refine", "overview_reduce", "overview", "typed_content", "explore_questions"};
+    }
+    static QJsonObject input(const QString &stage, const QJsonObject &payload) {
+        return {{"stage", stage}, {"contract_version", "content_quality_request_v1"}, {"payload", payload}};
+    }
+    static QString stage(const QString &system, const QString &text) {
+        const auto object = SemanticUnitBuilder::parseObject(text);
+        if (object.contains("stage")) {
+            const auto name = object["stage"].toString();
+            return newStages().contains(name) &&
+                object["contract_version"] == "content_quality_request_v1" && object["payload"].isObject()
+                ? name : QString{};
+        }
+        if (object.contains("local_candidates")) return "segment";
+        if (object.contains("core_evidence")) return "understand";
+        if (system.contains(QStringLiteral("分类"))) return "classify";
+        if (system.contains(QStringLiteral("摘要")) && system.contains("JSON") && system.contains("summary"))
+            return "summarize";
+        return {};
+    }
+};
+
+// Replies stay pending until the test delivers them: arbitrary order, duplicate,
+// no delivery (watchdog), cancellation followed by late delivery, or invalid sources.
+class FixtureModelScript {
+  public:
+    struct Pending { QString stage; std::function<void(ModelReply)> done; };
+    QVector<Pending> requests;
+    void install(VideoRAGBuildCoordinator &coordinator) {
+        coordinator.setDetailedModelRequest([this](const VideoBuildContext &, const QString &system,
+                const QString &text, const QList<QImage> &, std::function<void(ModelReply)> done) {
+            const auto stage = FixtureStageContract::stage(system, text);
+            if (stage.isEmpty()) { done({{}, "fixture_unknown_stage_or_contract"}); return; }
+            requests << Pending{stage, std::move(done)};
+        });
+    }
+    void deliver(int index, const ModelReply &reply, bool duplicate = false) const {
+        requests[index].done(reply);
+        if (duplicate) requests[index].done(reply);
+    }
+};
+
 class FixtureBackend final : public VideoRAGBuildBackend {
   public:
     AvailableCapabilities caps{true, false, false};
@@ -111,6 +157,9 @@ class FixtureBackend final : public VideoRAGBuildBackend {
         QTimer::singleShot(0, [done, result] { done(result); });
     }
     static QString modelReply(const QString &system, const QString &text) {
+        const auto stage = FixtureStageContract::stage(system, text);
+        if (stage.isEmpty() || FixtureStageContract::newStages().contains(stage))
+            return QStringLiteral("{\"fixture_error\":\"unknown_or_unscripted_stage\"}");
         const auto input = SemanticUnitBuilder::parseObject(text);
         if (input.contains("local_candidates"))
             return QString::fromUtf8(QJsonDocument(QJsonObject{{"units", input["local_candidates"]}})
@@ -150,6 +199,7 @@ class FixtureBackend final : public VideoRAGBuildBackend {
                                                                {"probe_evidence_ids", QJsonArray{}},
                                                                {"reasoning", "fixture"}})
                                          .toJson(QJsonDocument::Compact));
+        // Only the explicitly recognized legacy summarize stage reaches here.
         return QString::fromUtf8(
             QJsonDocument(QJsonObject{{"summary", text.left(4000)}}).toJson(QJsonDocument::Compact));
     }

@@ -20,6 +20,7 @@ class CustomTitleBar : public QWidget {
 public:
     explicit CustomTitleBar(ThemeService* theme, QWidget* parent = nullptr);
     void setThemeService(ThemeService* theme);
+    void setChatPanelVisible(bool visible);
 
 protected:
     void mousePressEvent(QMouseEvent* event) override;

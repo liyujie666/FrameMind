@@ -23,6 +23,20 @@ struct CloseFixtureDatabase {
 class VideoRAGTests : public QObject {
     Q_OBJECT
   private slots:
+    void stageFixtureRejectsUnknownContracts() {
+        QVERIFY(FixtureStageContract::stage("unknown prompt", "arbitrary evidence").isEmpty());
+        QVERIFY(!SemanticUnitBuilder::parseObject(FixtureBackend::modelReply("unknown", "evidence"))
+                     .contains("summary"));
+        for (const auto &stage : FixtureStageContract::newStages()) {
+            const auto input = FixtureStageContract::input(stage, {{"unit_ids", QJsonArray{"u0"}}});
+            const auto text = QString::fromUtf8(QJsonDocument(input).toJson(QJsonDocument::Compact));
+            QCOMPARE(FixtureStageContract::stage({}, text), stage);
+            QVERIFY(!SemanticUnitBuilder::parseObject(FixtureBackend::modelReply({}, text)).contains("summary"));
+            auto invalid = input;
+            invalid["contract_version"] = "unknown_v99";
+            QVERIFY(FixtureStageContract::stage({}, QString::fromUtf8(QJsonDocument(invalid).toJson())).isEmpty());
+        }
+    }
     void buildLogConcurrentAndThrottled() {
         QTemporaryDir dir;
         QVERIFY(dir.isValid());

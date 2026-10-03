@@ -72,16 +72,20 @@ public:
     bool initialize();
 
     VideoBuildManifest activeBuild(const QString& videoId) const;
+    // Read-only display copy: old schemas stay readable, invalid new content
+    // requests rebuilding; anchor-only damage can lose just the jump.
+    VideoBuildManifest restoredBuild(const QString& videoId) const;
     bool saveTypeOverride(const QString& videoId,const QString& fingerprint,std::optional<VideoContentType>);
     std::optional<VideoContentType> typeOverride(const QString& videoId,const QString& fingerprint) const;
     bool saveCandidateBuild(const VideoBuildManifest&);
-    bool publishBuild(const VideoBuildManifest&, const QString& expectedActiveBuildId);
+    bool publishBuild(VideoBuildManifest, const QString& expectedActiveBuildId);
     bool saveRawSnapshot(const QString& snapshotId, const QString& videoId,
                          const QJsonObject& representation, const QVector<VideoChunk>& chunks);
     QJsonObject loadRawSnapshot(const QString& snapshotId) const;
     QVector<VideoChunk> rawChunks(const QString& snapshotId) const;
-    bool saveUnitBatch(const VideoBuildManifest&, const QVector<SemanticUnit>&,
+    bool saveUnitBatch(VideoBuildManifest, const QVector<SemanticUnit>&,
                        const QVector<VideoChunk>& chunks);
+    QString buildValidationError(const VideoBuildManifest&) const;
     QVector<SemanticUnit> listUnits(const QString& buildId) const;
     SemanticUnit getUnit(const QString& buildId, const QString& unitId) const;
 

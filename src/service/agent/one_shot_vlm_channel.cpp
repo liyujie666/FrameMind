@@ -1,3 +1,5 @@
+#include <QJsonDocument>
+#include <QJsonObject>
 #include "util/video_rag_log.h"
 #include "service/agent/one_shot_vlm_channel.h"
 
@@ -72,13 +74,25 @@ void OneShotVlmChannel::enqueueDetailed(const QString& systemPrompt, const QStri
                                         const QList<QImage>& frames, Priority priority,
                                         const QString& cancellationKey, std::function<void(ModelReply)> onDone)
 {
-    enqueueRequest({}, systemPrompt, userText, frames, priority, cancellationKey, std::move(onDone));
+    // Only the application-owned presentation envelope carries this limit;
+    // ordinary chat/video evidence has no such top-level contract.
+    const auto envelope = QJsonDocument::fromJson(userText.toUtf8()).object();
+    int limit = 0;
+    if (envelope["contract_version"].toString() == "content_quality_request_v4_nodes") {
+        const auto value = envelope["output_budget"].toObject()["max_tokens"];
+        limit = value.toInt(-1);
+        if (!value.isDouble() || value.toDouble() != limit || limit < 1 || limit > 131072) {
+            if (onDone) onDone({{}, QStringLiteral("invalid_output_token_limit")});
+            return;
+        }
+    }
+    enqueueRequest({}, systemPrompt, userText, frames, priority, cancellationKey, std::move(onDone), {}, limit);
 }
 
 void OneShotVlmChannel::enqueueRequest(const QString& requestId, const QString& systemPrompt,
                                       const QString& userText, const QList<QImage>& frames, Priority priority,
                                       const QString& cancellationKey, std::function<void(ModelReply)> onDone,
-                                      const ImageEncodingOptions& imageOptions)
+                                      const ImageEncodingOptions& imageOptions, int maxOutputTokens)
 {
     if (!m_agent) {
         qWarning() << "[OneShotVlmChannel] Agent 为空，无法处理请求";
@@ -91,6 +105,7 @@ void OneShotVlmChannel::enqueueRequest(const QString& requestId, const QString& 
     request.userText = userText;
     request.frames = frames;
     request.imageOptions = imageOptions;
+    request.maxOutputTokens = maxOutputTokens;
     request.queueTimer.start();
     request.priority = priority;
     request.cancellationKey = cancellationKey;
@@ -172,7 +187,7 @@ void OneShotVlmChannel::startNext()
     m_idleTimer.start(m_idleTimeoutMs);
     m_deadlineTimer.start(total);
     const auto imageOptions = m_active.imageOptions;
-    m_agent->sendOneShot(conversationId, system, text, frames, imageOptions);
+    m_agent->sendOneShot(conversationId, system, text, frames, imageOptions, m_active.maxOutputTokens);
 }
 
 void OneShotVlmChannel::finishActive(ModelReply reply)

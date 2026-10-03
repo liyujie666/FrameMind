@@ -41,7 +41,8 @@ public:
                          const QString& cancellationKey, std::function<void(ModelReply)> onDone);
     void enqueueRequest(const QString& requestId, const QString& systemPrompt, const QString& userText,
                         const QList<QImage>& frames, Priority priority, const QString& cancellationKey,
-                        std::function<void(ModelReply)> onDone, const ImageEncodingOptions& imageOptions = {});
+                        std::function<void(ModelReply)> onDone, const ImageEncodingOptions& imageOptions = {},
+                        int maxOutputTokens = 0);
     void cancelRequest(const QString& requestId);
 
     /// 移除排队任务，并立即终止同一视频正在进行的后台请求。
@@ -58,6 +59,7 @@ private:
         QString userText;
         QList<QImage> frames;
         ImageEncodingOptions imageOptions;
+        int maxOutputTokens = 0;
         QElapsedTimer queueTimer;
         qint64 queueMs = 0;
         Priority priority = Priority::Background;

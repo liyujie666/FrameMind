@@ -2,9 +2,12 @@
 #define FRAMEMIND_VIDEO_ANALYSIS_SERVICE_H
 
 #include <QObject>
+#include <QElapsedTimer>
 #include <QString>
 #include <QSharedPointer>
 #include <QImage>
+#include <QPointer>
+#include <optional>
 
 #include "model/video_representation.h"
 #include "model/agent_types.h"
@@ -51,6 +54,15 @@ public:
     void setBuildCoordinator(VideoRAGBuildCoordinator*);
     void changeType(const QString& path, VideoContentType);
     void cancelBuild();
+    std::optional<VideoBuildContext> runningBuildContext() const { return m_runningBuild; }
+    std::optional<VideoContentProfile> runningBuildProfile() const { return m_runningProfile; }
+    int runningBuildPercent() const { return m_runningBuildPercent; }
+    QString runningBuildStage() const { return m_runningBuildStage; }
+    QSharedPointer<VideoRepresentation> buildPreview() const { return m_buildPreview; }
+    qint64 buildElapsedMs(const QString& buildId) const {
+        if (buildId.isEmpty() || buildId != m_timedBuildId || !m_buildClock.isValid()) return -1;
+        return m_timedBuildElapsedMs >= 0 ? m_timedBuildElapsedMs : m_buildClock.elapsed();
+    }
 
     // ---- 统筹入口 ----
 
@@ -63,6 +75,11 @@ public:
 
     /// 获取指定视频的表示（VideoIndexer 中的引用）
     QSharedPointer<VideoRepresentation> representation(const QString& videoPath = {}) const;
+    VideoPresentation presentation(const QString& videoPath = {}) const {
+        const auto snapshot = representation(videoPath);
+        return snapshot ? snapshot->build.presentation : VideoPresentation{};
+    }
+
 
     // ---- Level 2: VLM 描述 & 摘要 ----
 
@@ -106,6 +123,12 @@ public:
     VideoContext buildVideoContext(QSharedPointer<VideoRepresentation> repr) const;
 
 signals:
+    void buildStarted(const VideoBuildContext &);
+    void buildProgress(const VideoBuildContext &, int percent, const QString &stage);
+    void buildTerminated(const VideoBuildContext &, const VideoBuildManifest &result);
+    void representationReady(const VideoBuildContext &, const VideoRepresentation &);
+    void previewReady(const VideoBuildContext &, const VideoRepresentation &);
+    void buildProfileReady(const VideoBuildContext &, const VideoContentProfile &);
     void semanticUnitsReady(const QString& filePath,const QVector<SemanticUnit>&);
     void contentProfileReady(const QString& filePath,const VideoContentProfile&);
     void buildFinished(const VideoBuildManifest&);
@@ -170,7 +193,16 @@ private:
                          std::function<void()> onDone);
 
     OneShotVlmChannel*  m_vlmChannel = nullptr;
-    VideoRAGBuildCoordinator* m_coordinator = nullptr;
+    QPointer<VideoRAGBuildCoordinator> m_coordinator;
+    std::optional<VideoBuildContext> m_runningBuild;
+    std::optional<VideoContentProfile> m_runningProfile;
+    int m_runningBuildPercent = 0;
+    QString m_runningBuildStage;
+    QElapsedTimer m_buildClock;
+    QString m_timedBuildId;
+    qint64 m_timedBuildElapsedMs = -1;
+    QSharedPointer<VideoRepresentation> m_displayedRepresentation;
+    QSharedPointer<VideoRepresentation> m_buildPreview;
     VideoIndexer*       m_indexer  = nullptr;
     VideoRAGStore*      m_ragStore = nullptr;
     PlayerService*      m_player   = nullptr;

@@ -23,10 +23,15 @@ if(MSVC)
         # Ninja parses /showIncludes to track headers. Keep the compiler output
         # language and parser prefix consistent across Qt Creator and CLI builds;
         # otherwise header changes can silently leave ABI-incompatible objects.
-        set(CMAKE_CXX_CL_SHOWINCLUDES_PREFIX "Note: including file: ")
-        set(CMAKE_CL_SHOWINCLUDES_PREFIX "${CMAKE_CXX_CL_SHOWINCLUDES_PREFIX}")
-        list(PREPEND CMAKE_CXX_COMPILER_LAUNCHER
-            "${CMAKE_COMMAND}" -E env "VSLANG=1033")
+        get_filename_component(_msvc_compiler_directory "${CMAKE_CXX_COMPILER}" DIRECTORY)
+        if(EXISTS "${_msvc_compiler_directory}/1033/clui.dll")
+            set(CMAKE_CXX_CL_SHOWINCLUDES_PREFIX "Note: including file: ")
+            set(CMAKE_CL_SHOWINCLUDES_PREFIX "${CMAKE_CXX_CL_SHOWINCLUDES_PREFIX}")
+            list(PREPEND CMAKE_CXX_COMPILER_LAUNCHER
+                "${CMAKE_COMMAND}" -E env "VSLANG=1033")
+        endif()
+        # Without the English resource, VSLANG cannot change localized output.
+        # Preserve CMake's detected prefix so Ninja can still track header changes.
     endif()
 endif()
 
@@ -55,6 +60,9 @@ if(BUILD_TESTING)
         tests/video_rag_tests.cpp
         src/infrastructure/databasemanager.cpp
         src/model/video_rag_types.cpp
+        src/model/video_presentation_types.cpp
+        src/service/rag/video_presentation_policy_registry.cpp
+        src/service/rag/video_presentation_builder.cpp
         src/model/video_representation_codec.cpp
         src/service/rag/video_rag_store.cpp
         src/service/rag/strategies/video_rag_strategy_registry.cpp
@@ -120,6 +128,9 @@ if(BUILD_TESTING)
         src/service/agent/one_shot_vlm_channel.cpp
         src/service/agent/unit_analysis_worker_pool.cpp
         src/model/video_rag_types.cpp
+        src/model/video_presentation_types.cpp
+        src/service/rag/video_presentation_policy_registry.cpp
+        src/service/rag/video_presentation_builder.cpp
     )
     target_include_directories(video_model_channel_tests PRIVATE src "${SMARTPLAYER_SDK_DIR}/include")
     target_link_libraries(video_model_channel_tests PRIVATE Qt6::Core Qt6::Gui Qt6::Network Qt6::Sql Qt6::Test)
@@ -530,3 +541,22 @@ foreach(_test video_rag_tests video_model_channel_tests video_media_tests)
         target_sources(${_test} PRIVATE src/util/video_rag_log.cpp)
     endif()
 endforeach()
+
+# Exercise the actual service, view model and Widgets with an injected offline backend.
+# Share the application's build options/dependencies; no test doubles for lifecycle code.
+if(BUILD_TESTING)
+    set(_lifecycle_sources ${FRAMEMIND_SOURCES})
+    list(FILTER _lifecycle_sources EXCLUDE REGEX "/main\\.cpp$")
+    qt_add_executable(video_analysis_lifecycle_tests
+        tests/video_analysis_lifecycle_tests.cpp
+        ${_lifecycle_sources} ${FRAMEMIND_HEADERS} ${FRAMEMIND_RESOURCES})
+    target_include_directories(video_analysis_lifecycle_tests PRIVATE tests
+        $<TARGET_PROPERTY:FrameMind,INCLUDE_DIRECTORIES>)
+    target_compile_definitions(video_analysis_lifecycle_tests PRIVATE
+        $<TARGET_PROPERTY:FrameMind,COMPILE_DEFINITIONS>)
+    target_link_libraries(video_analysis_lifecycle_tests PRIVATE Qt6::Test
+        $<TARGET_PROPERTY:FrameMind,LINK_LIBRARIES>)
+    add_test(NAME video_analysis_lifecycle_tests COMMAND video_analysis_lifecycle_tests
+        -o video-analysis-lifecycle-results.xml,xml -o -,txt)
+    set_tests_properties(video_analysis_lifecycle_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+endif()

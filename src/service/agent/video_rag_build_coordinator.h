@@ -5,6 +5,7 @@
 #include "service/agent/video_rag_build_backend.h"
 #include "service/rag/semantic_unit_builder.h"
 #include "service/rag/evidence_grid_composer.h"
+#include "service/rag/video_presentation_builder.h"
 #include <QImage>
 #include <QObject>
 #include <QThreadPool>
@@ -45,8 +46,24 @@ class VideoRAGBuildCoordinator final : public QObject {
     void setUnitRequestCancellation(std::function<void(const QString&)> fn) { m_cancelUnitRequest = std::move(fn); }
     void setUnitWatchdogTimeoutProvider(std::function<int(int)> fn) { m_unitWatchdogTimeout = std::move(fn); }
     void setModelSignatureProvider(std::function<QString()> fn) { m_modelSignature = std::move(fn); }
+    void setPresentationTokenCounter(VideoPresentationBuilder::TokenCounter counter) { m_presentationTokenCounter = std::move(counter); }
+    struct PresentationTokenProfile {
+        VideoPresentationBuilder::TokenCounter counter;
+        QString fingerprint, error;
+    };
+    void setPresentationTokenProfileProvider(std::function<PresentationTokenProfile(const QString&)> provider) {
+        m_presentationTokenProfileProvider = std::move(provider);
+    }
+    void setPresentationBudget(const VideoPresentationBudget& budget) { m_presentationBudget = budget; }
+    void setPresentationBudgetProvider(std::function<VideoPresentationBudget()> provider) { m_presentationBudgetProvider = std::move(provider); }
     bool isRunning() const { return bool(m_job); }
   signals:
+    void buildStarted(const VideoBuildContext &);
+    void buildProgress(const VideoBuildContext &, int percent, const QString &stage);
+    void buildTerminated(const VideoBuildContext &, const VideoBuildManifest &result);
+    void representationReady(const VideoBuildContext &, const VideoRepresentation &);
+    void previewReady(const VideoBuildContext &, const VideoRepresentation &);
+    void buildProfileReady(const VideoBuildContext &, const VideoContentProfile &);
     void progress(int, const QString &);
     void published(const VideoRepresentation &);
     void finished(const VideoBuildManifest &);
@@ -56,6 +73,9 @@ class VideoRAGBuildCoordinator final : public QObject {
   private:
     struct Job;
     struct UnitAnalysisTask;
+    void reportProgress(const std::shared_ptr<Job> &, int, const QString &);
+    void reportPreview(const std::shared_ptr<Job>&);
+    void terminate(const std::shared_ptr<Job> &, const VideoBuildManifest &);
     void beginStage(const std::shared_ptr<Job>&, const QString&, const QString&, QJsonObject = {});
     void endStage(const std::shared_ptr<Job>&, const QString& status = "success", QJsonObject = {});
     bool current(const std::shared_ptr<Job> &) const;
@@ -72,7 +92,30 @@ class VideoRAGBuildCoordinator final : public QObject {
     void writeUnitDiagnostic(const std::shared_ptr<Job>&, QJsonObject);
     void requestUnit(const std::shared_ptr<Job>&, const std::shared_ptr<UnitAnalysisTask>&,
                      const QString&, const QString&, const QList<QImage>&, std::function<void(ModelReply)>);
-    void summarizeNext(const std::shared_ptr<Job> &, int attempt = 0);
+    void synthesizeNext(const std::shared_ptr<Job>&);
+    void requestSynthesis(const std::shared_ptr<Job>&, bool reduce, int attempt = 0);
+    void finishSynthesis(const std::shared_ptr<Job>&, const QJsonObject&, const QString&);
+    void beginChapters(const std::shared_ptr<Job>&);
+    void planNextChapters(const std::shared_ptr<Job>&);
+    void finishChapterWindow(const std::shared_ptr<Job>&, const QVector<SemanticUnit>&,
+        const QJsonObject&, const QString&);
+    void mergeChapterSeam(const std::shared_ptr<Job>&, int left);
+    void beginChapterRefinement(const std::shared_ptr<Job>&);
+    void refineNextChapters(const std::shared_ptr<Job>&);
+    void finishChapters(const std::shared_ptr<Job>&);
+    void requestPresentationStage(const std::shared_ptr<Job>&, const QString &stage, const QJsonObject &payload,
+        const QString &operation, std::function<QString(const QJsonObject&)> validate,
+        std::function<void(QJsonObject, QString)> done, int attempt = 0);
+    void beginOverview(const std::shared_ptr<Job>&);
+    void generateOverview(const std::shared_ptr<Job>&);
+    void reduceOverviewNext(const std::shared_ptr<Job>&);
+    void finishOverview(const std::shared_ptr<Job>&, const QJsonObject&, const QString&);
+    void beginTypedSections(const std::shared_ptr<Job>&);
+    void selectPresentationPolicy(const std::shared_ptr<Job>&);
+    void beginSummarySection(const std::shared_ptr<Job>&, bool primary);
+    void generateSectionNext(const std::shared_ptr<Job>&, bool primary);
+    void finishSummarySection(const std::shared_ptr<Job>&, bool primary);
+    void finishTypedSections(const std::shared_ptr<Job>&);
     void publish(const std::shared_ptr<Job> &);
     void fail(const std::shared_ptr<Job> &, const QString &);
     void request(const std::shared_ptr<Job> &, const QString &, const QString &, const QList<QImage> &,
@@ -83,6 +126,10 @@ class VideoRAGBuildCoordinator final : public QObject {
     VideoRAGBuildBackend *m_indexer;
     VideoRAGStore *m_store;
     DetailedModelRequest m_modelRequest;
+    VideoPresentationBuilder::TokenCounter m_presentationTokenCounter;
+    std::function<PresentationTokenProfile(const QString&)> m_presentationTokenProfileProvider;
+    VideoPresentationBudget m_presentationBudget;
+    std::function<VideoPresentationBudget()> m_presentationBudgetProvider;
     UnitModelRequest m_unitModelRequest;
     int m_unitConcurrency = 3;
     int m_poolCapacity = 3;
@@ -94,6 +141,7 @@ class VideoRAGBuildCoordinator final : public QObject {
     std::function<int()> m_modelWatchdogTimeout;
     std::function<void(const QString &)> m_cancelModel;
     quint64 m_generation = 0;
+    bool m_destroying = false;
     std::shared_ptr<Job> m_job;
     QThreadPool m_imagePool;
 };

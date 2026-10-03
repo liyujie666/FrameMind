@@ -32,7 +32,7 @@ class QStackedLayout;
 class QSplitter;
 class QActionGroup;
 class QLabel;
-class QMovie;
+class AnalysisBuildProgressWidget;
 
 /**
  * 主窗口：顶部自定义标题栏 + 左侧导航栏 + 页面容器（QStackedWidget）。
@@ -71,6 +71,9 @@ private slots:
     void onCollapseChatPanel();
     void onExpandChatPanel();
     void onChatPanelToggled(bool visible);
+    void onReviewRequested(const QString& videoId, const QString& buildId, const QString& anchorId);
+    void onChapterRequested(const QString& videoId, const QString& buildId, const QString& chapterId);
+    void onQuestionRequested(const QString& videoId, const QString& buildId, const QString& questionId);
 
 protected:
     void mousePressEvent(QMouseEvent* event) override;
@@ -86,6 +89,9 @@ private:
     ThemedPanel* buildAnalysisPanel(QWidget* parent);
     void applyPageBackground();
     void updateSplitterStyle();
+    bool validateContentRequest(const QString& videoId, const QString& buildId);
+    void updateQuestionBusy();
+    bool m_questionDispatching = false;
 
     // Edge resize helpers
     enum ResizeEdge { None = 0, Left=1, Right=2, Top=4, Bottom=8,
@@ -120,11 +126,7 @@ private:
 
     // 分析面板标题栏
     QLabel* m_analysisTitle      = nullptr;
-    QLabel* m_analysisSpinner    = nullptr;
-    QMovie* m_spinnerMovie       = nullptr;
-    QLabel* m_analysisStatusText = nullptr;
-
-    void updateSpinnerTheme();
+    AnalysisBuildProgressWidget* m_analysisBuildProgress = nullptr;
 
     // Edge resize state
     bool        m_resizing = false;

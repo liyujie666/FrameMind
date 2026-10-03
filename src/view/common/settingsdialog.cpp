@@ -4,6 +4,8 @@
 #include "service/agentservice.h"
 #include "service/llmproviderservice.h"
 #include "model/llmprovider.h"
+#include "model/video_presentation_types.h"
+#include "infrastructure/generation_tokenizer.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -23,6 +25,10 @@
 #include <QFileInfo>
 #include <QApplication>
 #include <QComboBox>
+#include <QSpinBox>
+#include <QMessageBox>
+#include <QCryptographicHash>
+#include <QJsonDocument>
 
 SettingsDialog::SettingsDialog(ThemeService* theme,
                                SettingsService* settings,
@@ -332,6 +338,96 @@ void SettingsDialog::buildAiPage(QWidget* parent)
     form->addRow(keyLabel, m_apiKeyEdit);
 
     mainLayout->addLayout(form);
+
+    auto* budgetButton = new QPushButton(tr("视频分析输入预算…"), parent);
+    budgetButton->setObjectName("secondaryButton");
+    connect(budgetButton, &QPushButton::clicked, this, [this] {
+        if (!m_settings || m_modelCombo->currentText().trimmed().isEmpty() || m_endpointEdit->text().trimmed().isEmpty()) return;
+        const auto signature = QString::fromLatin1(QCryptographicHash::hash(
+            (m_modelCombo->currentText().trimmed() + "\n" + m_endpointEdit->text().trimmed()).toUtf8(),
+            QCryptographicHash::Sha256).toHex());
+        const auto budgetKey = "video_rag.presentation_budget." + signature;
+        const auto tokenizerKey = "video_rag.generation_tokenizer." + signature;
+        VideoPresentationBudget budget;
+        const auto saved = m_settings->get(budgetKey);
+        if (!saved.isEmpty()) {
+            QJsonParseError parse;
+            const auto document = QJsonDocument::fromJson(saved.toUtf8(), &parse);
+            if (parse.error != QJsonParseError::NoError || !document.isObject()) {
+                QMessageBox::warning(this, tr("预算配置"), tr("当前模型的预算配置格式无效，请先修正配置。")); return;
+            }
+            budget = VideoPresentationBudget::fromJson(document.object());
+            if (!budget.validationError().isEmpty()) {
+                QMessageBox::warning(this, tr("预算配置"), budget.validationError()); return;
+            }
+        }
+        QDialog dialog(this);
+        dialog.setWindowTitle(tr("视频分析输入预算"));
+        auto* layout = new QVBoxLayout(&dialog);
+        auto* fields = new QFormLayout;
+        auto* context = new QSpinBox(&dialog); context->setRange(0, 2097152); context->setValue(budget.modelContextTokens);
+        context->setSpecialValueText(tr("未知，采用保守预算"));
+        auto* output = new QSpinBox(&dialog); output->setRange(1, 131072); output->setValue(budget.reservedOutputTokens);
+        auto* overhead = new QSpinBox(&dialog); overhead->setRange(0, 65536); overhead->setValue(budget.protocolOverheadTokens);
+        overhead->setToolTip(tr("预留聊天模板、协议和图片输入占用；请按当前模型与服务的实际限制配置。"));
+        fields->addRow(tr("模型上下文 tokens"), context);
+        fields->addRow(tr("输出预留 tokens"), output);
+        fields->addRow(tr("协议与图片预留 tokens"), overhead);
+        auto* characterGuard = new QSpinBox(&dialog); characterGuard->setRange(256, 262144); characterGuard->setValue(budget.chapterWindowChars);
+        characterGuard->setToolTip(tr("独立的字符保护上限；已知模型上下文并配置匹配分词文件时，实际容量仍按 token 预算计算。"));
+        auto* overviewLength = new QSpinBox(&dialog); overviewLength->setRange(128, budget.maxOutputChars); overviewLength->setValue(budget.overviewOutputChars);
+        auto* reductionLength = new QSpinBox(&dialog); reductionLength->setRange(128, budget.maxOutputChars); reductionLength->setValue(budget.reductionOutputChars);
+        auto* reductionTokens = new QSpinBox(&dialog); reductionTokens->setRange(32, 131072); reductionTokens->setValue(budget.reductionOutputTokens);
+        fields->addRow(tr("章节与总结请求字符保护上限"), characterGuard);
+        auto* pageGuard = new QSpinBox(&dialog); pageGuard->setRange(256, 262144); pageGuard->setValue(budget.pageInputChars);
+        auto* unitGuard = new QSpinBox(&dialog); unitGuard->setRange(256, 262144); unitGuard->setValue(budget.synthesisInputChars);
+        fields->addRow(tr("页面请求字符保护上限"), pageGuard);
+        fields->addRow(tr("单元综合字符保护上限"), unitGuard);
+        fields->addRow(tr("全片概览输出字符上限"), overviewLength);
+        fields->addRow(tr("每组中间综合输出字符上限"), reductionLength);
+        fields->addRow(tr("每组中间综合输出 tokens"), reductionTokens);
+        auto* path = new QLineEdit(&dialog);
+        path->setText(QJsonDocument::fromJson(m_settings->get(tokenizerKey).toUtf8()).object()["path"].toString());
+        path->setPlaceholderText(tr("当前生成模型的 tokenizer.json（可留空）"));
+        auto* picker = new QPushButton(tr("选择…"), &dialog);
+        connect(picker, &QPushButton::clicked, &dialog, [&dialog, path] {
+            const auto file = QFileDialog::getOpenFileName(&dialog, QObject::tr("选择生成模型分词文件"), path->text(), "JSON (*.json)");
+            if (!file.isEmpty()) path->setText(file);
+        });
+        auto* row = new QHBoxLayout; row->addWidget(path); row->addWidget(picker);
+        fields->addRow(tr("生成模型分词文件"), row); layout->addLayout(fields);
+        auto* description = new QLabel(tr("配置绑定当前模型和端点。支持 HF ByteLevel BPE；缺少匹配分词文件或已知上下文时使用保守预算。"), &dialog);
+        description->setWordWrap(true); layout->addWidget(description);
+        auto* buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, &dialog);
+        layout->addWidget(buttons);
+        connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+        connect(buttons, &QDialogButtonBox::accepted, &dialog, [&, path, context, output, overhead] {
+            auto updated = budget;
+            updated.modelContextTokens = context->value(); updated.reservedOutputTokens = output->value();
+            updated.protocolOverheadTokens = overhead->value();
+            updated.chapterWindowChars = characterGuard->value();
+            updated.pageInputChars = pageGuard->value(); updated.synthesisInputChars = unitGuard->value();
+            updated.overviewOutputChars = overviewLength->value();
+            updated.reductionOutputChars = reductionLength->value();
+            updated.reductionOutputTokens = reductionTokens->value();
+            const auto error = updated.validationError();
+            if (!error.isEmpty()) { QMessageBox::warning(&dialog, tr("预算配置"), error); return; }
+            QJsonObject tokenizerConfig;
+            if (!path->text().trimmed().isEmpty()) {
+                GenerationTokenizer tokenizer;
+                if (!tokenizer.load(path->text().trimmed())) {
+                    QMessageBox::warning(&dialog, tr("分词文件不可用"), tokenizer.error()); return;
+                }
+                tokenizerConfig = {{"model_signature", signature}, {"path", QFileInfo(path->text().trimmed()).absoluteFilePath()},
+                    {"sha256", tokenizer.fingerprint().section(':', -1)}};
+            }
+            m_settings->set(budgetKey, QString::fromUtf8(QJsonDocument(updated.toJson()).toJson(QJsonDocument::Compact)));
+            m_settings->set(tokenizerKey, tokenizerConfig.isEmpty() ? QString{} : QString::fromUtf8(QJsonDocument(tokenizerConfig).toJson(QJsonDocument::Compact)));
+            dialog.accept();
+        });
+        dialog.exec();
+    });
+    mainLayout->addWidget(budgetButton);
 
     // 状态提示
     m_providerStatusLabel = new QLabel(parent);

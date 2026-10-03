@@ -3,6 +3,7 @@
 #include "infrastructure/eventbus.h"
 #include "infrastructure/databasemanager.h"
 #include "infrastructure/networkclient.h"
+#include "infrastructure/generation_tokenizer.h"
 #include "service/settingsservice.h"
 #include "service/themeservice.h"
 #include "service/playerservice.h"
@@ -61,6 +62,8 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonParseError>
 
 namespace {
 
@@ -258,6 +261,40 @@ void DIContainer::initialize()
     grid.maxEncodedBytes = m_settingsService->get("video_rag.grid_max_encoded_bytes", "0").toLongLong(&gridByteLimitValid);
     if (!gridByteLimitValid) grid.maxEncodedBytes = -1; // malformed limits must not silently mean unlimited
     m_buildCoordinator->setUnitGridConfig(grid);
+    m_buildCoordinator->setPresentationBudgetProvider([this] {
+        // Context limits belong to the selected generation model/endpoint, not
+        // the embedding tokenizer or a hardcoded list of model names.
+        const auto signature = m_oneShotVlmChannel->modelSignature();
+        const auto config = m_settingsService->get("video_rag.presentation_budget." + signature);
+        if (config.isEmpty()) return VideoPresentationBudget{};
+        QJsonParseError error;
+        const auto document = QJsonDocument::fromJson(config.toUtf8(), &error);
+        if (error.error == QJsonParseError::NoError && document.isObject())
+            return VideoPresentationBudget::fromJson(document.object());
+        VideoPresentationBudget invalid;
+        invalid.fallbackInputChars = -1; // explicitly reject malformed settings
+        return invalid;
+    });
+    m_buildCoordinator->setPresentationTokenProfileProvider([this](const QString& signature) {
+        VideoRAGBuildCoordinator::PresentationTokenProfile profile;
+        const auto config = m_settingsService->get("video_rag.generation_tokenizer." + signature);
+        if (config.isEmpty()) { profile.error = "generation_tokenizer_not_configured"; return profile; }
+        QJsonParseError parse;
+        const auto document = QJsonDocument::fromJson(config.toUtf8(), &parse);
+        const auto object = document.object();
+        if (parse.error != QJsonParseError::NoError || !document.isObject() ||
+            object["model_signature"].toString() != signature || !object["path"].isString() ||
+            !object["sha256"].isString() || object["sha256"].toString().size() != 64) {
+            profile.error = "invalid_or_unbound_generation_tokenizer_config"; return profile;
+        }
+        auto tokenizer = std::make_shared<GenerationTokenizer>();
+        if (!tokenizer->load(object["path"].toString(), object["sha256"].toString())) {
+            profile.error = tokenizer->error(); return profile;
+        }
+        profile.fingerprint = tokenizer->fingerprint();
+        profile.counter = [tokenizer](const QString& text) { return tokenizer->tokenCount(text); };
+        return profile;
+    });
     m_videoAnalysis->setBuildCoordinator(m_buildCoordinator.get());
     m_buildCoordinator->setDetailedModelRequest([this](const VideoBuildContext& context,const QString& system,const QString& text,const QList<QImage>& frames,std::function<void(ModelReply)> done) {
         m_videoAnalysis->executeBuildRequest(context,system,text,frames,[done](VideoAnalysisService::BuildModelResult result) {done({result.content,result.error});});

@@ -56,7 +56,7 @@ void UnitAnalysisWorkerPool::submit(const UnitAnalysisRequest& r, const QString&
         auto& w = *guard->m_workers[r.workerId];
         if (w.requestId == r.requestId) w.requestId.clear();
         done(std::move(reply));
-    }, r.imageOptions);
+    }, r.imageOptions, r.maxOutputTokens);
 }
 void UnitAnalysisWorkerPool::releaseUnit(int id, const QString& unitId) {
     if (id < 0 || id >= capacity()) return;

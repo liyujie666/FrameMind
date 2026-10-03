@@ -14,6 +14,9 @@
 #include <QEvent>
 #include <QPainterPath>
 #include <QTimer>
+#include <QJsonDocument>
+#include <QHash>
+#include <QPointer>
 
 // ---- 可点击字幕行 ----
 class SubtitleRow : public QWidget {
@@ -132,8 +135,8 @@ void SubtitleTabWidget::setViewModel(VideoAnalysisViewModel* vm)
     connect(m_vm, &VideoAnalysisViewModel::speechSegmentsReady,
             this, &SubtitleTabWidget::onSpeechSegmentsReady);
 
-    if (!m_vm->speechSegments().isEmpty())
-        onSpeechSegmentsReady(m_vm->speechSegments());
+    connect(m_vm, &VideoAnalysisViewModel::indexingChanged, this, [this] { if (m_segments.isEmpty()) buildRows(); });
+    onSpeechSegmentsReady(m_vm->speechSegments());
 }
 
 void SubtitleTabWidget::onPositionChanged(int64_t posMs)
@@ -144,13 +147,15 @@ void SubtitleTabWidget::onPositionChanged(int64_t posMs)
 
 void SubtitleTabWidget::onSpeechSegmentsReady(const QVector<SpeechSegment>& segments)
 {
+    const auto path = m_vm ? m_vm->currentVideoPath() : QString{};
+    if (path != m_videoPath) { m_videoPath = path; m_currentPosMs = 0; m_userScrolling = false; m_scroll->verticalScrollBar()->setValue(0); }
     m_segments = segments;
     buildRows();
-    updateHighlight(m_currentPosMs);
 }
 
 void SubtitleTabWidget::onThemeChanged()
 {
+    ++m_themeRevision;
     applyScrollStyle();
     if (!m_segments.isEmpty()) buildRows();
 }
@@ -195,25 +200,48 @@ void SubtitleTabWidget::clearRows()
 
 void SubtitleTabWidget::buildRows()
 {
-    clearRows();
-
+    const int position = m_scroll->verticalScrollBar()->value();
+    QPointer<QWidget> anchor;
+    QString anchorKey;
+    int offset = 0;
+    QHash<QString, QWidget*> previous;
+    for (auto* row : m_rows) {
+        previous.insert(row->property("subtitleKey").toString(), row);
+        if (row->y() <= position) { anchor = row; offset = position - row->y(); anchorKey = row->property("subtitleKey").toString(); }
+        if (auto* r = qobject_cast<SubtitleRow*>(row)) r->setHighlighted(false);
+    }
+    while (auto* item = m_rowLayout->takeAt(0)) {
+        if (auto* widget = item->widget()) if (!m_rows.contains(widget)) { widget->hide(); widget->deleteLater(); }
+        delete item;
+    }
+    m_rows.clear(); m_currentRow = -1;
     if (m_segments.isEmpty()) {
-        auto* empty = new QLabel(tr("暂无字幕数据"), m_container);
+        auto* empty = new QLabel(m_vm && m_vm->isIndexing() ? tr("正在提取字幕") : tr("暂无字幕数据"), m_container);
         empty->setAlignment(Qt::AlignCenter);
-        empty->setStyleSheet(
-            "color: #888; font-size: 13px; background: transparent; border: none;");
+        empty->setStyleSheet("color: #888; font-size: 13px; background: transparent; border: none;");
         m_rowLayout->addWidget(empty);
-        m_rowLayout->addStretch(1);
-        return;
     }
-
-    m_rows.reserve(m_segments.size());
-    for (const SpeechSegment& seg : m_segments) {
-        QWidget* row = makeSubtitleRow(seg);
-        m_rows.append(row);
-        m_rowLayout->addWidget(row);
+    for (int i = 0; i < m_segments.size(); ++i) {
+        const auto& seg = m_segments[i];
+        const auto key = m_videoPath + ":" + QString::number(seg.startMs) + ":" + QString::number(seg.endMs) + ":" + QString::number(i);
+        const auto payload = QJsonDocument(QJsonObject{{"text", seg.text}, {"theme", qint64(m_themeRevision)}}).toJson(QJsonDocument::Compact);
+        auto* row = previous.value(key);
+        if (row && row->property("subtitlePayload").toByteArray() == payload) previous.remove(key);
+        else row = makeSubtitleRow(seg);
+        row->setProperty("subtitleKey", key); row->setProperty("subtitlePayload", payload);
+        m_rows.append(row); m_rowLayout->addWidget(row);
     }
+    for (auto* row : previous) { row->hide(); row->setEnabled(false); row->deleteLater(); }
     m_rowLayout->addStretch(1);
+    updateHighlight(m_currentPosMs, false);
+    const auto revision = ++m_refreshRevision;
+    QTimer::singleShot(0, this, [this, revision, anchor, anchorKey, offset, position] {
+        if (revision != m_refreshRevision) return;
+        QWidget* target = anchor && m_rows.contains(anchor.data()) ? anchor.data() : nullptr;
+        if (!target) for (auto* row : m_rows) if (row->property("subtitleKey").toString() == anchorKey) { target = row; break; }
+        m_rowLayout->activate();
+        m_scroll->verticalScrollBar()->setValue(target ? target->y() + offset : position);
+    });
 }
 
 QWidget* SubtitleTabWidget::makeSubtitleRow(const SpeechSegment& seg)
@@ -263,7 +291,7 @@ QWidget* SubtitleTabWidget::makeSubtitleRow(const SpeechSegment& seg)
     return row;
 }
 
-void SubtitleTabWidget::updateHighlight(int64_t posMs)
+void SubtitleTabWidget::updateHighlight(int64_t posMs, bool followPlayback)
 {
     int newRow = -1;
     for (int i = 0; i < m_segments.size(); ++i) {
@@ -285,7 +313,7 @@ void SubtitleTabWidget::updateHighlight(int64_t posMs)
     if (m_currentRow >= 0 && m_currentRow < m_rows.size()) {
         if (auto* r = qobject_cast<SubtitleRow*>(m_rows[m_currentRow])) {
             r->setHighlighted(true);
-            if (!m_userScrolling)
+            if (followPlayback && !m_userScrolling)
                 m_scroll->ensureWidgetVisible(r, 0, 40);
         }
     }

@@ -43,6 +43,7 @@ public:
     void setVideoAgent(VideoAgent* agent);
     void setVideoAnalysisService(VideoAnalysisService* vas);
     VideoContext getVideoContext() const;
+    bool hasVideoContext(const QString& path, const QString& videoId) const;
     bool isStreaming() const { return m_streaming; }
     bool isCollapsed() const { return m_collapsed; }
     QString currentConversationId() const { return m_currentConversationId; }

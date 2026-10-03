@@ -31,7 +31,7 @@
 #include <QGridLayout>
 #include <QWidget>
 #include <QLabel>
-#include <QMovie>
+#include "view/player/analysisbuildprogresswidget.h"
 #include <QLineEdit>
 #include <QTimer>
 
@@ -49,6 +49,8 @@
 #include <QApplication>
 #include <QScreen>
 #include <QCursor>
+#include <QPointer>
+#include "util/video_file_identity.h"
 
 namespace {
 } // namespace
@@ -245,28 +247,11 @@ ThemedPanel* MainWindow::buildAnalysisPanel(QWidget* parent)
         "font-size:14px; font-weight:700; background:transparent; border:none;"));
     top->addWidget(m_analysisTitle);
 
-    // 状态指示器：GIF 加载动画 + 文字（构建 RAG 期间可见）
-    m_analysisSpinner = new QLabel(panel);
-    m_analysisSpinner->setFixedSize(18, 18);
-    m_analysisSpinner->setAttribute(Qt::WA_StyledBackground, false);
-    m_analysisSpinner->hide();
-
-    m_spinnerMovie = new QMovie(this);
-    m_spinnerMovie->setCacheMode(QMovie::CacheAll);
-    m_spinnerMovie->setScaledSize(QSize(18, 18));
-    m_analysisSpinner->setMovie(m_spinnerMovie);
-
-    m_analysisStatusText = new QLabel(panel);
-    m_analysisStatusText->setAttribute(Qt::WA_StyledBackground, false);
-    m_analysisStatusText->setStyleSheet(QStringLiteral(
-        "font-size:11px; color:#8B8B8B; background:transparent; border:none;"));
-    m_analysisStatusText->hide();
-
-    top->addWidget(m_analysisSpinner);
-    top->addSpacing(4);
-    top->addWidget(m_analysisStatusText);
-
-    top->addStretch(1);
+    // Shared progress, actual stage and elapsed time for all analysis tabs.
+    m_analysisBuildProgress = new AnalysisBuildProgressWidget(panel);
+    m_analysisBuildProgress->setThemeService(m_theme);
+    m_analysisBuildProgress->setViewModel(m_analysisVM);
+    top->addWidget(m_analysisBuildProgress, 1);
 
     m_analysisTabs = new SegmentedControl(panel);
     m_analysisTabs->setItems({ tr("时间线"), tr("总结"), tr("字幕") });
@@ -308,62 +293,118 @@ ThemedPanel* MainWindow::buildAnalysisPanel(QWidget* parent)
                 if (m_analysisStack) m_analysisStack->setCurrentIndex(idx);
             });
 
-    // RAG 构建期间在标题旁显示用户友好状态
-    if (m_analysisVM) {
-        connect(m_analysisVM, &VideoAnalysisViewModel::progressChanged,
-                this, [this](int percent, const QString&) {
-            static const struct { int from; const char* text; } kStages[] = {
-                {  0, "正在读取视频..." },
-                { 10, "拆解场景结构..." },
-                { 30, "提取视觉特征..." },
-                { 50, "理解画面语义..." },
-                { 70, "转写音频内容..." },
-                { 85, "整理语音信息..." },
-                { 90, "构建知识索引..." },
-                { 99, "即将完成..."     },
-            };
-            const char* msg = kStages[0].text;
-            for (const auto& s : kStages) {
-                if (percent >= s.from) msg = s.text;
-            }
-            if (m_analysisStatusText) {
-                m_analysisStatusText->setText(tr(msg));
-                m_analysisStatusText->show();
-            }
-            if (m_analysisSpinner) {
-                m_analysisSpinner->show();
-                if (m_spinnerMovie && m_spinnerMovie->state() != QMovie::Running)
-                    m_spinnerMovie->start();
-            }
-        });
-
-        connect(m_analysisVM, &VideoAnalysisViewModel::indexingChanged,
-                this, [this](bool indexing) {
-            if (!indexing) {
-                if (m_analysisSpinner) {
-                    m_spinnerMovie->stop();
-                    m_analysisSpinner->hide();
-                }
-                if (m_analysisStatusText) m_analysisStatusText->hide();
-            }
-        });
-    }
-
     // 播放位置变化 → 时间线 / 字幕高亮
     if (m_playerVM) {
         connect(m_playerVM, &PlayerViewModel::positionChanged,
                 m_timelineTab, &TimelineTabWidget::onPositionChanged);
         connect(m_playerVM, &PlayerViewModel::positionChanged,
                 m_subtitleTab, &SubtitleTabWidget::onPositionChanged);
+        m_timelineTab->onPositionChanged(m_playerVM->position());
+        connect(m_playerVM, &PlayerViewModel::videoFileChanging, this, [this] {
+            if (m_analysisVM) m_analysisVM->onVideoOpened({});
+        });
+        connect(m_playerVM, &PlayerViewModel::videoOpened, this, [this](const QString& path) {
+            if (m_analysisVM) m_analysisVM->onVideoOpened(path);
+        });
     }
 
     // 时间线 / 字幕点击 → 播放器跳转并自动播放
     connect(m_timelineTab, &TimelineTabWidget::seekRequested,
-            this, [this](int64_t ms) { if (m_playerVM) m_playerVM->seekAndPlay(ms); });
+            this, [this](const QString& video, int64_t ms) {
+        if (m_playerVM && !m_playerVM->videoPath().isEmpty() &&
+            VideoFileIdentity::legacyId(m_playerVM->videoPath()) == video && ms >= 0 && ms < m_playerVM->duration())
+            m_playerVM->seekAndPlay(ms);
+    });
+    connect(m_timelineTab, &TimelineTabWidget::chapterRequested, this, &MainWindow::onChapterRequested);
+    connect(m_summaryTab, &SummaryTabWidget::reviewRequested, this, &MainWindow::onReviewRequested);
+    connect(m_summaryTab, &SummaryTabWidget::questionRequested, this, &MainWindow::onQuestionRequested);
+    if (m_chatVM) connect(m_chatVM, &ChatViewModel::streamingChanged, this, [this] { updateQuestionBusy(); });
+    updateQuestionBusy();
     connect(m_subtitleTab, &SubtitleTabWidget::seekRequested,
             this, [this](int64_t ms) { if (m_playerVM) m_playerVM->seekAndPlay(ms); });
 
     return panel;
+}
+
+bool MainWindow::validateContentRequest(const QString& video, const QString& build) {
+    if (!m_analysisVM || !m_playerVM || video.isEmpty() || build.isEmpty() ||
+        m_playerVM->videoPath().isEmpty() || m_playerVM->videoPath() != m_analysisVM->currentVideoPath()) return false;
+    QPointer<MainWindow> guard(this);
+    const bool restored = m_analysisVM->refreshActiveRepresentation();
+    return guard && restored && m_analysisVM->displayedVideoId() == video && m_analysisVM->displayedBuildId() == build;
+}
+void MainWindow::updateQuestionBusy() {
+    if (m_summaryTab) m_summaryTab->setQuestionBusy(m_questionDispatching || !m_chatVM || m_chatVM->isStreaming());
+}
+void MainWindow::onReviewRequested(const QString& video, const QString& build, const QString& id) {
+    QPointer<MainWindow> guard(this);
+    const bool current = validateContentRequest(video, build);
+    if (!guard) return;
+    if (!current) { m_summaryTab->showInteractionMessage(tr("视频或内容版本已变化，请重新选择回看入口")); return; }
+    const auto presentation = m_analysisVM->presentation();
+    bool referenced = false;
+    for (const auto* section : {&presentation.primarySection, &presentation.secondarySection})
+        for (const auto& entry : section->entries) referenced = referenced || entry.anchorId == id;
+    for (const auto& anchor : presentation.anchors) if (referenced && anchor.anchorId == id && anchor.startMs >= 0 &&
+        anchor.endMs > anchor.startMs && anchor.startMs < m_playerVM->duration()) {
+        m_summaryTab->showInteractionMessage({}); m_playerVM->seekAndPlay(anchor.startMs); return;
+    }
+    m_summaryTab->showInteractionMessage(tr("回看位置已不可用，请重新选择"));
+}
+void MainWindow::onChapterRequested(const QString& video, const QString& build, const QString& id) {
+    QPointer<MainWindow> guard(this);
+    const bool current = validateContentRequest(video, build);
+    if (!guard) return;
+    if (!current) { m_timelineTab->showInteractionMessage(tr("章节版本已变化，请重新选择")); return; }
+    for (const auto& chapter : m_analysisVM->chapters()) if (chapter.chapterId == id && chapter.startMs >= 0 &&
+        chapter.endMs > chapter.startMs && chapter.startMs < m_playerVM->duration()) {
+        m_timelineTab->showInteractionMessage({}); m_playerVM->seekAndPlay(chapter.startMs); return;
+    }
+    m_timelineTab->showInteractionMessage(tr("此章节已不可用，请重新选择"));
+}
+void MainWindow::onQuestionRequested(const QString& video, const QString& build, const QString& id) {
+    if (!m_analysisVM || !m_analysisVM->isDisplayedIndexReady()) {
+        if (m_summaryTab) m_summaryTab->showInteractionMessage(tr("索引就绪后可提问"));
+        return;
+    }
+    if (m_questionDispatching || !m_chatVM || m_chatVM->isStreaming()) { updateQuestionBusy(); return; }
+    m_questionDispatching = true; updateQuestionBusy();
+    // A synchronous rejection/error/very short answer must still absorb a double
+    // click. The nonblocking timer holds only the UI dispatch latch.
+    QTimer::singleShot(QApplication::doubleClickInterval() + 50, this, [this] {
+        m_questionDispatching = false; updateQuestionBusy();
+    });
+    QPointer<MainWindow> guard(this);
+    const bool current = validateContentRequest(video, build);
+    if (!guard) return;
+    if (!current) { m_summaryTab->showInteractionMessage(tr("视频或问题版本已变化，请重新选择问题")); return; }
+    const auto section = m_analysisVM->presentation().secondarySection;
+    QString questionText;
+    if (section.state == ArtifactState::Ready || section.state == ArtifactState::Partial)
+        for (const auto& question : section.questions) if (question.questionId == id) { questionText = question.text; break; }
+    if (questionText.trimmed().isEmpty()) { m_summaryTab->showInteractionMessage(tr("此问题已不可用，请重新选择")); return; }
+    const auto path = m_analysisVM->currentVideoPath();
+    if (!m_chatVM->hasVideoContext(path, video)) m_chatVM->onVideoOpened(path);
+    if (!guard) return;
+    const auto context = m_chatVM->getVideoContext();
+    if (!m_chatVM->hasVideoContext(path, video) || context.videoId != video || context.buildId != build || m_chatVM->isStreaming()) {
+        m_summaryTab->showInteractionMessage(tr("聊天视频上下文尚未就绪，请稍后重试")); return;
+    }
+    if (m_pageStack) m_pageStack->setCurrentIndex(0);
+    if (!guard) return;
+    m_chatVM->setCollapsed(false);
+    if (!guard) return;
+    onExpandChatPanel();
+    if (!guard) return;
+    // Recheck after opening the panel: synchronous observers may switch video.
+    const bool stillCurrent = validateContentRequest(video, build);
+    if (!guard) return;
+    if (!stillCurrent || m_playerVM->videoPath() != path || !m_chatVM->hasVideoContext(path, video) || m_chatVM->isStreaming()) {
+        m_summaryTab->showInteractionMessage(tr("视频或问题版本已变化，请重新选择问题")); return;
+    }
+    m_summaryTab->showInteractionMessage({});
+    m_chatVM->sendMessage(questionText);
+    if (guard) updateQuestionBusy();
 }
 
 QWidget* MainWindow::buildFilePage()
@@ -410,7 +451,6 @@ void MainWindow::onThemeChangedImmediate()
     // 【阶段 0】立即更新：只更新关键 UI（背景、边框等）
     setUpdatesEnabled(false);
     applyPageBackground();
-    updateSpinnerTheme();
     setUpdatesEnabled(true);
 }
 
@@ -432,21 +472,6 @@ void MainWindow::onThemeChangedDelayed()
         
         // 其他 Tab 延迟到切换时更新（通过各自的 showEvent）
     }
-}
-
-void MainWindow::updateSpinnerTheme()
-{
-    if (!m_spinnerMovie || !m_analysisSpinner) return;
-    const bool dark = m_theme ? m_theme->isDark() : true;
-    const QString path = dark
-        ? QStringLiteral(":/icons/loading_light.gif")
-        : QStringLiteral(":/icons/loading_dark.gif");
-
-    const bool wasRunning = (m_spinnerMovie->state() == QMovie::Running);
-    m_spinnerMovie->stop();
-    m_spinnerMovie->setFileName(path);
-    m_spinnerMovie->setScaledSize(QSize(18, 18));
-    if (wasRunning) m_spinnerMovie->start();
 }
 
 void MainWindow::applyPageBackground()
@@ -565,6 +590,7 @@ void MainWindow::onCollapseChatPanel()
 void MainWindow::onExpandChatPanel()
 {
     if (m_chatView) m_chatView->show();
+    if (m_titleBar) m_titleBar->setChatPanelVisible(true);
 }
 
 void MainWindow::onChatPanelToggled(bool visible)

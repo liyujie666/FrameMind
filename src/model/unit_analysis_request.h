@@ -10,12 +10,5 @@ struct UnitAnalysisRequest {
     int attempt = 0;
     int workerId = -1;
     ImageEncodingOptions imageOptions;
-};
-
-struct UnitPageAnalysisResult {
-    QString pageId;
-    QStringList sourceIds;
-    ArtifactState state = ArtifactState::Pending;
-    QString title, summary, visualDescription, audioSummary, error;
-    QJsonArray facts;
+    int maxOutputTokens = 0;
 };

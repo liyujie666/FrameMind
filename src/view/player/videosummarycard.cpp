@@ -1,7 +1,7 @@
 #include "view/player/videosummarycard.h"
 
-#include "service/markdownrenderer.h"
 #include "service/themeservice.h"
+#include "view/player/analysisuistyle.h"
 
 #include <QAbstractTextDocumentLayout>
 #include <QApplication>
@@ -96,33 +96,29 @@ private:
 
 VideoSummaryCard::VideoSummaryCard(QWidget* parent)
     : QWidget(parent)
-    , m_renderer(std::make_unique<MarkdownRenderer>())
 {
     setObjectName(QStringLiteral("videoSummaryCard"));
     setAttribute(Qt::WA_StyledBackground, true);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Maximum);
 
     auto* layout = new QVBoxLayout(this);
-    layout->setContentsMargins(18, 16, 18, 16);
-    layout->setSpacing(14);
+    layout->setContentsMargins(0, 10, 0, 0);
+    layout->setSpacing(10);
 
     auto* header = new QHBoxLayout;
-    header->setContentsMargins(0, 0, 0, 0);
+    header->setContentsMargins(0, 0, 16, 0);
     header->setSpacing(10);
     m_title = new QLabel(tr("视频概览"), this);
+    m_title->setTextFormat(Qt::PlainText);
     m_title->setObjectName(QStringLiteral("summaryTitle"));
     header->addWidget(m_title);
 
-    m_typeLabel = new QLabel(this);
-    m_typeLabel->setObjectName(QStringLiteral("summaryType"));
-    m_typeLabel->setTextFormat(Qt::PlainText);
-    m_typeLabel->hide();
-    header->addWidget(m_typeLabel);
     header->addStretch(1);
 
     m_copyButton = new QToolButton(this);
-    m_copyButton->setObjectName(QStringLiteral("summaryCopy"));
-    m_copyButton->setText(tr("复制"));
+    m_copyButton->setObjectName(QStringLiteral("analysisGhost"));
+    m_copyButton->setIconSize(QSize(16, 16));
+    m_copyButton->setProperty("copyAction", true);
     m_copyButton->setToolTip(tr("复制完整视频概览"));
     m_copyButton->setAccessibleName(tr("复制视频概览"));
     m_copyButton->setCursor(Qt::PointingHandCursor);
@@ -133,10 +129,18 @@ VideoSummaryCard::VideoSummaryCard(QWidget* parent)
     header->addWidget(m_copyButton);
     layout->addLayout(header);
 
-    m_browser = new SummaryTextBrowser(this);
+    auto* bodyCard = new QFrame(this);
+    bodyCard->setObjectName(QStringLiteral("summaryContentCard"));
+    auto* bodyLayout = new QVBoxLayout(bodyCard);
+    bodyLayout->setContentsMargins(16, 16, 16, 16);
+    bodyLayout->setSpacing(0);
+
+    m_browser = new SummaryTextBrowser(bodyCard);
     m_browser->setObjectName(QStringLiteral("summaryBody"));
+    m_browser->viewport()->setAutoFillBackground(false);
     m_browser->setAccessibleName(tr("视频概览正文"));
-    layout->addWidget(m_browser);
+    bodyLayout->addWidget(m_browser);
+    layout->addWidget(bodyCard);
 
     applyTheme();
 }
@@ -148,7 +152,6 @@ void VideoSummaryCard::setThemeService(ThemeService* theme)
     if (m_theme == theme) return;
     if (m_theme) disconnect(m_theme, nullptr, this, nullptr);
     m_theme = theme;
-    m_renderer->setThemeService(theme);
     if (m_theme) {
         connect(m_theme, &ThemeService::themeChanged,
                 this, [this](bool) { applyTheme(); });
@@ -158,31 +161,27 @@ void VideoSummaryCard::setThemeService(ThemeService* theme)
 
 void VideoSummaryCard::setSummary(const QString& summary)
 {
-    // 保留原始 Markdown，主题变化不经过 toMarkdown() 往返转换。
+    if (m_summary == summary.trimmed()) return;
+    // 保留原文；主题变化只调整纯文本排版。
     m_summary = summary.trimmed();
-    m_markdownBody = m_summary;
-    m_typeLabel->clear();
-    m_typeLabel->hide();
+    m_displayBody = m_summary;
 
     // 分离分析服务附在摘要首行的视频类型，旧缓存没有这一行也能显示。
     static const QRegularExpression typeLine(QStringLiteral(
         "\\A(?:📌[\\t ]*)?视频类型[：:][\\t ]*([^\\r\\n]+)(?:\\r?\\n|$)"));
-    const auto typeMatch = typeLine.match(m_markdownBody);
+    const auto typeMatch = typeLine.match(m_displayBody);
     if (typeMatch.hasMatch()) {
-        const QString type = typeMatch.captured(1).trimmed();
-        m_typeLabel->setText(type);
-        m_typeLabel->setVisible(!type.isEmpty());
-        m_markdownBody.remove(0, typeMatch.capturedLength());
-        m_markdownBody = m_markdownBody.trimmed();
+        m_displayBody.remove(0, typeMatch.capturedLength());
+        m_displayBody = m_displayBody.trimmed();
     }
 
-    // 卡片已有标题，去掉正文开头重复的“视频概览”标题。
+    // 区域已有标题，去掉正文开头重复的“视频概览”标题。
     static const QRegularExpression overviewHeading(QStringLiteral(
         "\\A#{1,6}[\\t ]+视频概览[\\t ]*(?:\\r?\\n|$)"));
-    const auto headingMatch = overviewHeading.match(m_markdownBody);
+    const auto headingMatch = overviewHeading.match(m_displayBody);
     if (headingMatch.hasMatch()) {
-        m_markdownBody.remove(0, headingMatch.capturedLength());
-        m_markdownBody = m_markdownBody.trimmed();
+        m_displayBody.remove(0, headingMatch.capturedLength());
+        m_displayBody = m_displayBody.trimmed();
     }
 
     m_copyButton->setEnabled(!m_summary.isEmpty());
@@ -192,17 +191,15 @@ void VideoSummaryCard::setSummary(const QString& summary)
 void VideoSummaryCard::clear()
 {
     m_summary.clear();
-    m_markdownBody.clear();
-    m_typeLabel->clear();
-    m_typeLabel->hide();
+    m_displayBody.clear();
     m_copyButton->setEnabled(false);
     m_browser->clear();
 }
 
-void VideoSummaryCard::setContentType(const QString& type) {m_typeLabel->setText(type);m_typeLabel->setVisible(!type.isEmpty());}
-
 void VideoSummaryCard::applyTheme()
 {
+    const AnalysisUi::Colors colors(m_theme);
+    m_copyButton->setIcon(AnalysisUi::copyIcon(colors));
     const bool dark = m_theme ? m_theme->isDark() : true;
     const QColor text = m_theme ? m_theme->color("textPrimary")
                                : QColor(dark ? "#E0E0E0" : "#1A1A1A");
@@ -210,24 +207,19 @@ void VideoSummaryCard::applyTheme()
                                     : QColor(dark ? "#8B8B8B" : "#6B6B6B");
     const QColor primary = m_theme ? m_theme->color("primary")
                                   : QColor(dark ? "#2979FF" : "#1565C0");
-    const QColor surface = m_theme ? m_theme->color("surface")
-                                  : QColor(dark ? "#1E1E2E" : "#FFFFFF");
     const QColor variant = m_theme ? m_theme->color("surfaceVariant")
                                   : QColor(dark ? "#252538" : "#F5F5F5");
     const QColor border = m_theme ? m_theme->color("border")
                                  : QColor(dark ? "#2D2D3D" : "#E0E0E0");
 
     setStyleSheet(QStringLiteral(
-        "QWidget#videoSummaryCard { background:%1; border:1px solid %2; border-radius:10px; }"
-        "QLabel#summaryTitle { color:%3; font-size:15px; font-weight:600; background:transparent; border:none; }"
-        "QLabel#summaryType { color:%4; background:%5; border:none; border-radius:5px; padding:3px 8px; font-size:11px; }"
-        "QToolButton#summaryCopy { color:%4; font-size:12px; background:transparent; border:none; border-radius:5px; padding:5px 8px; }"
-        "QToolButton#summaryCopy:hover { color:%3; background:%5; }"
-        "QToolButton#summaryCopy:pressed { background:%2; }"
-        "QToolButton#summaryCopy:disabled { color:%4; }"
-        "QTextBrowser#summaryBody { color:%3; font-size:14px; background:transparent; border:none; padding:0; selection-background-color:%6; }"
-    ).arg(surface.name(), border.name(), text.name(), secondary.name(),
-          variant.name(), primary.name()));
+        "QWidget { background:transparent; border:none; }"
+        "QWidget#videoSummaryCard { background:transparent; border:none; }"
+        "QFrame#summaryContentCard { background:%1; border:1px solid %2; border-radius:10px; }"
+        "QLabel#summaryTitle { color:%3; font-size:18px; font-weight:600; background:transparent; border:none; }"
+        "QTextBrowser#summaryBody { color:%3; font-size:14px; background:transparent; border:none; padding:0; selection-background-color:%4; }"
+    ).arg(AnalysisUi::cardSurface(colors).name(), AnalysisUi::cardBorder(colors).name(), text.name(), primary.name())
+        + AnalysisUi::actionStyles(colors));
 
     QFont font = m_browser->font();
     font.setPixelSize(14);
@@ -256,8 +248,7 @@ void VideoSummaryCard::applyTheme()
 
 void VideoSummaryCard::renderSummary()
 {
-    const bool dark = m_theme ? m_theme->isDark() : true;
-    m_browser->setHtml(m_renderer->toHtmlBody(m_markdownBody, dark));
+    m_browser->setPlainText(m_displayBody);
 
     // 用 Qt 原生段落格式设置行距，避免依赖浏览器式 CSS 的隐式继承。
     QTextDocument* doc = m_browser->document();
@@ -265,7 +256,7 @@ void VideoSummaryCard::renderSummary()
     cursor.beginEditBlock();
     for (QTextBlock block = doc->begin(); block.isValid(); block = block.next()) {
         QTextBlockFormat format = block.blockFormat();
-        format.setLineHeight(format.headingLevel() > 0 ? 135 : 165,
+        format.setLineHeight(format.headingLevel() > 0 ? 135 : 150,
                              QTextBlockFormat::ProportionalHeight);
         cursor.setPosition(block.position());
         cursor.setBlockFormat(format);
